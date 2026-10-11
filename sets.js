@@ -202,10 +202,20 @@ function draftToTable() {
   const tbody = $("wordTableBody");
   tbody.textContent = "";
   for (const r of rows) tbody.append(tableRow(r));
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    tr.className = "empty-row";
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.textContent = "아직 단어가 없어요. 사진에서 가져오거나 ‘＋ 단어 추가’를 누르세요.";
+    tr.append(td);
+    tbody.append(tr);
+  }
 }
 function tableToDraft() {
   const lines = [];
   for (const tr of $("wordTableBody").querySelectorAll("tr")) {
+    if (!tr.querySelector("input[data-key]")) continue;
     const get = (k) => tr.querySelector(`input[data-key="${k}"]`).value.trim();
     const id = get("id"), en = get("en"), ko = get("ko"), aliases = get("aliases"), ipa = get("ipa");
     if (!id && !en && !ko && !aliases && !ipa) continue;
@@ -226,6 +236,7 @@ function setTextMode(on) {
 $("toggleDraftText").onclick = () => setTextMode(!draftTextMode);
 $("addRow").onclick = () => {
   if (draftTextMode) return;
+  $("wordTableBody").querySelector(".empty-row")?.remove();
   const ids = parseDraft($("wordDraft").value).map((r) => Number(r.id)).filter(Number.isInteger);
   const nextId = ids.length ? Math.max(...ids) + 1 : $("wordTableBody").children.length + 1;
   const tr = tableRow({ id: String(nextId) });
@@ -657,7 +668,7 @@ if ("serviceWorker" in navigator)
         });
       });
     })
-    .catch(() => status("오프라인 앱 저장 실패. 인터넷 연결 상태에서는 사용할 수 있습니다."));
+    .catch(() => ($("backupStatus").textContent = "오프라인용 앱 저장은 이 브라우저에서 지원되지 않아요. 인터넷 연결 상태에서는 그대로 쓸 수 있어요."));
 renderAiSettings();
 renderHome();
 
