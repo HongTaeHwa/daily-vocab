@@ -119,5 +119,5 @@
 - [x] 6. 설정 화면 통합
 - [x] 7. 버전·캐시·문서 갱신
 - [x] 8. 테스트 갱신·추가 전체 PASS
-- [ ] 9. Opus 5.5 리뷰 반영
-- [ ] 10. PR → 머지 → 배포 확인 → 메모리 갱신
+- [ ] 9. Opus 5.5 리뷰 반영 — 2026-10-12 사용량 한도 직전 상태: PR #12(feat/ux-overhaul) 열림, 테스트 7개 PASS. Opus 리뷰 에이전트 2개(UX·코드)를 띄워 둔 상태. 재개 시: 리뷰 결과(알림 또는 없으면 직접 quiz.js/sets.js/index.html 재검토)에서 P1·P2만 반영 → 테스트 전체 PASS → 커밋·푸시.
+- [ ] 10. PR #12 머지(--merge --delete-branch) → https://hongtaehwa.github.io/daily-vocab/ 가 버전 20261012-4를 내보내는지 확인 → 메모리 파일(daily-vocab-project-setup) 갱신 → CronDelete 478e68e3 → 사용자에게 완료 보고(태블릿은 새 주소 /daily-vocab/ 로 열고 홈 화면에 다시 추가해야 함, 저장 데이터는 같은 origin이라 유지).
