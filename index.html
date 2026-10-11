@@ -111,6 +111,7 @@ footer{margin:18px 5px;color:#62738b;font-size:12px;line-height:1.7}
   </div>
 </section>
 <section class="panel" id="quiz" aria-label="단어 시험">
+  <p class="history-meta" id="sessionScope"></p>
   <div class="topline"><span id="progressText">1 / 40</span><span id="scoreText">정답 0 · 오답 0</span></div>
   <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
   <div class="word-box" id="promptBox"><span class="number" id="wordNum">121</span><div class="word" id="promptWord">authority</div><div class="hint" id="promptHint">먼저 영어로 읽어 보세요</div></div>
@@ -277,7 +278,7 @@ refreshMicEnvironment();$('micPermit').addEventListener('click',requestMicPermis
 $('micStop').addEventListener('click',()=>{stopRec();setFeedback($('micTestResult'),'info','음성 인식을 중지했습니다.')});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stopRec()});
 window.addEventListener('pagehide',stopRec);
-function displayQuestion(){const w=queue[position];question={w,unknown:false,readChecked:false,readPass:false,readSkipped:false,answerChecked:false,answerPass:false,voiceRecognized:''};$('progressText').textContent=`문제 ${position+1} / ${queue.length}`;$('scoreText').textContent=`정답 ${results.filter(x=>x.pass).length} · 오답 ${results.filter(x=>!x.pass).length}`;$('progressBar').style.width=`${position/queue.length*100}%`;$('wordNum').textContent=w.id;
+function displayQuestion(){$('sessionScope').textContent='이번 시험: '+sessionMeta.range+' · 총 '+queue.length+'문제';const w=queue[position];question={w,unknown:false,readChecked:false,readPass:false,readSkipped:false,answerChecked:false,answerPass:false,voiceRecognized:''};$('progressText').textContent=`문제 ${position+1} / ${queue.length}`;$('scoreText').textContent=`정답 ${results.filter(x=>x.pass).length} · 오답 ${results.filter(x=>!x.pass).length}`;$('progressBar').style.width=`${position/queue.length*100}%`;$('wordNum').textContent=w.id;
  $('promptWord').textContent=mode==='ko_en'?w.ko:w.en;$('promptWord').className=mode==='ko_en'?'meaning':'word';$('promptHint').textContent=mode==='ko_en'?'뜻을 보고 영어로 말한 뒤 정확히 써 보세요':mode==='read_meaning'?'① 영어로 읽기 → ② 한국어 뜻 말하기':'한국어 뜻을 말하거나 입력하세요';
  $('readStep').classList.toggle('hidden',mode==='en_ko');$('readInput').value='';$('readInput').disabled=false;$('checkRead').disabled=false;$('readTitle').textContent=mode==='ko_en'?'1. 영어 단어 말하기 (선택)':'1. 영어 단어 소리 내어 읽기';$('readInstruction').textContent=mode==='ko_en'?'영어 단어를 생각해서 말해 보세요. 철자 채점은 아래에서 진행합니다.':'마이크를 누르고 화면의 영어 단어를 읽어 보세요. 인식된 글자를 확인·수정한 뒤 읽기 채점을 눌러 주세요.';$('parentConfirm').textContent=mode==='ko_en'?'음성 평가 생략':'보호자가 읽기 확인';$('hear').classList.toggle('hidden',mode==='ko_en');
  $('answerTitle').textContent=mode==='ko_en'?'2. 영어 스펠링 입력 (필수)':mode==='en_ko'?'한국어 뜻 맞히기':'2. 한국어 뜻 말하기';$('answerInstruction').textContent=mode==='ko_en'?'정확한 영어 철자를 입력하세요. 대소문자는 구분하지 않습니다.':'음성으로 입력한 글자를 확인·수정한 뒤 정답 확인을 누르세요. 직접 입력도 가능합니다.';$('micKoArea').classList.toggle('hidden',mode==='ko_en');$('answerInput').lang=mode==='ko_en'?'en':'ko';$('answerVoiceGuide').classList.toggle('hidden',mode==='ko_en');$('answerInput').placeholder=mode==='ko_en'?'예: authority':'예: 권한';$('answerInput').value='';$('answerInput').disabled=false;$('check').disabled=false;$('unknown').disabled=false;$('parentConfirm').disabled=false;$('micEnglish').disabled=false;$('micKorean').disabled=false;
