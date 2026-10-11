@@ -43,17 +43,17 @@
 - Worker 보안: Origin 허용 목록(`ALLOWED_ORIGINS`), 접속 코드 상수 시간 비교, 선택적 `RATE_LIMITER` 바인딩(IP당 분당 30회), base64 검증과 8MB 상한, 모델 허용 목록. Anthropic 401/403은 앱의 접속 코드 오류(401)와 구분하려고 502로 바꿔 돌려준다.
 - Opus/Sonnet에는 `fallbacks: "default"` + `anthropic-beta: server-side-fallback-2026-07-01`을 붙이고, 400 메시지에 "fallback"이 있으면 둘 다 빼고 한 번 재시도한다. Haiku에는 붙이지 않는다.
 - 프롬프트·스키마를 바꾸면 Worker 재배포가 필요하다(앱 배포와 별개). 응답 형식을 바꾸면 `tests/worker.cjs`와 `tests/ai-recognition.cjs` 둘 다 고친다.
-- 앱의 `AI_SERVER_DEFAULT`(sets.js)에 배포된 Worker 주소를 넣어 두면 보호자는 접속 코드만 입력하면 된다.
+- 배포된 Worker: `https://daily-vocab-ai.reonwipe.workers.dev` (2026-10-12 배포, Cloudflare 계정 reonwipe, Worker 이름 `daily-vocab-ai`). `sets.js`의 `AI_SERVER_DEFAULT`에 들어 있어 보호자는 접속 코드만 입력한다. 주소가 바뀌면 이 상수와 README 두 곳을 같이 고친다. 재배포는 `cd worker && npm run deploy`(로그인 상태 유지됨).
 - 실제 Anthropic 호출 테스트는 없다(키 필요). 키·접속 코드를 코드·문서·테스트에 절대 넣지 않는다.
 
 ## 버전·캐시 올리기 (앱 셸을 바꿀 때 반드시)
-릴리스 문자열 `20261012-2` 와 캐시 이름 `daily-vocab-shell-v6` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
+릴리스 문자열 `20261012-3` 와 캐시 이름 `daily-vocab-shell-v7` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
 1. `index.html` `#appStatus` 초기 텍스트의 버전
 2. `index.html` `var release = '...'`
 3. `index.html` 마지막 `<script src="./sets.js?v=...">`
-4. `sw.js` — `CACHE` 상수(`-v6` → `-v7`)와 `SHELL` 배열의 `./sets.js?v=...`
+4. `sw.js` — `CACHE` 상수(`-v7` → `-v8`)와 `SHELL` 배열의 `./sets.js?v=...`
 5. `tests/app-update.cjs` — 버전 문자열 검사
-확인: `grep -rn "20261012-2\|daily-vocab-shell-v" index.html sw.js tests/`
+확인: `grep -rn "20261012-3\|daily-vocab-shell-v" index.html sw.js tests/`
 
 ## 로컬 실행
 ```bash

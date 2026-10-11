@@ -352,7 +352,7 @@ function canvasToBase64Jpeg(canvas) {
 // 설정은 이 브라우저의 localStorage에만 두고 백업 JSON·CSV로 내보내지 않는다.
 const AI_STORAGE_KEY = "daily_vocab_ai_v2";
 // 배포한 Worker 주소(예: https://daily-vocab-ai.xxx.workers.dev)를 넣으면 보호자는 접속 코드만 입력하면 된다.
-const AI_SERVER_DEFAULT = "";
+const AI_SERVER_DEFAULT = "https://daily-vocab-ai.reonwipe.workers.dev";
 try {
   localStorage.removeItem("daily_vocab_ai_v1"); // 이전 버전이 기기에 저장했던 API 키 제거
 } catch {}

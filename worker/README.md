@@ -9,7 +9,7 @@
 
 ## 처음 한 번 배포하기 (약 5분)
 
-필요한 것: [Cloudflare 계정](https://dash.cloudflare.com/sign-up)(무료), [Anthropic API 키](https://console.anthropic.com/), Node.js.
+필요한 것: [Cloudflare 계정](https://dash.cloudflare.com/sign-up)(무료), [Anthropic API 키](https://platform.claude.com/settings/keys)(아래 ‘Anthropic 키 만들기’ 참고), Node.js.
 
 ```bash
 cd worker
@@ -28,9 +28,16 @@ npm install
    ```bash
    npm run deploy
    ```
-4. 태블릿에서 앱을 열고 `🔒 보호자 설정 · AI 연결`에 위 주소와 접속 코드를 입력 → `저장` → `연결 확인`.
+4. 태블릿에서 앱을 열고 `🔒 보호자 설정 · AI 연결`에 접속 코드를 입력 → `저장` → `연결 확인`. 서버 주소는 앱에 기본값(`https://daily-vocab-ai.reonwipe.workers.dev`)으로 들어 있고, 다른 주소로 배포했다면 그 주소로 바꿉니다.
 
 Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세요. 이 키는 이 Worker 전용으로 만들어 두면 문제가 생겼을 때 그 키만 삭제하면 됩니다.
+
+## Anthropic 키 만들기 (워크스페이스 + 월 한도)
+
+1. https://platform.claude.com → **Settings → Workspaces → Create workspace** → 이름 `daily-vocab`.
+2. 만든 워크스페이스를 선택 → **Spend limits**에서 월 한도와 알림을 설정합니다. 기본 워크스페이스에는 한도를 걸 수 없습니다.
+3. **Settings → API keys → Create key** → 이름 `daily-vocab-worker`, Expiration `Never`(Worker 비밀값으로만 보관), Linked account 본인, Workspace `daily-vocab`. 키는 한 번만 표시되므로 바로 `npm run secrets`에 붙여넣습니다.
+4. 크레딧은 조직 단위로 공유됩니다(Max/Team 플랜의 월간 API 크레딧 포함). **Settings → Billing**에서 잔액과 자동 충전 여부를 확인하세요. 키가 샜다고 의심되면 같은 API keys 페이지에서 **Delete** 합니다.
 
 ## 설정 바꾸기
 
