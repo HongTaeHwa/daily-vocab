@@ -2,7 +2,7 @@
 
 121–160번 40개 단어: 영어 읽기 + 한국어 뜻, 영어 → 한글, 한글 → 영어·스펠링.
 
-https://HongTaeHwa.github.io/day04-vocab/
+https://HongTaeHwa.github.io/daily-vocab/
 
 ## Android 태블릿 사용
 
@@ -63,13 +63,13 @@ AI 인식은 보호자가 한 번 만들어 두는 **가족용 AI 서버**(Cloud
 
 ## 홈 화면 설치와 오프라인
 
-Chrome 메뉴 → 홈 화면에 추가 / 앱 설치를 사용합니다. 브라우저가 설치 이벤트를 제공하면 설치 버튼도 표시합니다. Android용 192/512 PNG와 maskable 아이콘 및 Apple touch icon을 포함합니다. manifest의 경로는 기존 `/day04-vocab/`를 유지합니다.
+Chrome 메뉴 → 홈 화면에 추가 / 앱 설치를 사용합니다. 브라우저가 설치 이벤트를 제공하면 설치 버튼도 표시합니다. Android용 192/512 PNG와 maskable 아이콘 및 Apple touch icon을 포함합니다. manifest의 경로는 기존 `/daily-vocab/`를 유지합니다.
 
 앱 셸과 저장된 세트는 한 번 접속한 뒤 오프라인으로 사용할 수 있습니다. AI 사진 인식과 외부 음성 인식은 인터넷이 필요합니다. 앱 업데이트 안내가 나오면 시험을 마치고 열린 앱 탭을 모두 닫은 후 다시 엽니다. 앱 셸을 변경할 때 `sw.js`의 CACHE 버전을 올리세요. 설치가 마이크 권한을 대신하지 않습니다.
 
 ## 개발 및 브라우저 검증
 
-앱은 빌드나 런타임 패키지 없이 정적 서버로 실행합니다. `node .claude/dev-server.cjs`가 저장소를 GitHub Pages와 같은 `/day04-vocab/` 경로(`http://127.0.0.1:8000/day04-vocab/`)로 제공합니다.
+앱은 빌드나 런타임 패키지 없이 정적 서버로 실행합니다. `node .claude/dev-server.cjs`가 저장소를 GitHub Pages와 같은 `/daily-vocab/` 경로(`http://127.0.0.1:8000/daily-vocab/`)로 제공합니다.
 
 테스트는 전역 설치된 Playwright(`npm i -g playwright && npx playwright install chromium`)로 실행합니다. `node .claude/run-tests.cjs`가 서버를 자동으로 띄우고 아래를 모두 실행합니다. 개별 실행은 `CHROMIUM_PATH=/usr/bin/chromium node tests/browser.cjs`처럼 하며 기본 URL은 `APP_URL`로 바꿀 수 있습니다. 테스트는 별도의 브라우저 컨텍스트에서 실행하므로 실제 사용자 저장 자료에 영향을 주지 않습니다.
 

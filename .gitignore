@@ -8,3 +8,4 @@ claude key.txt
 *key*.txt
 *.key
 *.pem
+.claude/scheduled_tasks.lock

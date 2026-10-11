@@ -53,7 +53,7 @@ const { chromium } = require("playwright");
           ];
     return reply(route, 200, { words, note: "", model: "claude-opus-5-5", usage: { input: 1, output: 1 } });
   });
-  const url = process.env.APP_URL || "http://127.0.0.1:8000/day04-vocab/";
+  const url = process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/";
   await page.goto(url);
 
   // 이전 버전이 기기에 저장했던 API 키(v1)는 시작 시 제거된다

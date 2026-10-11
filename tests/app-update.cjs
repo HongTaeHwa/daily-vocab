@@ -9,7 +9,7 @@ const { chromium } = require("playwright");
   });
   const context = await b.newContext({ serviceWorkers: "block" });
   const p = await context.newPage();
-  const url = process.env.APP_URL || "http://127.0.0.1:8000/day04-vocab/";
+  const url = process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/";
   await p.route("**/sets.js", (r) =>
     r.fulfill({
       status: 200,
