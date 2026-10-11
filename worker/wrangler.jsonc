@@ -5,6 +5,7 @@
   "main": "worker.js",
   "compatibility_date": "2026-09-01",
   "workers_dev": true,
+  "preview_urls": false,
   "vars": {
     // 사진 인식 모델: claude-opus-5-5(기본, 가장 정확) / claude-sonnet-5-5(빠름) / claude-haiku-5-5(가장 저렴)
     "CLAUDE_MODEL": "claude-opus-5-5",

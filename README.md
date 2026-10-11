@@ -49,7 +49,7 @@ https://HongTaeHwa.github.io/day04-vocab/
 AI 인식은 보호자가 한 번 만들어 두는 **가족용 AI 서버**(Cloudflare Worker, 무료 플랜)를 통해 동작합니다. Anthropic API 키는 그 서버의 비밀값에만 있고 앱·저장소·태블릿 어디에도 들어가지 않습니다. 서버를 만드는 방법은 [worker/README.md](worker/README.md)에 있습니다(약 5분).
 
 1. `worker/README.md`대로 배포하고 가족용 **접속 코드**를 정합니다.
-2. 태블릿에서 앱의 `🔒 보호자 설정 · AI 연결`을 펼쳐 서버 주소와 접속 코드를 입력 → `저장` → `연결 확인`.
+2. 태블릿에서 앱의 `🔒 보호자 설정 · AI 연결`을 펼칩니다. 서버 주소는 기본값(`https://daily-vocab-ai.reonwipe.workers.dev`)이 들어 있으므로 접속 코드만 입력 → `저장` → `연결 확인`.
 3. 이후 아이는 사진을 올리고 `사진에서 단어 가져오기`만 누르면 됩니다.
 
 모델은 서버 설정(`CLAUDE_MODEL`)에서 고릅니다: `claude-opus-5-5`(기본, 가장 정확), `claude-sonnet-5-5`(빠름), `claude-haiku-5-5`(가장 저렴). 사진 한 장당 대략 Opus 0.05달러, Sonnet 0.02달러, Haiku 0.002달러 수준이며 Anthropic 콘솔에서 **월 사용 한도**를 꼭 설정하세요.
