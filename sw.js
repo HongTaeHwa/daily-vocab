@@ -1,8 +1,8 @@
-const CACHE = "daily-vocab-shell-v3";
+const CACHE = "daily-vocab-shell-v4";
 const SHELL = [
   "./",
   "./index.html",
-  "./sets.js?v=20261011-3",
+  "./sets.js?v=20261011-4",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

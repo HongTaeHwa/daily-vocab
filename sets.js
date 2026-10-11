@@ -367,11 +367,11 @@ $("runOcr").onclick = async () => {
   const files = [...$("photos").files, ...$("camera").files];
   if (
     !files.length ||
-    files.length > 6 ||
+    files.length > 8 ||
     files.some((f) => !f.type.startsWith("image/") || f.size > 10 * 1024 * 1024)
   ) {
     $("ocrStatus").textContent =
-      "이미지를 1~6장 선택하세요. 장당 최대 10MB입니다.";
+      `사진 ${files.length}장을 선택했습니다. 한 번에 1~8장, 장당 최대 10MB의 이미지 파일을 선택하세요.`;
     return;
   }
   const generation = ++ocrGeneration;
