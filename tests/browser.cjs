@@ -12,7 +12,7 @@ const { chromium } = require("playwright");
   });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto(process.env.APP_URL || "http://127.0.0.1:8000/day04-vocab/");
+  await page.goto(process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/");
   await page.waitForTimeout(500);
   const assert = (v, m) => {
     if (!v) throw Error(m);

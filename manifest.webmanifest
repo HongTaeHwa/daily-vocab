@@ -1,10 +1,10 @@
 {
-  "id": "/day04-vocab/",
+  "id": "/daily-vocab/",
   "name": "매일 영단어",
   "short_name": "매일 영단어",
   "lang": "ko",
-  "start_url": "/day04-vocab/",
-  "scope": "/day04-vocab/",
+  "start_url": "/daily-vocab/",
+  "scope": "/daily-vocab/",
   "display": "standalone",
   "theme_color": "#133263",
   "background_color": "#f5f8fd",

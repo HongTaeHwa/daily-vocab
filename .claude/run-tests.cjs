@@ -11,7 +11,7 @@ const path = require("path");
 const fs = require("fs");
 
 const ROOT = path.resolve(__dirname, "..");
-const APP_URL = process.env.APP_URL || "http://127.0.0.1:8000/day04-vocab/";
+const APP_URL = process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/";
 const FAST = ["worker", "browser", "pwa", "app-update", "ten-photos", "ai-recognition"];
 const ALL = [...FAST];
 

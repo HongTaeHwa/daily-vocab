@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "day04-vocab",
+      "name": "daily-vocab",
       "runtimeExecutable": "node",
       "runtimeArgs": [".claude/dev-server.cjs"],
       "port": 8000,

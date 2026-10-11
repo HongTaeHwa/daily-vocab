@@ -29,7 +29,7 @@ const { chromium } = require("playwright");
       body: JSON.stringify({ words: [{ number: 0, en: names[i % 10], ko: "단어", aliases: [] }], note: "" }),
     });
   });
-  await p.goto(process.env.APP_URL || "http://127.0.0.1:8000/day04-vocab/");
+  await p.goto(process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/");
   await p.evaluate(() =>
     localStorage.setItem("daily_vocab_ai_v2", JSON.stringify({ server: "https://ai.test", passcode: "family-1234" })),
   );

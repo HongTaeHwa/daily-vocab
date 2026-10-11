@@ -10,7 +10,7 @@ const { chromium } = require("playwright");
   const p = await b.newPage();
   const errors = [];
   p.on("pageerror", (e) => errors.push(e.message));
-  await p.goto(process.env.APP_URL || "http://127.0.0.1:8000/day04-vocab/");
+  await p.goto(process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/");
   await p.evaluate(() => navigator.serviceWorker.ready);
   await p.reload();
   for (const size of [

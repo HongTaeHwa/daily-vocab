@@ -1,13 +1,13 @@
-# CLAUDE.md — day04-vocab (매일 영단어)
+# CLAUDE.md — daily-vocab (매일 영단어)
 
 ## 프로젝트 개요
 - 한국 학생용 영단어 학습 PWA. 음성 인식(읽기·뜻 말하기·알파벳 철자 말하기), 손글씨 입력, 사진에서 단어 세트 추가(AI 인식), 시험 기록·오답 복습을 제공한다. 사용자는 아이와 보호자이므로 화면 문구는 쉬운 한국어로, 선택지는 최소로 유지한다.
 - **앱은 순수 정적 사이트**: 빌드 단계·런타임 패키지·서버 없음. HTML + vanilla JS + localStorage. 외부 네트워크는 브라우저 음성 인식 서비스와 가족용 AI 서버(아래)뿐이다.
 - **AI 서버는 별도 배포하는 Cloudflare Worker**(`worker/`). Anthropic API 키는 Worker 비밀값에만 있고 앱·저장소·기기 어디에도 두지 않는다. 앱은 Worker 주소 + 가족용 접속 코드만 저장한다.
-- 배포: GitHub 저장소 `HongTaeHwa/day04-vocab`의 `main` 브랜치 루트가 그대로 GitHub Pages로 서비스된다.
-  - 저장소: https://github.com/HongTaeHwa/day04-vocab
-  - 서비스 URL: https://HongTaeHwa.github.io/day04-vocab/
-  - `main`에 머지되면 바로 배포된다. 배포 경로 `/day04-vocab/` 가 manifest `start_url`/`scope`, 테스트 기본 URL에 하드코딩되어 있다. Worker는 `cd worker && npm run deploy`로 따로 배포한다.
+- 배포: GitHub 저장소 `HongTaeHwa/daily-vocab`의 `main` 브랜치 루트가 그대로 GitHub Pages로 서비스된다.
+  - 저장소: https://github.com/HongTaeHwa/daily-vocab
+  - 서비스 URL: https://HongTaeHwa.github.io/daily-vocab/
+  - `main`에 머지되면 바로 배포된다. 배포 경로 `/daily-vocab/` 가 manifest `start_url`/`scope`, 테스트 기본 URL에 하드코딩되어 있다. Worker는 `cd worker && npm run deploy`로 따로 배포한다.
 - UI 텍스트·README·커밋 메시지 본문은 한국어.
 
 ## 파일 구조
@@ -16,7 +16,7 @@
 | `index.html` | 화면 전체 + 인라인 스크립트 2개. (1) 부트스트랩/진단 — 버전 표시, 전역 오류 배너, `앱 점검`, `새 버전 불러오기`. (2) 핵심 엔진 — 기본 40단어 `WORDS`, 시험 모드, 음성 인식, 채점, 시험 기록(`historyKey`), 오답 캐시. |
 | `sets.js` | 학습 세트 관리(생성·편집·삭제·JSON 백업/가져오기), 사진 → AI 서버 → 초안 흐름(`#extractWords`), 보호자 설정 UI(`#aiSettings`), PWA 설치 버튼, 서비스워커 등록. 마지막에 `window.markVocabAppReady()` 호출로 초기화 완료를 알린다. |
 | `sw.js` | 서비스워커. 앱 셸 캐시(`CACHE` 상수) + network-first/cache-fallback. 교차 출처 요청(AI 서버)은 건드리지 않는다. |
-| `manifest.webmanifest` | PWA 매니페스트 (`/day04-vocab/` 경로 고정). |
+| `manifest.webmanifest` | PWA 매니페스트 (`/daily-vocab/` 경로 고정). |
 | `icons/` | 192/512/maskable/apple-touch 아이콘. |
 | `worker/worker.js` | Cloudflare Worker 프록시. `POST /ping`, `POST /recognize`. 시스템 프롬프트·JSON 스키마·모델 선택·오류 변환이 여기 있다. 표준 `fetch`/`Request`/`Response`만 써서 Node에서도 테스트된다. |
 | `worker/wrangler.jsonc`, `worker/package.json`, `worker/README.md` | Worker 설정(`vars`: CLAUDE_MODEL, ALLOWED_ORIGINS; `ratelimits`), 배포 스크립트, 보호자용 배포 안내. 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE)은 `wrangler secret put`으로만 넣는다. |
@@ -61,8 +61,8 @@
 ```bash
 node .claude/dev-server.cjs
 ```
-→ http://127.0.0.1:8000/day04-vocab/ (Pages와 같은 경로. 의존성 없음.)
-Claude Code 브라우저 미리보기는 `.claude/launch.json`의 `day04-vocab` 설정을 사용한다. Worker를 로컬에서 함께 띄우려면 `worker/README.md`의 `.dev.vars` 안내를 따른다(`npm run dev`, 8787 포트).
+→ http://127.0.0.1:8000/daily-vocab/ (Pages와 같은 경로. 의존성 없음.)
+Claude Code 브라우저 미리보기는 `.claude/launch.json`의 `daily-vocab` 설정을 사용한다. Worker를 로컬에서 함께 띄우려면 `worker/README.md`의 `.dev.vars` 안내를 따른다(`npm run dev`, 8787 포트).
 
 ## 테스트
 Playwright는 **전역 설치**되어 있다(`npm i -g playwright` + `npx playwright install chromium`). 저장소 루트에는 `package.json`을 두지 않는다(앱 런타임 무의존 원칙). `worker/package.json`은 Worker 배포 전용이다.

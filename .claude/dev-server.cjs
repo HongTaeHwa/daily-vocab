@@ -1,12 +1,12 @@
-// 로컬 개발 서버: 저장소 루트를 GitHub Pages와 같은 경로(/day04-vocab/)로 제공합니다.
-// 의존성 없음. 실행: node .claude/dev-server.cjs  (기본 http://127.0.0.1:8000/day04-vocab/)
+// 로컬 개발 서버: 저장소 루트를 GitHub Pages와 같은 경로(/daily-vocab/)로 제공합니다.
+// 의존성 없음. 실행: node .claude/dev-server.cjs  (기본 http://127.0.0.1:8000/daily-vocab/)
 "use strict";
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
-const PREFIX = "/day04-vocab/";
+const PREFIX = "/daily-vocab/";
 const PORT = Number(process.env.PORT) || 8000;
 const HOST = process.env.HOST || "127.0.0.1";
 
@@ -64,5 +64,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`day04-vocab dev server: http://${HOST}:${PORT}${PREFIX}  (root: ${ROOT})`);
+  console.log(`daily-vocab dev server: http://${HOST}:${PORT}${PREFIX}  (root: ${ROOT})`);
 });
