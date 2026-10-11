@@ -143,8 +143,9 @@ $("seeHistory").addEventListener("click", () => showView("history"));
 // ---- 세트·범위 ----
 function wordNumberLabel(words) {
   const ids = words.map((w) => Number(w.id));
-  if (ids.length && ids.every(Number.isInteger)) return ids[0] + "~" + ids[ids.length - 1] + "번";
-  return "";
+  if (!ids.length || !ids.every(Number.isInteger)) return "";
+  const lo = Math.min(...ids), hi = Math.max(...ids);
+  return lo === hi ? lo + "번" : lo + "~" + hi + "번";
 }
 function populateSets() {
   const select = $("setSelect");
@@ -336,6 +337,7 @@ $("backSettings").addEventListener("click", stopQuiz);
 // ---- 시험 ----
 function newSession(missedOnly = false, snapshot = null, source = null, options = {}) {
   if (sessionRunning) return;
+  if (loadSessionState() && !confirm("쉬고 있던 시험이 있어요. 지우고 새로 시작할까요? (이어서 하려면 취소를 누르고 홈의 ‘이어서 하기’를 누르세요)")) return;
   stopRec();
   const startNum = options.rangeValue ?? $("range").value;
   let pool = snapshot || (missedOnly ? WORDS.filter((w) => lastMissed.includes(w.id)) : startNum === "all" ? WORDS : WORDS.slice(Number(startNum), Number(startNum) + 10));
