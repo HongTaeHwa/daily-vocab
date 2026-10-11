@@ -376,9 +376,11 @@ function abandonSavedSession() {
 }
 function stopQuiz() {
   if (!sessionRunning) return;
-  const answered = results.length;
+  const graded = Boolean(question.w && question.answerChecked && (mode !== "read_meaning" || question.readChecked));
+  const answered = results.length + (graded ? 1 : 0);
   if (!confirm(answered ? `시험을 그만할까요? 지금까지 푼 ${answered}문제는 ‘중단’ 기록으로 남아요.` : "시험을 그만할까요?")) return;
   stopRec();
+  if (graded) recordCurrentResult();
   accumulateActive();
   sessionRunning = false;
   setSettingsLocked(false);
