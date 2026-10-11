@@ -42,6 +42,8 @@
 - 한 장당 요청 1개, 순차 처리, 앱 120초 타임아웃, 취소는 `AbortController`. Worker는 Anthropic 호출에 110초 타임아웃.
 - Worker 보안: Origin 허용 목록(`ALLOWED_ORIGINS`), 접속 코드 상수 시간 비교, 선택적 `RATE_LIMITER` 바인딩(IP당 분당 30회), base64 검증과 8MB 상한, 모델 허용 목록. Anthropic 401/403은 앱의 접속 코드 오류(401)와 구분하려고 502로 바꿔 돌려준다.
 - Opus/Sonnet에는 `fallbacks: "default"` + `anthropic-beta: server-side-fallback-2026-07-01`을 붙이고, 400 메시지에 "fallback"이 있으면 둘 다 빼고 한 번 재시도한다. Haiku에는 붙이지 않는다.
+- **북미 중계**: Anthropic은 홍콩(HKG) 등 미지원 지역발 요청을 `403 forbidden: Request not allowed`로 거절하는데, 한국발 요청이 Cloudflare HKG에서 실행될 때가 있다(2026-10-12 실측). 그래서 Anthropic 호출은 `locationHint: "wnam"`으로 북미에 고정한 Durable Object `AnthropicRelay`(RELAY 바인딩)를 거친다. RELAY가 없거나 실패하면 직접 호출로 폴백. `GET /diag`(비밀값 불필요)로 `ok:true`(upstream 401)를 확인할 수 있다. 이 구조를 없애면 안 된다.
+- 키 위생: 등록된 키는 trim 후 출력 가능한 ASCII·`sk-ant-` 접두사를 검사해 잘못 붙여넣은 키를 Anthropic 호출 전에 걸러 준다(길이·공백·줄바꿈 개수만 알려 주고 값은 절대 로그·응답에 넣지 않는다). Anthropic 오류는 `[Anthropic <status> <type>: <message>]`를 덧붙여 앱에 전달한다. `wrangler tail` 로그에는 요청 헤더(접속 코드 포함)가 찍히므로 디버깅 외에는 보지 않는다.
 - 프롬프트·스키마를 바꾸면 Worker 재배포가 필요하다(앱 배포와 별개). 응답 형식을 바꾸면 `tests/worker.cjs`와 `tests/ai-recognition.cjs` 둘 다 고친다.
 - 배포된 Worker: `https://daily-vocab-ai.reonwipe.workers.dev` (2026-10-12 배포, Cloudflare 계정 reonwipe, Worker 이름 `daily-vocab-ai`). `sets.js`의 `AI_SERVER_DEFAULT`에 들어 있어 보호자는 접속 코드만 입력한다. 주소가 바뀌면 이 상수와 README 두 곳을 같이 고친다. 재배포는 `cd worker && npm run deploy`(로그인 상태 유지됨).
 - 실제 Anthropic 호출 테스트는 없다(키 필요). 키·접속 코드를 코드·문서·테스트에 절대 넣지 않는다.

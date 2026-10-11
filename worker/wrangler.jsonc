@@ -12,6 +12,10 @@
     // 앱이 배포된 주소만 허용 (쉼표로 여러 개). 로컬 개발은 .dev.vars 에서 덮어쓴다.
     "ALLOWED_ORIGINS": "https://hongtaehwa.github.io"
   },
+  // Anthropic 호출을 북미에 고정된 Durable Object(worker.js의 AnthropicRelay)로 보낸다.
+  // 한국발 요청이 Cloudflare 홍콩(HKG)에서 실행되면 Anthropic이 403 "Request not allowed"로 거절하기 때문.
+  "durable_objects": { "bindings": [{ "name": "RELAY", "class_name": "AnthropicRelay" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AnthropicRelay"] }],
   // IP당 분당 요청 수 제한. 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE)은 여기에 적지 않고 wrangler secret put 으로 넣는다.
   "ratelimits": [
     {

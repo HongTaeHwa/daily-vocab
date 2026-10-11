@@ -4,3 +4,7 @@ node_modules/
 worker/.dev.vars
 worker/.wrangler/
 samples/
+claude key.txt
+*key*.txt
+*.key
+*.pem

@@ -5,10 +5,15 @@
 //
 //   POST /ping       헤더 X-App-Passcode            → { ok, model }  (Anthropic 연결까지 확인)
 //   POST /recognize  헤더 X-App-Passcode, JSON {image, mediaType} → { words:[{number,en,ko,ipa,aliases}], note, model, usage }
+//   GET  /diag       (비밀값 사용 안 함) 이 Worker 위치에서 Anthropic이 요청을 받는지 확인
 //
 // 비밀값: ANTHROPIC_API_KEY, APP_PASSCODE   (wrangler secret put ...)
-// 변수:   CLAUDE_MODEL(기본 claude-opus-5-5), ALLOWED_ORIGINS(쉼표 구분)   (wrangler.jsonc vars)
-// 바인딩: RATE_LIMITER(선택, wrangler.jsonc ratelimits)
+// 변수:   CLAUDE_MODEL(기본 claude-opus-5-5), ALLOWED_ORIGINS(쉼표 구분), ANTHROPIC_WORKSPACE_ID(선택)   (wrangler.jsonc vars)
+// 바인딩: RATE_LIMITER(선택, ratelimits), RELAY(Durable Object, 아래 참고)
+//
+// 왜 Durable Object를 거치나: 한국에서 온 요청은 Cloudflare 홍콩(HKG) 데이터센터에서 실행될 때가 있는데,
+// Anthropic은 홍콩발 요청을 403 "Request not allowed"로 거절한다. 그래서 Anthropic 호출만 북미에 고정된
+// Durable Object(AnthropicRelay, locationHint "wnam")를 통해 보낸다. RELAY 바인딩이 없으면 직접 호출한다.
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const DEFAULT_MODEL = "claude-opus-5-5";
@@ -17,6 +22,8 @@ const DEFAULT_ORIGINS = ["https://hongtaehwa.github.io"];
 const MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_IMAGE_BASE64 = 8 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 110000;
+const RELAY_LOCATION = "wnam";
+const FORWARDED_HEADERS = ["content-type", "x-api-key", "anthropic-version", "anthropic-beta", "anthropic-workspace-id"];
 
 // 실제 교재(예: 0161 amend [əménd] 동 (법 등을) 수정하다, 개정하다 ⊜ alter, revise / 예문 / ⊕ amendment …) 레이아웃 기준.
 const SYSTEM = `You read photos of pages from Korean English-vocabulary workbooks (영단어장) and extract every headword entry on the page as JSON.
@@ -103,40 +110,89 @@ function pickModel(env) {
   return ALLOWED_MODELS.includes(env.CLAUDE_MODEL) ? env.CLAUDE_MODEL : DEFAULT_MODEL;
 }
 
+// Anthropic으로 가는 실제 HTTP 호출. RELAY(Durable Object)가 있으면 북미에 고정된 객체를 거친다.
+async function upstreamFetch(env, headers, bodyText) {
+  if (env.RELAY) {
+    try {
+      const stub = env.RELAY.get(env.RELAY.idFromName("anthropic-relay"), { locationHint: RELAY_LOCATION });
+      return await stub.fetch("https://relay.internal/messages", { method: "POST", headers, body: bodyText });
+    } catch (e) {
+      console.error("relay_failed", e?.name || "", e?.message || "");
+    }
+  }
+  return fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers,
+    body: bodyText,
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
+}
+
+export class AnthropicRelay {
+  constructor(state, env) {
+    this.env = env;
+  }
+  async fetch(request) {
+    const headers = {};
+    for (const name of FORWARDED_HEADERS) {
+      const value = request.headers.get(name);
+      if (value) headers[name] = value;
+    }
+    const upstream = await fetch(ANTHROPIC_URL, {
+      method: "POST",
+      headers,
+      body: await request.text(),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    });
+    return new Response(await upstream.text(), {
+      status: upstream.status,
+      headers: { "content-type": upstream.headers.get("content-type") || "application/json" },
+    });
+  }
+}
+
 async function anthropicPost(env, body, beta) {
   const headers = {
     "content-type": "application/json",
-    "x-api-key": env.ANTHROPIC_API_KEY,
+    "x-api-key": String(env.ANTHROPIC_API_KEY || "").trim(),
     "anthropic-version": "2023-06-01",
   };
   if (beta) headers["anthropic-beta"] = beta;
-  const response = await fetch(ANTHROPIC_URL, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-  });
+  if (env.ANTHROPIC_WORKSPACE_ID) headers["anthropic-workspace-id"] = env.ANTHROPIC_WORKSPACE_ID;
+  const response = await upstreamFetch(env, headers, JSON.stringify(body));
+  const text = await response.text().catch(() => "");
   let payload = null;
   try {
-    payload = await response.json();
+    payload = JSON.parse(text);
   } catch {}
+  if (response.status !== 200)
+    console.error("anthropic_response", response.status, response.headers.get("content-type") || "", text.slice(0, 300).replace(/\s+/g, " "));
   return { status: response.status, payload };
 }
 
 function describeUpstream(status, payload) {
   const message = payload?.error?.message || "";
   const type = payload?.error?.type || "";
-  if (status === 401 || status === 403)
-    return { status: 502, message: "AI 서버에 저장된 Anthropic API 키가 올바르지 않습니다. 보호자가 Worker 비밀값을 확인해 주세요." };
+  const upstream = ` [Anthropic ${status}${type ? " " + type : ""}${message ? ": " + message : ""}]`;
+  if (status === 401)
+    return { status: 502, message: "AI 서버에 저장된 Anthropic API 키가 올바르지 않습니다(인증 실패). 보호자가 콘솔에서 키가 살아 있는지 확인하고 다시 등록해 주세요." + upstream };
+  if (status === 403 && /not allowed/i.test(message))
+    return { status: 503, message: "Anthropic이 이 요청의 출발 지역을 허용하지 않았습니다. 잠시 후 다시 시도해 주세요." + upstream };
+  if (status === 403)
+    return { status: 502, message: "Anthropic이 이 키의 요청을 허용하지 않습니다(권한 문제). 보호자가 키의 워크스페이스·권한을 확인해 주세요." + upstream };
   if (status === 404)
-    return { status: 502, message: "AI 서버에 설정된 모델을 사용할 수 없습니다. 보호자가 CLAUDE_MODEL 설정을 확인해 주세요." };
+    return { status: 502, message: "AI 서버에 설정된 모델을 사용할 수 없습니다. 보호자가 CLAUDE_MODEL 설정을 확인해 주세요." + upstream };
   if (status === 413)
     return { status: 413, message: "사진이 너무 커서 보낼 수 없습니다. 한 장씩 다시 시도해 주세요." };
   if (status === 429)
     return { status: 429, message: "AI 사용 한도를 넘었습니다. 잠시 후 다시 시도하거나 보호자가 Anthropic 콘솔의 한도·잔액을 확인해 주세요." };
   if (status === 529 || type === "overloaded_error" || status >= 500)
     return { status: 503, message: "AI 서버가 혼잡합니다. 잠시 후 다시 시도해 주세요." };
-  return { status: 502, message: "AI 요청이 실패했습니다" + (message ? ": " + message : "") };
+  if (/credit balance/i.test(message))
+    return { status: 402, message: "Anthropic 크레딧이 부족합니다. 보호자가 Anthropic 콘솔(Settings → Billing)에서 이 키가 속한 조직의 잔액·플랜 크레딧을 확인해 주세요." };
+  if (/workspace-id/i.test(message))
+    return { status: 502, message: "AI 서버의 Anthropic 키가 워크스페이스에 묶여 있지 않습니다. 보호자가 워크스페이스를 지정한 키를 다시 만들거나 Worker 변수 ANTHROPIC_WORKSPACE_ID를 설정해 주세요." };
+  return { status: 502, message: "AI 요청이 실패했습니다 (Anthropic 응답 " + status + ")" + (message ? ": " + message : "") };
 }
 
 // Opus/Sonnet: 정책 거부 시 서버가 대체 모델로 이어 주는 fallbacks를 켠다.
@@ -152,6 +208,7 @@ async function callAnthropic(env, model, body) {
       result = await anthropicPost(env, body);
   } catch (e) {
     const timeout = e?.name === "TimeoutError" || e?.name === "AbortError";
+    console.error("anthropic_unreachable", e?.name || "", e?.message || "");
     return {
       failure: {
         status: 504,
@@ -165,6 +222,7 @@ async function callAnthropic(env, model, body) {
     };
   }
   if (result.status !== 200 || !result.payload) {
+    console.error("anthropic_error", result.status, result.payload?.error?.type || "", result.payload?.error?.message || "(no message)");
     const mapped = describeUpstream(result.status, result.payload);
     return {
       failure: {
@@ -196,7 +254,7 @@ function sanitizeWords(data) {
 async function ping(env, model, cors) {
   const outcome = await callAnthropic(env, model, {
     model,
-    max_tokens: 256,
+    max_tokens: 2048,
     output_config: { effort: "low" },
     messages: [{ role: "user", content: "연결 확인입니다. ‘확인’이라고만 답하세요." }],
   });
@@ -264,18 +322,46 @@ async function recognize(request, env, model, cors) {
   }, cors);
 }
 
+// 비밀값 없이 Anthropic이 이 Worker의 요청을 받는지 본다. 정상이면 401(invalid x-api-key), 지역 차단이면 403.
+async function diag(request, env, cors) {
+  const r = await upstreamFetch(
+    env,
+    { "content-type": "application/json", "x-api-key": "diag-invalid", "anthropic-version": "2023-06-01" },
+    JSON.stringify({ model: DEFAULT_MODEL, max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+  );
+  const text = await r.text().catch(() => "");
+  return json(200, {
+    colo: request.cf?.colo || null,
+    relay: Boolean(env.RELAY),
+    upstreamStatus: r.status,
+    ok: r.status === 401,
+    body: text.slice(0, 200),
+  }, cors);
+}
+
 export default {
   async fetch(request, env) {
     const cors = corsHeaders(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
+    if (path === "/diag") return diag(request, env, cors);
     if (request.method !== "POST" || !["/ping", "/recognize"].includes(path))
       return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." }, cors);
     const origin = request.headers.get("Origin");
     if (origin && !allowedOrigins(env).includes(origin))
       return json(403, { error: "forbidden_origin", message: "이 주소에서는 AI 서버를 쓸 수 없습니다. 보호자가 ALLOWED_ORIGINS를 확인해 주세요." }, cors);
-    if (!env.ANTHROPIC_API_KEY || !env.APP_PASSCODE)
+    const apiKey = String(env.ANTHROPIC_API_KEY || "").trim();
+    if (apiKey && !/^[!-~]+$/.test(apiKey)) {
+      const spaces = (apiKey.match(/ /g) || []).length;
+      const breaks = [...apiKey].filter((ch) => ch.charCodeAt(0) < 32).length;
+      const nonAscii = [...apiKey].filter((ch) => ch.charCodeAt(0) > 126).length;
+      const detail = [spaces && `공백 ${spaces}개`, breaks && `줄바꿈 ${breaks}개`, nonAscii && `영문·숫자가 아닌 글자 ${nonAscii}개`].filter(Boolean).join(", ");
+      return json(500, { error: "bad_key_format", message: `AI 서버에 등록된 Anthropic API 키가 올바른 형식이 아닙니다(길이 ${apiKey.length}, ${detail || "허용되지 않는 문자"}). 보호자가 키를 한 줄로 정확히 복사해 npx wrangler secret put ANTHROPIC_API_KEY 로 다시 등록해 주세요.` }, cors);
+    }
+    if (apiKey && !/^sk-ant-/.test(apiKey))
+      return json(500, { error: "bad_key_format", message: `AI 서버에 등록된 값이 Anthropic API 키 형식(sk-ant-…)이 아닙니다(길이 ${apiKey.length}). 보호자가 키를 다시 등록해 주세요.` }, cors);
+    if (!apiKey || !env.APP_PASSCODE)
       return json(500, { error: "misconfigured", message: "AI 서버에 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE)이 설정되지 않았습니다." }, cors);
     if (!safeEqual(request.headers.get("x-app-passcode") || "", env.APP_PASSCODE))
       return json(401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." }, cors);

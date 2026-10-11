@@ -39,6 +39,14 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 3. **Settings → API keys → Create key** → 이름 `daily-vocab-worker`, Expiration `Never`(Worker 비밀값으로만 보관), Linked account 본인, Workspace `daily-vocab`. 키는 한 번만 표시되므로 바로 `npm run secrets`에 붙여넣습니다.
 4. 크레딧은 조직 단위로 공유됩니다(Max/Team 플랜의 월간 API 크레딧 포함). **Settings → Billing**에서 잔액과 자동 충전 여부를 확인하세요. 키가 샜다고 의심되면 같은 API keys 페이지에서 **Delete** 합니다.
 
+## 지역 차단과 북미 중계 (Durable Object)
+
+한국에서 온 요청은 Cloudflare의 홍콩(HKG) 데이터센터에서 실행될 때가 있는데, Anthropic은 홍콩발 요청을 `403 forbidden: Request not allowed`로 거절합니다. 그래서 Worker는 Anthropic 호출만 북미에 고정된 Durable Object(`AnthropicRelay`, `locationHint: wnam`)를 통해 보냅니다. `wrangler.jsonc`의 `durable_objects`와 `migrations`가 이 설정이며, 무료 플랜에서 동작합니다.
+
+확인 방법(비밀값 불필요): `https://daily-vocab-ai.reonwipe.workers.dev/diag` 를 열면 `{"colo":"HKG","relay":true,"upstreamStatus":401,"ok":true,…}` 처럼 나와야 합니다. `ok`가 `false`이고 `upstreamStatus`가 403이면 중계가 동작하지 않는 것입니다.
+
+같은 이유로 앱의 오류 안내는 Anthropic의 응답 코드·종류·메시지를 `[Anthropic 403 forbidden: Request not allowed]` 형태로 덧붙여 보여 줍니다. 키 형식이 잘못 등록된 경우(공백·줄바꿈·제어 문자)는 Anthropic에 보내기 전에 걸러서 "키가 올바른 형식이 아닙니다(길이 N, …)"로 알려 줍니다. 터미널에서 Ctrl+V가 붙여넣기 대신 제어 문자를 입력하는 경우가 있으니, `wrangler secret put` 프롬프트에는 마우스 오른쪽 클릭이나 Ctrl+Shift+V로 붙여넣으세요.
+
 ## 설정 바꾸기
 
 | 항목 | 방법 |
@@ -47,6 +55,7 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 | 허용 주소 | `wrangler.jsonc`의 `ALLOWED_ORIGINS` (쉼표로 여러 개). 앱 주소가 바뀌면 여기도 바꿉니다 |
 | 분당 요청 제한 | `wrangler.jsonc`의 `ratelimits[0].simple.limit` (기본 30회/분, IP당) |
 | 접속 코드 변경 | `npx wrangler secret put APP_PASSCODE` 후 태블릿의 보호자 설정에서 새 코드 저장 |
+| 워크스페이스 지정 | 키가 특정 워크스페이스에 묶여 있지 않아 `anthropic-workspace-id` 오류가 나면 `wrangler.jsonc`의 `vars`에 `"ANTHROPIC_WORKSPACE_ID": "wrkspc_…"`(Settings → Workspaces의 ID 열) 추가 후 `npm run deploy` |
 | API 키 교체 | `npx wrangler secret put ANTHROPIC_API_KEY` |
 | 요청 로그 보기 | `npm run tail` |
 
@@ -67,7 +76,7 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 | `POST /ping` · 헤더 `X-App-Passcode` | 접속 코드와 Anthropic 연결을 확인. `{ ok: true, model }` |
 | `POST /recognize` · 헤더 `X-App-Passcode` · JSON `{ image: base64, mediaType }` | 사진 한 장에서 단어 추출. `{ words: [{ number, en, ko, aliases }], note, model, usage }` |
 
-오류는 `{ error, message }` JSON으로 돌려주며 `message`는 앱이 그대로 보여 주는 한국어 안내입니다. 접속 코드 오류는 401, 허용되지 않은 주소는 403, 요청 과다는 429, Anthropic 쪽 문제는 502/503/504입니다. Anthropic 키 문제는 앱의 접속 코드 오류(401)와 구분하기 위해 502로 돌려줍니다.
+오류는 `{ error, message }` JSON으로 돌려주며(원인은 `npm run tail` 로그의 `anthropic_error` 줄에서 확인) `message`는 앱이 그대로 보여 주는 한국어 안내입니다. 접속 코드 오류는 401, 허용되지 않은 주소는 403, 요청 과다는 429, Anthropic 쪽 문제는 502/503/504입니다. Anthropic 키 문제는 앱의 접속 코드 오류(401)와 구분하기 위해 502로 돌려줍니다.
 
 보안 메모: Origin 검사와 CORS는 다른 웹사이트가 이 Worker를 쓰지 못하게 막고, 접속 코드는 주소를 아는 사람의 무단 사용을 막습니다. 접속 코드는 태블릿 브라우저에 저장되므로, 기기를 잃어버리면 코드를 바꾸세요. 피해 범위는 어차피 Anthropic 콘솔의 사용 한도로 제한됩니다.
 
