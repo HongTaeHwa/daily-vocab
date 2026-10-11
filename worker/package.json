@@ -1,0 +1,16 @@
+{
+  "name": "daily-vocab-ai-worker",
+  "private": true,
+  "type": "module",
+  "description": "매일 영단어 앱의 AI 사진 인식 프록시 (Cloudflare Worker). Anthropic API 키를 서버 비밀값으로만 보관한다.",
+  "scripts": {
+    "login": "wrangler login",
+    "secrets": "wrangler secret put ANTHROPIC_API_KEY && wrangler secret put APP_PASSCODE",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.36.0"
+  }
+}

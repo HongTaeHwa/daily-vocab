@@ -1,0 +1,22 @@
+{
+  // 매일 영단어 AI 사진 인식 프록시. 배포: cd worker && npm install && npm run login && npm run secrets && npm run deploy
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "daily-vocab-ai",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "vars": {
+    // 사진 인식 모델: claude-opus-5-5(기본, 가장 정확) / claude-sonnet-5-5(빠름) / claude-haiku-5-5(가장 저렴)
+    "CLAUDE_MODEL": "claude-opus-5-5",
+    // 앱이 배포된 주소만 허용 (쉼표로 여러 개). 로컬 개발은 .dev.vars 에서 덮어쓴다.
+    "ALLOWED_ORIGINS": "https://hongtaehwa.github.io"
+  },
+  // IP당 분당 요청 수 제한. 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE)은 여기에 적지 않고 wrangler secret put 으로 넣는다.
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 30, "period": 60 }
+    }
+  ]
+}

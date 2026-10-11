@@ -18,7 +18,7 @@ const { chromium } = require("playwright");
     }),
   );
   await p.goto(url);
-  if (!(await p.textContent("#appStatus")).includes("20261012-1"))
+  if (!(await p.textContent("#appStatus")).includes("20261012-2"))
     throw Error("version missing");
   await p.click("#createSet");
   await p.setInputFiles("#photos", {
@@ -26,7 +26,7 @@ const { chromium } = require("playwright");
     mimeType: "image/png",
     buffer: await p.screenshot(),
   });
-  if (!(await p.textContent("#ocrStatus")).includes("사진을 선택했습니다"))
+  if (!(await p.textContent("#extractStatus")).includes("사진을 선택했습니다"))
     throw Error("current photo handler missing");
   await p.click("#checkApp");
   if (

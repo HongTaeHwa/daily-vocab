@@ -1,6 +1,6 @@
 // Playwright 브라우저 테스트 실행기.
-//   node .claude/run-tests.cjs              → 빠른 테스트 5개 (browser, pwa, app-update, ten-photos, ocr-failures)
-//   node .claude/run-tests.cjs --all        → ocr.cjs(실제 OCR, 최대 3분)까지 전부
+//   node .claude/run-tests.cjs              → 전체 (worker, browser, pwa, app-update, ten-photos, ai-recognition)
+//   node .claude/run-tests.cjs --all        → 위와 같음 (느린 테스트 없음)
 //   node .claude/run-tests.cjs browser pwa  → 지정한 테스트만
 // 전역 설치된 playwright(npm i -g playwright)를 NODE_PATH로 연결하고,
 // 127.0.0.1:8000 에 서버가 없으면 .claude/dev-server.cjs 를 자동으로 띄웁니다.
@@ -12,8 +12,8 @@ const fs = require("fs");
 
 const ROOT = path.resolve(__dirname, "..");
 const APP_URL = process.env.APP_URL || "http://127.0.0.1:8000/day04-vocab/";
-const FAST = ["browser", "pwa", "app-update", "ten-photos", "ocr-failures", "claude-ocr"];
-const ALL = [...FAST, "ocr"];
+const FAST = ["worker", "browser", "pwa", "app-update", "ten-photos", "ai-recognition"];
+const ALL = [...FAST];
 
 const args = process.argv.slice(2);
 const names = args.includes("--all")
