@@ -33,6 +33,7 @@ const { chromium } = require("playwright");
     );
     page.once("dialog", (d) => d.accept());
     await page.click("#backSettings");
+    await page.click("#newTest");
   }
   await page.click("#createSet");
   await page.fill("#setName", "2026-10-11 테스트");
@@ -68,13 +69,19 @@ const { chromium } = require("playwright");
     () => sets.find((s) => s.id !== "day04").id,
   );
   await page.selectOption("#setSelect", custom);
+  await page.click("#editSet");
   page.once("dialog", (d) => d.accept());
   await page.click("#deleteSet");
   assert(
-    (await page.locator("#historyList .history-entry").count()) === 4,
-    "deleted history visible",
+    (await page.locator("#historyList .history-entry").count()) === 3,
+    "set filter shows only its own records after delete",
   );
   await page.click("#tabHistory");
+  await page.selectOption("#historyFilter", "all");
+  assert(
+    (await page.locator("#historyList .history-entry").count()) === 4,
+    "deleted history visible under all sets",
+  );
   await page.click("#historyList details:has(.history-retry) summary");
   await page.click(".history-retry");
   assert(

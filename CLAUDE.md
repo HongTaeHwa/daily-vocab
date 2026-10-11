@@ -28,8 +28,10 @@
 
 ## 화면 구조와 ID
 - 뷰: `#home`(세트 선택·시험 설정·최근 결과·이어서 하기 카드), `#quiz`, `#finish`(결과), `#editor`(세트 편집), `#history`, `#settings`. `showView(name)`이 `.view.active`를 바꾸고 `body.in-quiz`로 하단 탭을 숨긴다.
-- 하단 탭 `#tabHome #tabHistory #tabSettings`, 상단 `#openSettings`. 시험 중에는 탭이 숨고 `#pauseQuiz`(쉬기)·`#backSettings`(그만하기)가 있다.
-- 테스트가 참조하는 ID는 유지한다: `#start #review #reviewCount #range #shuffle #setSelect #createSet #editSet #renameSet #deleteSet #setStatus #resumeCard #resumeQuiz #discardSession #resumeEditor #unknown #next #check #answerInput #readInput #checkRead #parentConfirm #progressText #finalScore #missedList #againSame #newTest #historyList #historyFilter #historySummary #exportHistory #clearHistory #setName #photos #camera #extractWords #cancelExtract #extractStatus #wordTableBody #addRow #toggleDraftText #wordDraft #wordCount #confirmed #saveSet #closeEditor #editorTitle #aiSettings #aiServer #aiPasscode #saveAi #testAi #clearAi #aiState #aiStatus #backupStatus #appStatus #refreshApp #checkApp`.
+- 하단 탭 `#tabHome #tabHistory #tabSettings`, 상단 `#openSettings`(시험 중 숨김). 시험 중에는 탭이 숨고 `#pauseQuiz`(쉬기)·`#backSettings`(그만하기)가 있다. `showView`는 시험 중 다른 화면 요청을 쉬기로 바꾸고, `history.pushState`/`popstate`로 Android 뒤로 가기를 화면 되돌리기로 처리한다.
+- 세트 삭제·이름 바꾸기(`#renameSet #deleteSet #renameBox`)는 편집 화면의 `#manageBox`(기존 세트일 때만)에 있다. 아이가 쓰는 홈에는 두지 않는다. 미저장 초안(`draftDirty`)은 닫기·다른 세트 열기 전에 확인한다.
+- 사진 선택은 `selectedFiles` 배열: `#photos`는 바꿔치기, `#camera`는 누적(최대 10장), 썸네일 ✕로 제거. 가져오기 성공한 사진은 목록에서 빠진다.
+- 테스트가 참조하는 ID는 유지한다: `#start #review #reviewCount #range #shuffle #setSelect #createSet #editSet #renameSet #deleteSet #setStatus #resumeCard #resumeQuiz #discardSession #resumeEditor #unknown #next #check #answerInput #readInput #checkRead #parentConfirm #progressText #finalScore #missedList #againSame #newTest #historyList #historyFilter #historySummary #exportHistory #clearHistory #setName #photos #camera #pickPhotos #takePhoto #extractWords #cancelExtract #extractStatus #wordTableBody #addRow #toggleDraftText #wordDraft #wordCount #confirmed #saveSet #closeEditor #editorTitle #manageBox #manageStatus #finishTitle #aiSettings #aiServer #aiPasscode #saveAi #testAi #clearAi #aiState #aiStatus #backupStatus #appStatus #refreshApp #checkApp`.
 - 상태 문구도 테스트가 본다: "사진을 선택했습니다", "가져오지 못했습니다", "취소", "보호자 설정", "연결 성공", "중단".
 
 ## 핵심 데이터 구조
@@ -38,9 +40,9 @@
 - 초안(`#wordDraft`) 형식: 한 줄에 `번호\t영어\t뜻\t별칭|별칭\t발음`(발음은 선택). `parseDraft`가 읽고 `appendDraftRows`·`tableToDraft`가 쓴다. 표 편집기는 이 텍스트와 양방향 동기화되며 300단어를 넘으면 텍스트 모드로 자동 전환.
 - localStorage 키 (버전 접미사 유지, 깨뜨리면 사용자 기록 유실):
   - `daily_vocab_sets_v2` — 세트 배열 `[{id,name,words,updatedAt?}]`
-  - `daily_vocab_history_v2` — 시험 기록 `[{id,setId,setName,mode,range,startedAt,completedAt,results,partial?}]` (`partial`은 그만하기로 끝난 중단 기록)
+  - `daily_vocab_history_v2` — 시험 기록 `[{id,setId,setName,mode,range,startedAt,completedAt,results,partial?}]` (`partial`은 그만하기·쉬던 시험 포기로 끝난 중단 기록; `results[i].self`는 ‘소리 내어 읽었어요’로 직접 확인한 읽기). 기록 탭의 세트 필터는 그 세트 기록만, ‘전체 세트’는 삭제된 세트 기록까지 보여 준다.
   - `daily_vocab_missed_<setId>` — 세트별 오답 id 배열
-  - `daily_vocab_session_v1` — 쉬는 중인 시험 `{meta, mode, queue, position, results, pausedAt}` (문제를 넘길 때마다·쉬기·화면 숨김 시 저장, 완료·그만하기 시 삭제)
+  - `daily_vocab_session_v1` — 쉬는 중인 시험 `{meta, mode, queue, position, results, pausedAt}` (문제를 넘길 때마다·쉬기·화면 숨김 시 저장, 완료·그만하기 시 삭제). `meta.activeMs/resumedAt`로 실제 푼 시간을 누적한다. 쉬기 전에 채점이 끝난 문제는 결과로 넣고 넘긴다. 틀린 단어는 `meta.setId`의 키에 저장한다(선택 세트와 달라도).
   - `daily_vocab_prefs_v1` — `{mode, range, shuffle, setId}` 마지막 선택
   - `daily_vocab_legacy_backup_v1` — 구버전(`day04_wordtest_*`) 자동 변환 백업
   - `daily_vocab_ai_v2` — `{server, passcode}` AI 서버 주소·접속 코드. **백업 JSON/CSV에 절대 포함하지 않는다.**

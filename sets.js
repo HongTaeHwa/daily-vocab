@@ -7,8 +7,18 @@ let editingId = null,
 let extractAbort = null;
 let extractOperation = null;
 let draftTextMode = false;
+let draftDirty = false;
+let selectedFiles = [];
 const TABLE_LIMIT = 300;
 window.editorOpen = false;
+function draftWordCount() {
+  return parseDraft($("wordDraft").value).length;
+}
+function confirmDiscardDraft() {
+  if (!window.editorOpen || !draftDirty) return true;
+  const n = draftWordCount();
+  return confirm(n ? `저장하지 않은 단어 ${n}개가 사라져요. 그래도 나갈까요?` : "저장하지 않은 내용이 사라져요. 그래도 나갈까요?");
+}
 const status = (text) => {
   $("setStatus").textContent = text;
 };
@@ -30,7 +40,7 @@ function persistSets(next) {
 // ---- 세트 이름 바꾸기 ----
 $("renameSet").onclick = () => {
   if (sessionRunning) return;
-  const set = sets.find((s) => s.id === activeSetId);
+  const set = sets.find((s) => s.id === (editingId || activeSetId));
   if (!set) return;
   $("renameInput").value = set.name;
   $("renameBox").classList.remove("hidden");
@@ -39,19 +49,23 @@ $("renameSet").onclick = () => {
 };
 $("renameCancel").onclick = () => $("renameBox").classList.add("hidden");
 $("renameSave").onclick = () => {
+  if (sessionRunning) return;
   const name = $("renameInput").value.trim();
   if (!name || name.length > 120) {
     status("세트 이름을 1~120자로 입력하세요.");
     return;
   }
-  const next = sets.map((s) => (s.id === activeSetId ? { ...s, name, updatedAt: new Date().toISOString() } : s));
+  const targetId = editingId || activeSetId;
+  const next = sets.map((s) => (s.id === targetId ? { ...s, name, updatedAt: new Date().toISOString() } : s));
   if (!persistSets(next)) return;
-  if (historyRecords.some((r) => r.setId === activeSetId && r.setName !== name))
-    persistHistory(historyRecords.map((r) => (r.setId === activeSetId ? { ...r, setName: name } : r)));
+  if (historyRecords.some((r) => r.setId === targetId && r.setName !== name))
+    persistHistory(historyRecords.map((r) => (r.setId === targetId ? { ...r, setName: name } : r)));
   $("renameBox").classList.add("hidden");
+  $("setName").value = name;
   populateSets();
   renderHome();
   renderHistory();
+  $("manageStatus").textContent = `이름을 ‘${name}’(으)로 바꿨어요.`;
   status(`이름을 ‘${name}’(으)로 바꿨어요.`);
 };
 $("renameInput").onkeydown = (e) => {
@@ -66,8 +80,13 @@ function releasePhotos() {
   $("photoPreview").textContent = "";
 }
 function openEditor(set) {
+  if (window.editorOpen && (editingId || null) !== (set?.id || null) && !confirmDiscardDraft()) return;
   if ($("extractWords").disabled) cancelExtract();
   editingId = set?.id || null;
+  selectedFiles = [];
+  $("manageBox").classList.toggle("hidden", !set);
+  $("manageStatus").textContent = "";
+  $("renameBox").classList.add("hidden");
   $("setName").value = set?.name || "새 세트 " + new Date().toLocaleDateString("sv-SE");
   $("setName").placeholder = "예: DAY 05 (161~200)";
   $("wordDraft").value = set
@@ -82,6 +101,7 @@ function openEditor(set) {
   $("editorTitle").textContent = set ? "✏️ 세트 수정" : "➕ 새 세트 만들기";
   window.editorOpen = true;
   setTextMode(false);
+  draftDirty = false;
   showView("editor");
 }
 $("createSet").onclick = () => openEditor();
@@ -99,35 +119,56 @@ function cancelExtract() {
 }
 $("cancelExtract").onclick = cancelExtract;
 $("closeEditor").onclick = () => {
+  if (!confirmDiscardDraft()) return;
   cancelExtract();
   releasePhotos();
   window.editorOpen = false;
+  draftDirty = false;
+  selectedFiles = [];
   showView("home");
 };
-function preview(input) {
-  if ($("extractWords").disabled) cancelExtract();
+function renderPhotos(announce = false) {
   releasePhotos();
-  $("extractStatus").textContent = input.files.length
-    ? `사진을 선택했습니다 (${input.files.length}장). ‘사진에서 단어 가져오기’를 누르세요.`
-    : "사진을 선택하세요.";
-  for (const file of input.files) {
+  if (announce)
+    $("extractStatus").textContent = selectedFiles.length
+      ? `사진을 선택했습니다 (${selectedFiles.length}장). ‘사진에서 단어 가져오기’를 누르세요.`
+      : "사진을 선택하세요.";
+  selectedFiles.forEach((file, index) => {
     const url = URL.createObjectURL(file);
     photoUrls.push(url);
+    const box = document.createElement("div");
+    box.className = "thumb-box";
     const img = document.createElement("img");
     img.src = url;
     img.alt = file.name;
     img.className = "thumb";
-    $("photoPreview").append(img);
-  }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "thumb-remove";
+    remove.textContent = "✕";
+    remove.setAttribute("aria-label", `${index + 1}번째 사진 빼기`);
+    remove.addEventListener("click", () => {
+      selectedFiles.splice(index, 1);
+      renderPhotos(true);
+    });
+    box.append(img, remove);
+    $("photoPreview").append(box);
+  });
 }
 $("photos").onchange = () => {
+  if ($("extractWords").disabled) cancelExtract();
+  selectedFiles = [...$("photos").files];
   $("camera").value = "";
-  preview($("photos"));
+  renderPhotos(true);
 };
 $("camera").onchange = () => {
-  $("photos").value = "";
-  preview($("camera"));
+  if ($("extractWords").disabled) cancelExtract();
+  selectedFiles = [...selectedFiles, ...$("camera").files].slice(0, 10);
+  $("camera").value = "";
+  renderPhotos(true);
 };
+$("pickPhotos").onclick = () => $("photos").click();
+$("takePhoto").onclick = () => $("camera").click();
 
 // ---- 초안(텍스트) ↔ 단어 표 ----
 function parseDraft(text) {
@@ -216,13 +257,15 @@ function tableToDraft() {
   const lines = [];
   for (const tr of $("wordTableBody").querySelectorAll("tr")) {
     if (!tr.querySelector("input[data-key]")) continue;
-    const get = (k) => tr.querySelector(`input[data-key="${k}"]`).value.trim();
-    const id = get("id"), en = get("en"), ko = get("ko"), aliases = get("aliases"), ipa = get("ipa");
-    if (!id && !en && !ko && !aliases && !ipa) continue;
+    const get = (k) => tr.querySelector(`input[data-key="${k}"]`).value.replace(/[\t\r\n]+/g, " ").trim();
+    const id = get("id"), en = get("en"), ko = get("ko"), ipa = get("ipa");
+    const aliases = get("aliases").split(/[|,·]/).map((x) => x.trim()).filter(Boolean).join("|");
+    if (!en && !ko && !aliases && !ipa) continue;
     lines.push([id, en, ko, aliases, ...(ipa ? [ipa] : [])].join("\t"));
   }
   $("wordDraft").value = lines.join("\n");
   $("confirmed").checked = false;
+  draftDirty = true;
   updateWordCount(lines.length);
 }
 function setTextMode(on) {
@@ -237,7 +280,7 @@ $("toggleDraftText").onclick = () => setTextMode(!draftTextMode);
 $("addRow").onclick = () => {
   if (draftTextMode) return;
   $("wordTableBody").querySelector(".empty-row")?.remove();
-  const ids = parseDraft($("wordDraft").value).map((r) => Number(r.id)).filter(Number.isInteger);
+  const ids = [...$("wordTableBody").querySelectorAll('input[data-key="id"]')].map((i) => Number(i.value)).filter(Number.isInteger);
   const nextId = ids.length ? Math.max(...ids) + 1 : $("wordTableBody").children.length + 1;
   const tr = tableRow({ id: String(nextId) });
   $("wordTableBody").append(tr);
@@ -246,6 +289,7 @@ $("addRow").onclick = () => {
 };
 $("wordDraft").oninput = () => {
   $("confirmed").checked = false;
+  draftDirty = true;
   updateWordCount(parseDraft($("wordDraft").value).length);
 };
 $("setName").oninput = () => {
@@ -263,10 +307,20 @@ $("saveSet").onclick = () => {
     $("setName").focus();
     return;
   }
-  if (!words.length || words.length > 2000 || words.some((w) => !w.id || !w.en || !w.ko) || duplicates.length) {
-    $("draftWarnings").textContent = duplicates.length
-      ? `번호나 영어가 겹치는 단어가 있어요: ${duplicates.slice(0, 3).map((w) => w.en || w.id).join(", ")}`
-      : "각 단어에 번호·영어·뜻이 모두 필요해요 (최대 2000개).";
+  const broken = words.findIndex((w) => !w.id || !w.en || !w.ko);
+  if (!words.length || words.length > 2000 || broken >= 0 || duplicates.length) {
+    if (!words.length) $("draftWarnings").textContent = "단어가 없어요. 사진에서 가져오거나 ‘＋ 단어 추가’로 넣어 주세요.";
+    else if (words.length > 2000) $("draftWarnings").textContent = "단어는 최대 2000개까지 저장할 수 있어요.";
+    else if (broken >= 0) {
+      const w = words[broken];
+      $("draftWarnings").textContent = `${broken + 1}번째 줄: ${!w.id ? "번호" : !w.en ? "영어" : "뜻"}이(가) 비어 있어요.`;
+      if (!draftTextMode) $("wordTableBody").querySelectorAll("tr")[broken]?.scrollIntoView({ behavior: "smooth", block: "center" });
+    } else {
+      const d = duplicates[0];
+      const at = words.findIndex((w) => w === d);
+      $("draftWarnings").textContent = `${at + 1}번째 줄: ‘${d.en || d.id}’이(가) 앞의 단어와 번호나 영어가 겹쳐요.`;
+      if (!draftTextMode) $("wordTableBody").querySelectorAll("tr")[at]?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
     return;
   }
   if (!$("confirmed").checked) {
@@ -288,7 +342,11 @@ $("saveSet").onclick = () => {
   const index = sets.findIndex((s) => s.id === id);
   const next = index >= 0 ? [...sets.slice(0, index), set, ...sets.slice(index + 1)] : [...others, set];
   if (persistSets(next)) {
+    if (previous && previous.name !== name && historyRecords.some((r) => r.setId === id))
+      persistHistory(historyRecords.map((r) => (r.setId === id ? { ...r, setName: name } : r)));
     window.editorOpen = false;
+    draftDirty = false;
+    selectedFiles = [];
     releasePhotos();
     selectSet(id);
     showView("home");
@@ -296,13 +354,18 @@ $("saveSet").onclick = () => {
   }
 };
 $("deleteSet").onclick = () => {
+  const targetId = editingId || activeSetId;
   if (sets.length === 1) {
-    status("마지막 세트는 삭제할 수 없어요. 새 세트를 먼저 만들어 주세요.");
+    $("manageStatus").textContent = "마지막 세트는 삭제할 수 없어요. 새 세트를 먼저 만들어 주세요.";
     return;
   }
-  const set = sets.find((s) => s.id === activeSetId);
-  if (confirm(`‘${set?.name}’ 세트를 삭제할까요? 시험 기록은 남아요.`) && persistSets(sets.filter((s) => s.id !== activeSetId))) {
+  const set = sets.find((s) => s.id === targetId);
+  if (confirm(`‘${set?.name}’ 세트를 삭제할까요? 단어는 사라지지만 시험 기록은 남아요.`) && persistSets(sets.filter((s) => s.id !== targetId))) {
+    window.editorOpen = false;
+    draftDirty = false;
+    releasePhotos();
     selectSet(sets[0].id);
+    showView("home");
     status("세트를 삭제했어요.");
   }
 };
@@ -376,13 +439,20 @@ $("importSets").onchange = async () => {
     const imported = data.sets.map((s) => ({ ...s, id: idMap.get(s.id) }));
     if (!persistSets([...sets, ...imported])) return;
     const records = (data.history || []).map((r) => ({ ...r, id: crypto.randomUUID(), setId: idMap.get(r.setId) || "import-deleted-" + r.setId }));
-    if (!persistHistory([...records, ...historyRecords])) status("세트는 가져왔지만 이력 저장에 실패했습니다. 원본 JSON을 보관하세요.");
+    const merged = [...records, ...historyRecords].sort((a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt));
+    if (!persistHistory(merged)) status("세트는 가져왔지만 이력 저장에 실패했습니다. 원본 JSON을 보관하세요.");
+    let missedFailed = 0;
     for (const s of data.sets) {
       const missed = data.missed?.[s.id];
-      if (Array.isArray(missed))
+      if (!Array.isArray(missed)) continue;
+      try {
         localStorage.setItem("daily_vocab_missed_" + idMap.get(s.id), JSON.stringify(missed.filter((id) => s.words.some((w) => w.id === id))));
+      } catch {
+        missedFailed++;
+      }
     }
     selectSet(imported[0].id);
+    if (missedFailed) status("틀린 단어 목록 일부를 저장하지 못했어요. 저장 공간을 확인하세요.");
     $("backupStatus").textContent = `세트 ${imported.length}개를 복사해 가져왔어요. 기존 세트는 그대로예요.`;
     status("가져온 세트를 선택했어요.");
   } catch (e) {
@@ -545,8 +615,16 @@ $("testAi").onclick = async () => {
 function appendDraftRows(rows) {
   const existing = $("wordDraft").value.split("\n").filter((l) => l.trim());
   const used = new Set(existing.map((l) => l.split("\t")[0].trim()));
+  const knownWords = new Set(existing.map((l) => (l.split("\t")[1] || "").trim().toLowerCase()).filter(Boolean));
   let next = existing.length;
-  const lines = rows.map((r) => {
+  const fresh = rows.filter((r) => {
+    const key = String(r.en || "").trim().toLowerCase();
+    if (knownWords.has(key)) return false;
+    knownWords.add(key);
+    return true;
+  });
+  appendDraftRows.skipped = rows.length - fresh.length;
+  const lines = fresh.map((r) => {
     let id = r.number > 0 ? String(r.number) : "";
     if (!id || used.has(id)) {
       do next++;
@@ -557,12 +635,13 @@ function appendDraftRows(rows) {
     return [id, r.en, r.ko, (r.aliases || []).join("|"), ...(r.ipa ? [r.ipa] : [])].join("\t");
   });
   $("wordDraft").value = [...existing, ...lines].join("\n");
+  draftDirty = true;
   if (!draftTextMode) draftToTable();
   else updateWordCount(existing.length + lines.length);
   return lines.length;
 }
 $("extractWords").onclick = async () => {
-  const files = [...$("photos").files, ...$("camera").files];
+  const files = selectedFiles.slice();
   if (!files.length || files.length > 10 || files.some((f) => !f.type.startsWith("image/") || f.size > 10 * 1024 * 1024)) {
     $("extractStatus").textContent = `사진 ${files.length}장을 선택했습니다. 한 번에 1~10장, 장당 최대 10MB의 이미지 파일을 선택하세요.`;
     return;
@@ -621,14 +700,20 @@ $("extractWords").onclick = async () => {
       if (!rows.length) throw Error("사진에서 단어를 찾지 못했습니다. 더 선명하게 찍어 다시 시도하세요.");
       const added = appendDraftRows(rows);
       if (result.note) notes.push(clean(result.note));
-      $("extractStatus").textContent = `${i + 1}/${files.length}장 완료 · 단어 ${added}개 추가 · 책과 비교해 고친 뒤 확인란을 체크하고 저장하세요.`;
+      const skipped = appendDraftRows.skipped ? ` · 이미 있는 단어 ${appendDraftRows.skipped}개 건너뜀` : "";
+      $("extractStatus").textContent = `${i + 1}/${files.length}장 완료 · 단어 ${added}개 추가${skipped} · 책과 비교해 고친 뒤 확인란을 체크하고 저장하세요.`;
+      selectedFiles = selectedFiles.filter((f) => f !== files[i]);
     }
+    renderPhotos();
+    $("extractStatus").textContent = `${files.length}/${files.length}장 완료 · 책과 비교해 고친 뒤 확인란을 체크하고 저장하세요.`;
     if (notes.length) $("extractStatus").textContent += " · AI 메모: " + notes.join(" ");
     $("draftWarnings").textContent = "책과 비교해 틀린 뜻·빠진 단어·중복을 고치세요. 결과가 비어 있으면 직접 입력하거나 더 선명한 사진으로 다시 시도하세요.";
     $("wordTableWrap").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
     if (generation === extractGeneration) {
-      $("extractStatus").textContent = "단어를 가져오지 못했습니다: " + (e?.message || String(e)) + " · 인터넷 연결을 확인하고 한 장씩 다시 시도하세요. 아래에 직접 입력해 저장할 수도 있습니다.";
+      const done = files.length - selectedFiles.filter((f) => files.includes(f)).length;
+      $("extractStatus").textContent = "단어를 가져오지 못했습니다: " + (e?.message || String(e)) + (done ? ` · ${done}/${files.length}장까지는 가져왔어요. 남은 사진만 다시 시도하세요.` : " · 인터넷 연결을 확인하고 다시 시도하세요.") + " 아래에 직접 입력해 저장할 수도 있어요.";
+      renderPhotos();
       extractGeneration++;
     }
   } finally {

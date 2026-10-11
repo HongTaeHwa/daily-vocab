@@ -75,7 +75,9 @@ const { chromium } = require("playwright");
   await page.click("#next");
   page.once("dialog", (d) => d.accept());
   await page.click("#backSettings");
-  assert(await page.isVisible("#home"), "stop returns home");
+  assert(await page.isVisible("#finish") && (await page.textContent("#finishTitle")).includes("여기까지"), "stop shows partial result");
+  await page.click("#newTest");
+  assert(await page.isVisible("#home"), "home after partial result");
   assert(await page.isHidden("#resumeCard"), "no resume card after stop");
   const partial = await page.evaluate(() => historyRecords[0]);
   assert(partial.partial === true && partial.results.length === 1, "partial record saved");
@@ -91,10 +93,14 @@ const { chromium } = require("playwright");
   await page.click("#backSettings");
   assert((await page.evaluate(() => historyRecords.length)) === 2, "no record without answers");
 
-  // 세트 이름 바꾸기 → 선택 목록·기록 반영
+  // 세트 이름 바꾸기(편집 화면의 세트 관리) → 선택 목록·기록 반영
+  await page.click("#editSet");
+  assert(await page.isVisible("#manageBox"), "manage box for existing set");
   await page.click("#renameSet");
   await page.fill("#renameInput", "DAY 04 복습");
   await page.click("#renameSave");
+  assert((await page.inputValue("#setName")) === "DAY 04 복습", "editor name updated");
+  await page.click("#closeEditor");
   assert((await page.textContent("#setSelect option:checked")).startsWith("DAY 04 복습"), "select shows new name");
   assert((await page.evaluate(() => historyRecords.every((r) => r.setName === "DAY 04 복습"))), "history records renamed");
   await page.reload();
@@ -103,6 +109,7 @@ const { chromium } = require("playwright");
   // 단어 표 편집기 ↔ 텍스트 동기화
   await page.click("#createSet");
   assert(await page.isVisible("#editor") && (await page.textContent("#editorTitle")).includes("새 세트"), "editor view");
+  assert(await page.isHidden("#manageBox"), "no manage box for new set");
   await page.fill("#setName", "표 편집 테스트");
   await page.click("#addRow");
   await page.fill('#wordTableBody tr:nth-child(1) input[data-key="en"]', "apple");
@@ -140,6 +147,24 @@ const { chromium } = require("playwright");
   assert(await page.isVisible("#editor") && (await page.inputValue("#setName")) === "표 편집 테스트", "editor state kept");
   await page.click("#closeEditor");
   assert(await page.isVisible("#home") && (await page.isHidden("#resumeEditor")), "close editor");
+
+  // 미저장 초안 보호: 단어를 바꾼 뒤 닫기 → 확인창, 취소하면 유지
+  await page.click("#editSet");
+  await page.click("#addRow");
+  await page.fill('#wordTableBody tr:last-child input[data-key="en"]', "dog");
+  page.once("dialog", (d) => d.dismiss());
+  await page.click("#closeEditor");
+  assert(await page.isVisible("#editor"), "cancel keeps editor open");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#closeEditor");
+  assert(await page.isVisible("#home"), "accept discards draft");
+  assert((await page.evaluate(() => WORDS.length)) === 2, "discarded draft not saved");
+
+  // 세트 삭제는 편집 화면에서만, 확인 후 홈으로
+  await page.click("#editSet");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#deleteSet");
+  assert(await page.isVisible("#home") && (await page.evaluate(() => sets.length)) === 1, "delete from editor");
 
   if (errors.length) throw Error(errors.join(","));
   console.log("PASS: tabs, range labels, pause/resume across reload, finish details, stop with partial record, rename, table editor sync, prefs, editor return");

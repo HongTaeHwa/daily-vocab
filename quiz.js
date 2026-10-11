@@ -120,9 +120,20 @@ loadMissed();
 // ---- 화면(뷰) 전환 ----
 const VIEWS = ["home", "quiz", "finish", "editor", "history", "settings"];
 let currentView = "home";
-function showView(name) {
+function showView(name, options = {}) {
   if (!VIEWS.includes(name)) name = "home";
+  if (sessionRunning && name !== "quiz") {
+    pauseQuiz();
+    return;
+  }
+  if (name !== currentView) $("setStatus").textContent = "";
   currentView = name;
+  if (!options.fromHistory) {
+    try {
+      if (history.state?.view) history.pushState({ view: name }, "");
+      else history.replaceState({ view: name }, "");
+    } catch {}
+  }
   for (const v of VIEWS) $(v).classList.toggle("active", v === name);
   document.body.classList.toggle("in-quiz", name === "quiz");
   for (const [tab, view] of [["tabHome", "home"], ["tabHistory", "history"], ["tabSettings", "settings"]]) {
@@ -133,7 +144,13 @@ function showView(name) {
   if (name === "history") renderHistory();
   if (name === "home") renderHome();
   window.scrollTo({ top: 0, behavior: "auto" });
+  try { $(name).focus({ preventScroll: true }); } catch {}
 }
+// Android 뒤로 가기: 앱을 닫지 않고 화면만 되돌린다. 시험 중이면 쉬기로 처리한다.
+window.addEventListener("popstate", (e) => {
+  if (sessionRunning) { pauseQuiz(); return; }
+  showView(e.state?.view || "home", { fromHistory: true });
+});
 $("tabHome").addEventListener("click", () => showView("home"));
 $("tabHistory").addEventListener("click", () => showView("history"));
 $("tabSettings").addEventListener("click", () => showView("settings"));
@@ -264,8 +281,13 @@ function sessionSnapshot() {
   return { meta: sessionMeta, mode, queue, position, results, pausedAt: new Date().toISOString() };
 }
 function saveSessionState() {
-  if (!sessionRunning || !sessionMeta) return;
-  try { localStorage.setItem(SESSION_KEY, JSON.stringify(sessionSnapshot())); } catch {}
+  if (!sessionRunning || !sessionMeta) return false;
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(sessionSnapshot()));
+    return true;
+  } catch {
+    return false;
+  }
 }
 function clearSessionState() {
   try { localStorage.removeItem(SESSION_KEY); } catch {}
@@ -299,35 +321,72 @@ function resumeSession() {
   queue = saved.queue;
   position = saved.position;
   results = saved.results;
+  sessionMeta.resumedAt = Date.now();
   sessionRunning = true;
   setSettingsLocked(true);
   showView("quiz");
   displayQuestion();
 }
 function discardSession() {
-  if (!confirm("쉬고 있던 시험을 지울까요? 푼 내용은 기록에 남지 않습니다.")) return;
-  clearSessionState();
-  renderResumeCard();
+  const saved = loadSessionState();
+  if (!saved) return;
+  if (!confirm(saved.results.length ? `쉬고 있던 시험을 그만둘까요? 푼 ${saved.results.length}문제는 ‘중단’ 기록으로 남아요.` : "쉬고 있던 시험을 지울까요?")) return;
+  abandonSavedSession();
+  renderHome();
+}
+function accumulateActive() {
+  if (!sessionMeta) return;
+  if (sessionMeta.resumedAt) sessionMeta.activeMs = (sessionMeta.activeMs || 0) + Math.max(0, Date.now() - sessionMeta.resumedAt);
+  sessionMeta.resumedAt = null;
 }
 function pauseQuiz() {
   if (!sessionRunning) return;
   stopRec();
-  saveSessionState();
+  // 채점까지 끝난 문제는 쉬기 전에 결과로 넣어 두어 이어서 할 때 다시 풀 수 없게 한다.
+  if (question.w && question.answerChecked && (mode !== "read_meaning" || question.readChecked)) {
+    recordCurrentResult();
+    position++;
+    if (position >= queue.length) { complete(); return; }
+  }
+  accumulateActive();
+  if (!saveSessionState()) {
+    sessionMeta.resumedAt = Date.now();
+    displayQuestion();
+    alert("쉬기 저장에 실패했어요. 브라우저 저장 공간을 확인하거나, 시험을 끝까지 푼 뒤 쉬어 주세요.");
+    return;
+  }
   sessionRunning = false;
   setSettingsLocked(false);
   showView("home");
-  $("setStatus").textContent = "쉬는 중이에요. 홈의 ‘이어서 하기’로 다시 시작할 수 있어요.";
+  $("setStatus").textContent = "쉬는 중이에요. 위의 ‘이어서 하기’로 다시 시작할 수 있어요.";
+}
+// 쉬어 둔 시험을 버릴 때도 푼 문제가 있으면 ‘중단’ 기록으로 남긴다(그만하기와 같은 규칙).
+function abandonSavedSession() {
+  const saved = loadSessionState();
+  if (!saved) return;
+  if (saved.results.length) {
+    sessionMeta = saved.meta;
+    mode = saved.mode;
+    queue = saved.queue;
+    results = saved.results;
+    sessionMeta.saved = false;
+    finishRecords(true);
+  }
+  clearSessionState();
 }
 function stopQuiz() {
   if (!sessionRunning) return;
   const answered = results.length;
-  if (!confirm(answered ? `시험을 그만할까요? 지금까지 푼 ${answered}문제는 ‘중단’ 기록으로 저장됩니다.` : "시험을 그만할까요?")) return;
+  if (!confirm(answered ? `시험을 그만할까요? 지금까지 푼 ${answered}문제는 ‘중단’ 기록으로 남아요.` : "시험을 그만할까요?")) return;
   stopRec();
+  accumulateActive();
   sessionRunning = false;
-  if (answered) finishRecords(true);
   setSettingsLocked(false);
   clearSessionState();
-  showView("home");
+  if (answered) {
+    const missed = finishRecords(true);
+    showResult(missed, true);
+  } else showView("home");
 }
 $("resumeQuiz").addEventListener("click", resumeSession);
 $("discardSession").addEventListener("click", discardSession);
@@ -336,12 +395,15 @@ $("backSettings").addEventListener("click", stopQuiz);
 
 // ---- 시험 ----
 function newSession(missedOnly = false, snapshot = null, source = null, options = {}) {
-  if (sessionRunning) return;
-  if (loadSessionState() && !confirm("쉬고 있던 시험이 있어요. 지우고 새로 시작할까요? (이어서 하려면 취소를 누르고 홈의 ‘이어서 하기’를 누르세요)")) return;
+  if (sessionRunning) return false;
+  if (loadSessionState()) {
+    if (!confirm("쉬고 있던 시험이 있어요. 그만두고 새로 시작할까요? 이어서 하려면 ‘취소’를 누른 뒤 ‘이어서 하기’를 누르세요.")) return false;
+    abandonSavedSession();
+  }
   stopRec();
   const startNum = options.rangeValue ?? $("range").value;
   let pool = snapshot || (missedOnly ? WORDS.filter((w) => lastMissed.includes(w.id)) : startNum === "all" ? WORDS : WORDS.slice(Number(startNum), Number(startNum) + 10));
-  if (!pool.length) return;
+  if (!pool.length) return false;
   const shuffle = options.shuffle ?? $("shuffle").checked;
   queue = shuffle ? shuffleArray(pool.slice()) : pool.slice();
   results = [];
@@ -353,12 +415,13 @@ function newSession(missedOnly = false, snapshot = null, source = null, options 
     id: crypto.randomUUID(), setId: source?.setId || activeSetId,
     setName: source?.setName || sets.find((s) => s.id === activeSetId)?.name || "이력 복습",
     mode, range: rangeLabel, rangeValue: missedOnly ? "missed" : startNum, shuffle,
-    startedAt: new Date().toISOString(), saved: false,
+    startedAt: new Date().toISOString(), saved: false, activeMs: 0, resumedAt: Date.now(),
   };
   clearSessionState();
   showView("quiz");
   displayQuestion();
   saveSessionState();
+  return true;
 }
 function normEn(s) { return String(s || "").toLowerCase().normalize("NFKC").replace(/[^a-z]/g, ""); }
 function normKo(s) {
@@ -434,8 +497,11 @@ refreshMicEnvironment();
 $("micPermit").addEventListener("click", requestMicPermission);
 $("micTest").addEventListener("click", testMicrophone);
 $("micStop").addEventListener("click", () => { stopRec(); setFeedback($("micTestResult"), "info", "음성 인식을 중지했습니다."); });
-document.addEventListener("visibilitychange", () => { if (document.hidden) { stopRec(); saveSessionState(); } });
-window.addEventListener("pagehide", () => { stopRec(); saveSessionState(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { stopRec(); if (sessionRunning) { accumulateActive(); saveSessionState(); } }
+  else if (sessionRunning && sessionMeta && !sessionMeta.resumedAt) sessionMeta.resumedAt = Date.now();
+});
+window.addEventListener("pagehide", () => { stopRec(); if (sessionRunning) { accumulateActive(); saveSessionState(); } });
 
 // ---- 문제 표시·채점 ----
 function displayQuestion() {
@@ -449,11 +515,11 @@ function displayQuestion() {
   $("promptWord").textContent = mode === "ko_en" ? w.ko : w.en;
   $("promptWord").className = mode === "ko_en" ? "meaning" : "word";
   $("promptHint").textContent = mode === "ko_en" ? "뜻을 보고 영어로 써 보세요" : mode === "read_meaning" ? "① 영어로 읽기 → ② 한국어 뜻 말하기" : "한국어 뜻을 말하거나 입력하세요";
-  $("readStep").classList.toggle("hidden", mode === "en_ko");
+  $("readStep").classList.toggle("hidden", mode !== "read_meaning");
   $("readInput").value = ""; $("readInput").disabled = false; $("checkRead").disabled = false;
   $("readTitle").textContent = mode === "ko_en" ? "1. 영어로 말하기 (선택)" : "1. 영어로 읽기";
   $("readInstruction").textContent = mode === "ko_en" ? "영어 단어를 생각해서 말해 보세요. 철자는 아래에서 채점해요." : "마이크를 누르고 영어 단어를 읽어 보세요.";
-  $("parentConfirm").textContent = mode === "ko_en" ? "말하기 건너뛰기" : "보호자 확인";
+  $("parentConfirm").textContent = "✓ 소리 내어 읽었어요";
   $("hear").classList.toggle("hidden", mode === "ko_en");
   $("spellingArea").classList.toggle("hidden", mode !== "ko_en");
   $("spellingGuide").classList.toggle("hidden", mode !== "ko_en");
@@ -465,6 +531,7 @@ function displayQuestion() {
   $("answerVoiceGuide").classList.toggle("hidden", mode === "ko_en");
   $("answerInput").placeholder = mode === "ko_en" ? "영어 철자 입력" : "한국어 뜻 입력";
   $("answerInput").value = ""; $("answerInput").disabled = false; $("check").disabled = false; $("unknown").disabled = false;
+  $("unknown").classList.remove("hidden");
   $("parentConfirm").disabled = false; $("micEnglish").disabled = false; $("micKorean").disabled = false;
   $("readFeedback").className = "feedback info";
   $("readFeedback").textContent = mode === "ko_en" ? "말하기는 건너뛰어도 돼요." : "아직 읽기 확인 전";
@@ -473,16 +540,18 @@ function displayQuestion() {
   $("answerReveal").style.display = "none"; $("answerReveal").textContent = "";
   $("next").disabled = true;
   $("next").textContent = position + 1 === queue.length ? "결과 보기 →" : "다음 →";
+  question.readSelf = false;
   if (!SPEECH) $("readFeedback").textContent = "이 브라우저에는 음성 인식이 없어요. 보호자 확인 또는 입력으로 채점해요.";
 }
 function setFeedback(el, type, text) { el.className = "feedback " + type; el.textContent = text; }
-function setRead(pass, spoken, skipped = false) {
+function setRead(pass, spoken, skipped = false, self = false) {
   if (question.unknown) return;
   question.readChecked = true;
+  question.readSelf = self;
   $("readInput").value = spoken || $("readInput").value;
   $("checkRead").disabled = pass || skipped;
   question.readPass = pass; question.readSkipped = skipped; question.voiceRecognized = spoken || "";
-  setFeedback($("readFeedback"), pass ? "good" : skipped ? "info" : "bad", skipped ? "음성 채점을 생략했습니다. 철자만 채점합니다." : pass ? `✓ 영어 읽기 확인${spoken ? " · 인식: " + spoken : ""}` : `✕ 인식된 말: ${spoken || "(없음)"} · 다시 말하거나 보호자에게 확인받으세요.`);
+  setFeedback($("readFeedback"), pass ? "good" : skipped ? "info" : "bad", skipped ? "말하기는 건너뛰었어요." : pass ? (self ? "✓ 소리 내어 읽었어요 (직접 확인)" : `✓ 영어 읽기 확인${spoken ? " · 인식: " + spoken : ""}`) : `✕ 인식된 말: ${spoken || "(없음)"} · 다시 말하거나 ‘소리 내어 읽었어요’를 누르세요.`);
   updateNext();
 }
 function showAnswer() {
@@ -523,9 +592,11 @@ function grade(input, origin = "type") {
   if (!value) { setFeedback($("answerFeedback"), "bad", "답을 먼저 입력하거나 말해 주세요."); return; }
   const pass = mode === "ko_en" ? normalizeSpelling(value) === normalizeSpelling(w.en) : correctKo(value, w);
   question.answerChecked = true; question.answerPass = pass;
-  setFeedback($("answerFeedback"), pass ? "good" : "bad", `${pass ? "✓ 정답!" : "✕ 오답"} ${origin === "speech" ? "음성 인식" : "입력"}: ${value}${!pass ? " · 아래 정답을 확인하세요." : ""}${!pass && mode === "ko_en" ? " · 틀린 위치: " + Array.from(w.en).map((c, i) => (normalizeSpelling(value)[i] === c ? "✓" : c)).join(" ") + (value.length > w.en.length ? " (추가 글자 있음)" : "") : ""}`);
+  setFeedback($("answerFeedback"), pass ? "good" : "bad", `${pass ? "✓ 정답!" : "✕ 아쉬워요"} · 내 답${origin === "speech" ? "(음성)" : ""}: ${value}${!pass ? " · 아래 정답을 확인하세요." : ""}${!pass && mode === "ko_en" ? " · 틀린 위치: " + Array.from(w.en).map((c, i) => (normalizeSpelling(value)[i] === c ? "✓" : c)).join(" ") + (value.length > w.en.length ? " (추가 글자 있음)" : "") : ""}`);
   $("answerInput").value = value; $("answerInput").disabled = true; $("check").disabled = true; $("micSpelling").disabled = true; $("penInput").disabled = true;
+  $("unknown").disabled = true;
   showAnswer(); updateNext();
+  if (!$("next").disabled) $("next").focus({ preventScroll: true });
 }
 function markUnknown() {
   if (!question.w || question.unknown) return;
@@ -533,13 +604,19 @@ function markUnknown() {
   question.unknown = true; question.answerChecked = true; question.answerPass = false; question.readChecked = true; question.readPass = false;
   $("unknown").disabled = true;
   ["answerInput", "check", "readInput", "checkRead", "micEnglish", "micKorean", "micSpelling", "penInput", "parentConfirm"].forEach((id) => ($(id).disabled = true));
-  setFeedback($("answerFeedback"), "info", "모르는 단어로 체크했어요. 오답으로 기록되고 복습에 들어가요.");
+  setFeedback($("answerFeedback"), "info", "모르는 단어로 표시했어요. 틀린 단어로 기록되고 복습에 들어가요.");
   showAnswer(); updateNext();
 }
 $("unknown").addEventListener("click", markUnknown);
 function updateNext() {
   $("next").disabled = !(question.answerChecked && (mode !== "read_meaning" || question.readChecked));
-  if (question.answerChecked && mode === "read_meaning" && !question.readChecked) setFeedback($("readFeedback"), "info", "뜻은 채점했어요. 영어 읽기 확인을 하면 다음으로 넘어가요.");
+  if (question.answerChecked && mode === "read_meaning" && !question.unknown) {
+    if (!question.readChecked) setFeedback($("readFeedback"), "info", question.answerPass ? "뜻은 맞았어요! 위에서 영어 읽기까지 확인하면 다음으로 넘어가요." : "위에서 영어 읽기도 확인해 주세요.");
+    else if (question.answerPass && !question.readPass) {
+      setFeedback($("readFeedback"), "bad", "뜻은 맞았어요! 읽기가 ✕라서 이대로 넘어가면 오답이에요. 다시 읽거나 ‘소리 내어 읽었어요’를 누르세요.");
+      $("next").textContent = "읽기 ✕ · 오답으로 넘어가기 →";
+    }
+  }
 }
 function stopRec() {
   const rec = recognition; recognition = null;
@@ -569,12 +646,16 @@ function speak() {
   if (v) u.voice = v;
   synth.speak(u);
 }
+function recordCurrentResult() {
+  const spokenCount = mode === "ko_en" ? !question.readChecked || question.readSkipped || question.readPass : question.readPass;
+  const pass = question.answerPass && (mode !== "read_meaning" || spokenCount);
+  results.push({ id: question.w.id, word: structuredClone(question.w), pass: question.unknown ? false : pass, unknown: question.unknown, ...(question.readSelf ? { self: true } : {}) });
+  question = { ...question, answerChecked: false };
+}
 function advance() {
   if (!sessionRunning || $("next").disabled) return;
   stopRec();
-  const spokenCount = mode === "ko_en" ? !question.readChecked || question.readSkipped || question.readPass : question.readPass;
-  const pass = question.answerPass && (mode !== "read_meaning" || spokenCount);
-  results.push({ id: question.w.id, word: structuredClone(question.w), pass: question.unknown ? false : pass, unknown: question.unknown });
+  recordCurrentResult();
   position++;
   if (position >= queue.length) { complete(); return; }
   saveSessionState();
@@ -584,25 +665,39 @@ function advance() {
 function finishRecords(partial) {
   saveSession(partial);
   const missed = results.filter((x) => !x.pass).map((x) => x.id);
-  if (sessionMeta.setId === activeSetId) {
-    lastMissed = partial ? [...new Set([...lastMissed.filter((id) => !results.some((x) => x.id === id)), ...missed])] : missed;
-    try { localStorage.setItem(cacheKey, JSON.stringify(lastMissed)); } catch (_) { setFeedback($("historyStatus"), "bad", "오답 저장 실패. JSON 백업을 이용하세요."); }
+  // 틀린 단어는 시험을 본 세트에 저장한다(지금 선택된 세트와 다를 수 있다).
+  if (sets.some((s) => s.id === sessionMeta.setId)) {
+    const setKey = "daily_vocab_missed_" + sessionMeta.setId;
+    let merged = missed;
+    if (partial) {
+      let previous = [];
+      try { previous = JSON.parse(localStorage.getItem(setKey) || "[]"); } catch {}
+      if (!Array.isArray(previous)) previous = [];
+      merged = [...new Set([...previous.filter((id) => !results.some((x) => x.id === id)), ...missed])];
+    }
+    try { localStorage.setItem(setKey, JSON.stringify(merged)); } catch (_) { setFeedback($("historyStatus"), "bad", "오답 저장 실패. JSON 백업을 이용하세요."); }
+    if (sessionMeta.setId === activeSetId) lastMissed = merged;
   }
   refreshReview();
   return missed;
 }
 function complete() {
+  accumulateActive();
   sessionRunning = false;
   setSettingsLocked(false);
-  clearSessionState();
   const missed = finishRecords(false);
+  clearSessionState();
+  showResult(missed, false);
+}
+function showResult(missed, partial) {
   const correct = results.filter((x) => x.pass).length;
   const pct = Math.round((correct / results.length) * 100);
-  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(sessionMeta.startedAt)) / 1000));
+  const seconds = Math.max(0, Math.round((sessionMeta.activeMs || 0) / 1000));
+  $("finishTitle").textContent = partial ? `여기까지 ${results.length}문제 풀었어요` : "시험 완료!";
   $("finalScore").textContent = `${correct} / ${results.length}`;
   $("finalDesc").textContent = missed.length ? `정답률 ${pct}% · 틀린 단어 ${missed.length}개를 한 번 더 복습해 봐요.` : "모든 단어 정답! 정말 잘했어요 🎉";
-  $("finalEmoji").textContent = pct === 100 ? "🏆" : pct >= 80 ? "🏅" : pct >= 50 ? "💪" : "🌱";
-  $("finalStats").textContent = `${sessionMeta.setName} · ${modeLabels[mode]} · ${sessionMeta.range} · ${Math.floor(seconds / 60)}분 ${seconds % 60}초`;
+  $("finalEmoji").textContent = partial ? "⏹" : pct === 100 ? "🏆" : pct >= 80 ? "🏅" : pct >= 50 ? "💪" : "🌱";
+  $("finalStats").textContent = `${sessionMeta.setName} · ${modeLabels[mode]} · ${sessionMeta.range}${partial ? " (중단)" : ""} · ${Math.floor(seconds / 60)}분 ${seconds % 60}초`;
   const list = $("missedList");
   list.textContent = "";
   for (const x of results.filter((r) => !r.pass)) {
@@ -611,8 +706,10 @@ function complete() {
     list.append(li);
   }
   $("missedBox").classList.toggle("hidden", !missed.length);
+  $("retryMissed").classList.toggle("hidden", !missed.length);
   $("retryMissed").disabled = !missed.length;
-  $("againSame").disabled = sessionMeta.rangeValue === "missed";
+  $("againSame").classList.toggle("primary", !missed.length);
+  $("againSame").disabled = sessionMeta.rangeValue === "missed" || sessionMeta.setId !== activeSetId;
   showView("finish");
 }
 
@@ -650,7 +747,7 @@ function historyFilterValue() {
 function filteredHistory() {
   const filter = historyFilterValue();
   if (filter === "all") return historyRecords;
-  return historyRecords.filter((r) => r.setId === filter || !sets.some((s) => s.id === r.setId));
+  return historyRecords.filter((r) => r.setId === filter);
 }
 function renderHistory() {
   const list = $("historyList");
@@ -662,7 +759,7 @@ function renderHistory() {
     const avg = Math.round(records.reduce((sum, r) => sum + recordScore(r).pct, 0) / records.length);
     $("historySummary").textContent = `시험 ${records.length}회 · 평균 ${avg}점 · 최근 ${recordScore(records[0]).pct}점`;
   } else $("historySummary").textContent = "";
-  if (!records.length) { list.textContent = "아직 완료한 시험이 없습니다."; return; }
+  if (!records.length) { list.textContent = "아직 본 시험이 없어요."; return; }
   for (const record of records) {
     const { correct, total, pct } = recordScore(record);
     const unknown = record.results.filter((x) => x.unknown).length;
@@ -692,10 +789,9 @@ function renderHistory() {
       retry.type = "button"; retry.className = "btn soft history-retry"; retry.disabled = sessionRunning; retry.textContent = "이 시험의 틀린 단어 다시 풀기";
       retry.addEventListener("click", () => {
         if (sessionRunning) return;
-        lastMissed = missed.map((x) => x.id);
+        const previousMode = mode;
         changeMode(record.mode);
-        refreshReview();
-        newSession(true, missed.map((x) => structuredClone(x.word)), record);
+        if (!newSession(true, missed.map((x) => structuredClone(x.word)), record)) changeMode(previousMode);
       });
       details.append(summary, words, retry);
       entry.append(details);
@@ -729,13 +825,17 @@ $("clearHistory").addEventListener("click", () => { if (confirm("전체 시험 �
 // ---- 버튼 연결 ----
 $("start").addEventListener("click", () => newSession());
 $("review").addEventListener("click", () => newSession(true));
-$("retryMissed").addEventListener("click", () => newSession(true));
+$("retryMissed").addEventListener("click", () => {
+  const missedWords = results.filter((x) => !x.pass).map((x) => structuredClone(x.word));
+  if (!missedWords.length || !sessionMeta) return;
+  newSession(true, missedWords, { setId: sessionMeta.setId, setName: sessionMeta.setName });
+});
 $("againSame").addEventListener("click", () => { if (!sessionMeta) return; newSession(false, null, null, { rangeValue: sessionMeta.rangeValue, rangeLabel: sessionMeta.range, shuffle: sessionMeta.shuffle }); });
 $("newTest").addEventListener("click", () => showView("home"));
 $("micEnglish").addEventListener("click", () => listen("en-US", "en"));
 $("micKorean").addEventListener("click", () => listen("ko-KR", "ko"));
 $("hear").addEventListener("click", speak);
-$("parentConfirm").addEventListener("click", () => setRead(mode !== "ko_en", "", mode === "ko_en"));
+$("parentConfirm").addEventListener("click", () => setRead(true, "", false, true));
 $("check").addEventListener("click", () => grade($("answerInput").value));
 $("checkRead").addEventListener("click", () => { stopRec(); const value = $("readInput").value.trim(); if (!value) { setFeedback($("readFeedback"), "bad", "영어 읽기 인식 결과를 먼저 입력하세요."); return; } setRead(correctEn(value, question.w), value); });
 $("readInput").addEventListener("keydown", (e) => { if (e.isComposing || e.keyCode === 229) return; if (e.key === "Enter") $("checkRead").click(); });
