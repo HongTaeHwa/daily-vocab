@@ -524,3 +524,5 @@ if ("serviceWorker" in navigator)
       ),
     );
 populateSets();
+
+if (window.markVocabAppReady) window.markVocabAppReady();
