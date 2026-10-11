@@ -22,7 +22,7 @@ h1{font-size:clamp(23px,5vw,32px);line-height:1.25;margin:8px 0 8px}header p{col
 .mode small{display:block;font-size:11px;font-weight:500;color:#526d90;margin-top:3px}
 .controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:17px}
 label{font-weight:700;color:#344b6b;font-size:13px}
-select,input[type=text]{font:inherit;background:#fff;border:1.5px solid #bfcee0;border-radius:12px;color:var(--ink)}
+select,input[type=text],input[type=password]{font:inherit;background:#fff;border:1.5px solid #bfcee0;border-radius:12px;color:var(--ink)}
 select{padding:10px 13px;min-width:180px}
 .check{display:flex;align-items:center;gap:7px;font-weight:600}.check input{accent-color:#245fcb;width:17px;height:17px}
 button{touch-action:manipulation}
@@ -65,6 +65,11 @@ footer{margin:18px 5px;color:#62738b;font-size:12px;line-height:1.7}
 @media(max-width:530px){main{padding:11px 10px 50px}header{padding:20px}.panel{padding:15px}.modes{gap:5px}.mode{padding:9px 4px;font-size:13px;min-height:72px}.mode small{font-size:10px}.word-box{padding:24px 12px}.btn{font-size:13px}.answerline{flex-wrap:wrap}.answerline input{flex-basis:100%}.answerline button{width:100%}}
 .history-entry{border-top:1px solid var(--border);padding:15px 0}.history-entry p{margin:5px 0}.history-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.history-score{font-size:22px;font-weight:800;color:var(--navy)}.history-meta{color:var(--muted);font-size:13px}.btn.unknown{background:#fff0cc;color:#765000;border:1px solid #e4c56f}.history-entry summary{cursor:pointer;color:var(--blue)}
 #answerInput{min-height:64px;font-size:22px} #spellingGuide{color:#526d90;font-size:13px}
+.ai-settings{margin-top:14px;border:1px solid var(--border);border-radius:14px;padding:12px 14px;background:#f8fbff}
+.ai-settings summary{cursor:pointer;font-weight:800;color:var(--navy);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ai-settings .controls{margin-top:10px}
+#apiKey{padding:10px 13px;width:100%;max-width:460px;min-width:0}
+#aiModel,#ocrEngine{max-width:100%}
 </style>
 </head>
 <body>
@@ -75,7 +80,7 @@ footer{margin:18px 5px;color:#62738b;font-size:12px;line-height:1.7}
   <p>영어 읽기 → 한국어 뜻 → 반대 방향 영단어 말하기와 스펠링 연습</p>
 </header>
 <section class="panel" aria-label="앱 상태">
-<div id="appStatus" role="status">버전 20261011-5 · 화면을 준비하는 중…</div>
+<div id="appStatus" role="status">버전 20261012-1 · 화면을 준비하는 중…</div>
 <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
 </section>
 <section class="panel" id="setsPanel">
@@ -84,11 +89,20 @@ footer{margin:18px 5px;color:#62738b;font-size:12px;line-height:1.7}
 <div class="actionbar"><button class="btn primary" id="createSet">새 세트 · 사진 업로드</button><button class="btn" id="editSet">세트 수정</button><button class="btn outline" id="deleteSet">세트 삭제</button><button class="btn" id="exportSets">전체 백업 JSON</button><label class="btn" for="importSets">JSON 가져오기</label><input id="importSets" type="file" accept="application/json" hidden><button class="btn hidden" id="installApp">홈 화면에 설치</button></div>
 <p class="history-meta">사진은 인식 중에만 사용하며 저장하지 않습니다. 단어와 기록은 이 브라우저에 저장됩니다. Chrome 메뉴 → 홈 화면에 추가로 설치할 수 있습니다. 설치와 마이크 권한은 별개입니다.</p>
 <div id="setStatus" role="status" class="feedback info"></div>
+<details id="aiSettings" class="ai-settings">
+<summary>🤖 AI 사진 인식 설정 (Claude API) <span id="aiKeyState" class="pill">키 없음</span></summary>
+<p class="history-meta">Anthropic 콘솔(console.anthropic.com)에서 만든 API 키를 저장하면 사진 속 단어를 AI(Claude)가 읽어 번호·영어·뜻·허용 답안까지 정리합니다. 키는 이 브라우저에만 저장되며 백업 JSON이나 다른 서버로 보내지 않습니다. AI 인식을 쓰면 사진이 Anthropic 서버로 전송되어 처리되며 저장되지 않습니다. 사용량만큼 요금이 들므로 콘솔에서 월 사용 한도를 꼭 설정하세요.</p>
+<div class="controls"><label for="apiKey">API 키</label> <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-api03-…"></div>
+<div class="controls"><label for="aiModel">모델</label> <select id="aiModel"><option value="claude-opus-5-5">Claude Opus 5.5 · 가장 정확 (기본)</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5 · 빠름</option><option value="claude-haiku-5-5">Claude Haiku 5.5 · 가장 저렴</option></select></div>
+<div class="actionbar"><button type="button" class="btn primary" id="saveApiKey">키 저장</button><button type="button" class="btn outline" id="testApiKey" disabled>연결 확인</button><button type="button" class="btn outline" id="clearApiKey" disabled>키 삭제</button></div>
+<div id="aiStatus" class="feedback info" role="status"></div>
+</details>
 <div id="editor" class="hidden">
 <p><label for="setName">날짜 / 교재 / DAY</label> <input id="setName" type="text" maxlength="120"></p>
 <label for="photos">사진 여러 장 선택</label> <input id="photos" type="file" accept="image/*" multiple>
 <label for="camera">사진 촬영</label> <input id="camera" type="file" accept="image/*" capture="environment">
-<p class="history-meta">최대 10장, 장당 10MB. 한글·영어 OCR은 기기에서 실행됩니다. 최초 실행에는 인터넷으로 이 사이트의 인식 도구와 언어 데이터를 내려받습니다. 다단·표·예문은 잘못 짝지어질 수 있습니다.</p>
+<p class="history-meta">최대 10장, 장당 10MB. <b>AI 인식(Claude)</b>은 API 키를 저장하면 사진을 Anthropic 서버로 보내 번호·영어·뜻·허용 답안을 정리해 줍니다. <b>기본 OCR</b>은 기기에서 실행되지만 다단·표·예문이 잘못 짝지어지거나 누락될 수 있습니다. 어느 방식이든 추출 결과를 원본과 비교해 수정한 뒤 저장하세요.</p>
+<div class="controls"><label for="ocrEngine">인식 방식</label> <select id="ocrEngine"><option value="claude">AI 인식 (Claude) · 정확함, API 키·인터넷 필요</option><option value="tesseract">기본 OCR · 기기 내 처리, 정확도 낮음</option></select></div>
 <div class="actionbar"><button class="btn" id="runOcr">사진에서 단어 추출 · 재시도</button><button class="btn" id="cancelOcr" disabled>인식 취소</button></div>
 <div id="ocrStatus" role="status"></div><div id="photoPreview"></div>
 <label for="wordDraft">추출 결과 / 직접 입력 (한 줄에 번호, 영어, 뜻, 허용 답안; 탭으로 구분)</label>
@@ -186,7 +200,7 @@ footer{margin:18px 5px;color:#62738b;font-size:12px;line-height:1.7}
 </main>
 <script>
 (function () {
-  var release = '20261011-5';
+  var release = '20261012-1';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -398,6 +412,6 @@ function exportHistory(){if(!historyRecords.length)return;const rows=[['완료 �
 $('exportHistory').addEventListener('click',exportHistory);$('clearHistory').addEventListener('click',()=>{if(confirm('전체 시험 기록을 삭제할까요? 삭제 전에 CSV로 내려받을 수 있습니다.'))persistHistory([])});renderHistory();
 $('start').addEventListener('click',()=>newSession());$('review').addEventListener('click',()=>newSession(true));$('retryMissed').addEventListener('click',()=>newSession(true));$('newTest').addEventListener('click',()=>{$('finish').style.display='none';$('quiz').style.display='none';$('settings').scrollIntoView({behavior:'smooth'})});$('backSettings').addEventListener('click',()=>{if(!confirm('진행 중인 시험을 끝내고 설정으로 돌아갈까요? 완료하지 않은 시험은 점수 기록에 저장되지 않습니다.'))return;stopRec();sessionRunning=false;setSettingsLocked(false);$('quiz').style.display='none';$('settings').scrollIntoView({behavior:'smooth'})});$('micEnglish').addEventListener('click',()=>listen('en-US','en'));$('micKorean').addEventListener('click',()=>listen('ko-KR','ko'));$('hear').addEventListener('click',speak);$('parentConfirm').addEventListener('click',()=>setRead(mode!=='ko_en','',mode==='ko_en'));$('check').addEventListener('click',()=>grade($('answerInput').value));$('checkRead').addEventListener('click',()=>{stopRec();const value=$('readInput').value.trim();if(!value){setFeedback($('readFeedback'),'bad','영어 읽기 인식 결과를 먼저 입력하세요.');return}setRead(correctEn(value,question.w),value)});$('readInput').addEventListener('keydown',e=>{if(e.isComposing||e.keyCode===229)return;if(e.key==='Enter')$('checkRead').click()});$('next').addEventListener('click',advance);$('answerInput').addEventListener('keydown',e=>{if(e.isComposing||e.keyCode===229)return;if(e.key==='Enter'){if(!$('check').disabled)grade($('answerInput').value);else if(!$('next').disabled)advance()}});
 </script>
-<script src="./sets.js?v=20261011-5" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.'"></script>
+<script src="./sets.js?v=20261012-1" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.'"></script>
 </body>
 </html>

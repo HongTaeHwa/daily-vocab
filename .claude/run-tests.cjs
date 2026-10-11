@@ -12,7 +12,7 @@ const fs = require("fs");
 
 const ROOT = path.resolve(__dirname, "..");
 const APP_URL = process.env.APP_URL || "http://127.0.0.1:8000/day04-vocab/";
-const FAST = ["browser", "pwa", "app-update", "ten-photos", "ocr-failures"];
+const FAST = ["browser", "pwa", "app-update", "ten-photos", "ocr-failures", "claude-ocr"];
 const ALL = [...FAST, "ocr"];
 
 const args = process.argv.slice(2);
