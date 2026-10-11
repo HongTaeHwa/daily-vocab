@@ -75,7 +75,7 @@ footer{margin:18px 5px;color:#62738b;font-size:12px;line-height:1.7}
   <p>영어 읽기 → 한국어 뜻 → 반대 방향 영단어 말하기와 스펠링 연습</p>
 </header>
 <section class="panel" aria-label="앱 상태">
-<div id="appStatus" role="status">버전 20261011-4 · 화면을 준비하는 중…</div>
+<div id="appStatus" role="status">버전 20261011-5 · 화면을 준비하는 중…</div>
 <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
 </section>
 <section class="panel" id="setsPanel">
@@ -88,7 +88,7 @@ footer{margin:18px 5px;color:#62738b;font-size:12px;line-height:1.7}
 <p><label for="setName">날짜 / 교재 / DAY</label> <input id="setName" type="text" maxlength="120"></p>
 <label for="photos">사진 여러 장 선택</label> <input id="photos" type="file" accept="image/*" multiple>
 <label for="camera">사진 촬영</label> <input id="camera" type="file" accept="image/*" capture="environment">
-<p class="history-meta">최대 8장, 장당 10MB. 한글·영어 OCR은 기기에서 실행됩니다. 최초 실행에는 인터넷으로 이 사이트의 인식 도구와 언어 데이터를 내려받습니다. 다단·표·예문은 잘못 짝지어질 수 있습니다.</p>
+<p class="history-meta">최대 10장, 장당 10MB. 한글·영어 OCR은 기기에서 실행됩니다. 최초 실행에는 인터넷으로 이 사이트의 인식 도구와 언어 데이터를 내려받습니다. 다단·표·예문은 잘못 짝지어질 수 있습니다.</p>
 <div class="actionbar"><button class="btn" id="runOcr">사진에서 단어 추출 · 재시도</button><button class="btn" id="cancelOcr" disabled>인식 취소</button></div>
 <div id="ocrStatus" role="status"></div><div id="photoPreview"></div>
 <label for="wordDraft">추출 결과 / 직접 입력 (한 줄에 번호, 영어, 뜻, 허용 답안; 탭으로 구분)</label>
@@ -186,7 +186,7 @@ footer{margin:18px 5px;color:#62738b;font-size:12px;line-height:1.7}
 </main>
 <script>
 (function () {
-  var release = '20261011-4';
+  var release = '20261011-5';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -398,6 +398,6 @@ function exportHistory(){if(!historyRecords.length)return;const rows=[['완료 �
 $('exportHistory').addEventListener('click',exportHistory);$('clearHistory').addEventListener('click',()=>{if(confirm('전체 시험 기록을 삭제할까요? 삭제 전에 CSV로 내려받을 수 있습니다.'))persistHistory([])});renderHistory();
 $('start').addEventListener('click',()=>newSession());$('review').addEventListener('click',()=>newSession(true));$('retryMissed').addEventListener('click',()=>newSession(true));$('newTest').addEventListener('click',()=>{$('finish').style.display='none';$('quiz').style.display='none';$('settings').scrollIntoView({behavior:'smooth'})});$('backSettings').addEventListener('click',()=>{if(!confirm('진행 중인 시험을 끝내고 설정으로 돌아갈까요? 완료하지 않은 시험은 점수 기록에 저장되지 않습니다.'))return;stopRec();sessionRunning=false;setSettingsLocked(false);$('quiz').style.display='none';$('settings').scrollIntoView({behavior:'smooth'})});$('micEnglish').addEventListener('click',()=>listen('en-US','en'));$('micKorean').addEventListener('click',()=>listen('ko-KR','ko'));$('hear').addEventListener('click',speak);$('parentConfirm').addEventListener('click',()=>setRead(mode!=='ko_en','',mode==='ko_en'));$('check').addEventListener('click',()=>grade($('answerInput').value));$('checkRead').addEventListener('click',()=>{stopRec();const value=$('readInput').value.trim();if(!value){setFeedback($('readFeedback'),'bad','영어 읽기 인식 결과를 먼저 입력하세요.');return}setRead(correctEn(value,question.w),value)});$('readInput').addEventListener('keydown',e=>{if(e.isComposing||e.keyCode===229)return;if(e.key==='Enter')$('checkRead').click()});$('next').addEventListener('click',advance);$('answerInput').addEventListener('keydown',e=>{if(e.isComposing||e.keyCode===229)return;if(e.key==='Enter'){if(!$('check').disabled)grade($('answerInput').value);else if(!$('next').disabled)advance()}});
 </script>
-<script src="./sets.js?v=20261011-4" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.'"></script>
+<script src="./sets.js?v=20261011-5" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.'"></script>
 </body>
 </html>
