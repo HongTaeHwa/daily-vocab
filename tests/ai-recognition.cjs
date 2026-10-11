@@ -99,6 +99,9 @@ const { chromium } = require("playwright");
   assert(!JSON.stringify(requests[0].headers).includes("x-api-key"), "no api key header from app");
 
   // 사진 2장 인식 → 초안 병합
+  await page.click("#tabHome");
+  await page.click("#resumeEditor");
+  assert(await page.isVisible("#editor"), "back to editor after settings");
   await page.setInputFiles("#photos", [
     { name: "p1.png", mimeType: "image/png", buffer: shot },
     { name: "p2.png", mimeType: "image/png", buffer: shot },
@@ -121,6 +124,7 @@ const { chromium } = require("playwright");
   assert(/^[A-Za-z0-9+/]+={0,2}$/.test(recog[0].body.image), "clean base64");
   assert((await page.textContent("#extractStatus")).includes("2/2장 완료"), "completion status");
   assert((await page.textContent("#draftWarnings")).includes("책과 비교"), "review reminder");
+  assert((await page.locator("#wordTableBody tr").count()) === 4, "table shows extracted rows");
 
   // 저장 → 시험
   await page.fill("#setName", "AI 세트");
@@ -160,6 +164,7 @@ const { chromium } = require("playwright");
   assert((await page.inputValue("#wordDraft")) === "", "cancel discards late result");
   assert(!(await page.isDisabled("#extractWords")), "button re-enabled after cancel");
   mode = "ok";
+  await page.click("#tabSettings");
   await page.evaluate(() => (document.getElementById("aiSettings").open = true));
   await page.click("#clearAi");
   assert((await page.textContent("#aiState")).includes("설정 필요"), "state after clear");

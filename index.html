@@ -2,216 +2,334 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="color-scheme" content="light" />
 <title>매일 영단어</title>
 <link rel="manifest" href="./manifest.webmanifest"><meta name="theme-color" content="#133263"><link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
 <style>
-:root{--navy:#133263;--blue:#265cc3;--pale:#edf4ff;--ink:#1d2a3d;--muted:#61728a;--border:#dbe5f1;--yellow:#ffdc72;--green:#168459;--red:#b83a48;--bg:#f5f8fd}
+:root{--navy:#133263;--blue:#265cc3;--blue-dark:#1d4ea8;--pale:#edf4ff;--ink:#1d2a3d;--muted:#61728a;--border:#dbe5f1;--yellow:#ffdc72;--green:#168459;--red:#b83a48;--bg:#f3f6fb;--card:#fff;--radius:18px;--tab-h:66px}
 *{box-sizing:border-box}
-body{margin:0;background:radial-gradient(circle at 100% 0%,#e6f0ff 0%,transparent 35%),var(--bg);font-family:system-ui,-apple-system,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:var(--ink);font-size:15px;line-height:1.55}
-main{max-width:820px;margin:0 auto;padding:18px 16px 70px}
-header{border-radius:22px;padding:23px 25px 22px;color:white;background:linear-gradient(118deg,#123466,#2359b0);box-shadow:0 12px 35px #1c4b9240}
-header .eyebrow{display:block;font-weight:700;color:#ffdf83;letter-spacing:.09em;font-size:12px}
-h1{font-size:clamp(23px,5vw,32px);line-height:1.25;margin:8px 0 8px}header p{color:#dfebff;margin:0;font-size:14px}
-.panel{margin-top:16px;background:#fff;border:1px solid var(--border);border-radius:20px;padding:20px;box-shadow:0 5px 21px #253e6610}
-.section-title{font-size:14px;color:var(--navy);font-weight:800;margin:0 0 10px}
-.modes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.mode{font:inherit;border:1.5px solid var(--border);padding:12px 8px;cursor:pointer;border-radius:13px;background:#f8fbff;color:var(--navy);font-weight:700;min-height:72px}
-.mode.active{background:#e7f0ff;border-color:#2466cf;box-shadow:inset 0 0 0 1px #2466cf}
-.mode small{display:block;font-size:11px;font-weight:500;color:#526d90;margin-top:3px}
-.controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:17px}
-label{font-weight:700;color:#344b6b;font-size:13px}
-select,input[type=text],input[type=password],input[type=url]{font:inherit;background:#fff;border:1.5px solid #bfcee0;border-radius:12px;color:var(--ink)}
-select{padding:10px 13px;min-width:180px}
-.check{display:flex;align-items:center;gap:7px;font-weight:600}.check input{accent-color:#245fcb;width:17px;height:17px}
-button{touch-action:manipulation}
-.btn{border:0;border-radius:12px;padding:11px 15px;font:inherit;font-weight:800;cursor:pointer;background:var(--pale);color:var(--blue);min-height:44px;transition:transform .12s,background .12s}
-.btn:active,.mode:active{transform:scale(.985)}
-.btn.primary{background:var(--blue);color:white}.btn.outline{background:white;border:1px solid #b8ccea;color:#194990}.btn.soft{background:#edf4ff;color:#2053a4}.btn:disabled{cursor:not-allowed;opacity:.45}
-.btn.mic{background:#e9f2ff;color:#124eab;border:1px solid #afcff8;flex:1;min-width:160px}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:var(--ink);font-size:16px;line-height:1.5}
+button{touch-action:manipulation;font:inherit}
+.topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 16px;background:linear-gradient(118deg,#123466,#2359b0);color:#fff;box-shadow:0 4px 16px #1c4b9230}
+.brand{font-weight:900;font-size:18px;letter-spacing:-.01em}
+.brand small{display:block;font-weight:500;font-size:12px;color:#dfebff}
+.icon-btn{border:0;background:#ffffff22;color:#fff;border-radius:12px;width:44px;height:44px;font-size:20px;cursor:pointer}
+.icon-btn:active{background:#ffffff44}
+main{max-width:760px;margin:0 auto;padding:14px 14px calc(var(--tab-h) + 24px)}
+.view{display:none}.view.active{display:block}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-top:14px;box-shadow:0 4px 18px #253e660d}
+.card.center{text-align:center}
+.section-title{font-size:16px;color:var(--navy);font-weight:900;margin:0 0 10px}
+h2.section-title{font-size:17px}
+.muted{color:var(--muted);font-size:14px;margin:6px 0}
+.row-between{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.link-btn{border:0;background:none;color:var(--blue);font-weight:800;cursor:pointer;padding:6px 4px}
+label{font-weight:700;color:#344b6b;font-size:14px}
+select,input[type=text],input[type=password],input[type=url],textarea{font:inherit;background:#fff;border:1.5px solid #bfcee0;border-radius:12px;color:var(--ink);min-height:46px}
+select{padding:10px 13px;width:100%;max-width:100%}
+input[type=text],input[type=password],input[type=url]{padding:10px 13px;width:100%}
+textarea{width:100%;padding:12px;font-size:14px}
+.controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}
+.controls select{flex:1;min-width:160px}
+.check{display:flex;align-items:center;gap:7px;font-weight:600}.check input{accent-color:#245fcb;width:20px;height:20px}
+.btn{border:0;border-radius:13px;padding:11px 16px;font-weight:800;cursor:pointer;background:var(--pale);color:var(--blue);min-height:48px;transition:transform .12s,background .12s;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.btn:active,.mode:active,.tab:active{transform:scale(.985)}
+.btn.primary{background:var(--blue);color:#fff}.btn.primary:active{background:var(--blue-dark)}
+.btn.outline{background:#fff;border:1.5px solid #b8ccea;color:#194990}.btn.soft{background:#edf4ff;color:#2053a4}
+.btn.small{min-height:40px;padding:8px 12px;font-size:14px;border-radius:11px}
+.btn.big{width:100%;min-height:60px;font-size:21px;margin-top:14px;border-radius:16px;box-shadow:0 8px 20px #265cc340}
+.btn:disabled{cursor:not-allowed;opacity:.45;box-shadow:none}
+.btn.mic{background:#e9f2ff;color:#124eab;border:1px solid #afcff8;flex:1;min-width:150px}
 .btn.mic.listening{background:#fee6e5;color:#a22d36;border-color:#e4a8a8;animation:pulse 1.1s infinite}
+.btn.unknown{background:#fff0cc;color:#765000;border:1px solid #e4c56f}
 @keyframes pulse{50%{filter:brightness(.95)}}
-.actionbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:15px}
-#quiz{display:none}
-.topline{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;color:#4e6785;font-size:13px;font-weight:700}
-.progress{height:9px;background:#e9eef7;border-radius:50px;overflow:hidden;margin:13px 0 21px}
-.progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,#2f67cb,#71adff);transition:width .25s}
-.word-box{background:linear-gradient(175deg,#f3f8ff,#fff);border:1px solid #d9e7fa;border-radius:20px;text-align:center;padding:29px 20px 25px}
-.word-box .number{display:inline-block;background:#ffdf89;padding:3px 10px;border-radius:8px;font-weight:900;color:#122f5d;font-size:13px}
-.word-box .word{font-size:clamp(34px,8vw,52px);color:#153d7a;font-weight:850;letter-spacing:-.025em;line-height:1.35;margin:10px 0 8px;overflow-wrap:anywhere}
-.word-box .meaning{font-size:clamp(23px,5vw,30px);font-weight:850;color:#153d7a;margin:14px 0 8px;line-height:1.4}
-.word-box .hint{color:#5a7393;font-weight:550;font-size:14px}
-.step{border-top:1px solid #e9eef6;padding-top:18px;margin-top:18px}
-.step h3{font-size:17px;color:#173762;margin:0 0 7px}
-.step p{margin:0 0 10px;color:#64758c;font-size:13px}
-.step-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:stretch}
-.answerline{display:flex;gap:8px;margin-top:10px}
-.answerline input{min-width:0;flex:1;padding:13px 13px;outline-color:#2265ca}
+.actionbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}
+.actionbar.center{justify-content:center}
+.pill{font-size:13px;border-radius:999px;background:#eef4ff;padding:4px 11px;color:#2c558f;font-weight:800}
+.hidden{display:none!important}
 .feedback{margin-top:10px;font-weight:700;font-size:14px;min-height:22px;overflow-wrap:anywhere}
 .feedback.good{color:var(--green)}.feedback.bad{color:var(--red)}.feedback.info{color:var(--muted)}
-.answer-reveal{border-radius:13px;background:#f0f7f5;border:1px solid #c5e6d9;padding:15px;display:none;margin-top:18px;line-height:1.7}
-.answer-reveal strong{color:#135a43}
+/* 홈 */
+.resume{background:linear-gradient(135deg,#fff8e1,#fff3c4);border-color:#f2d88a}
+.resume strong{font-size:16px;color:#6b4e00}
+.resume p{margin:4px 0 0;color:#7a5a06;font-size:14px}
+.rename{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.rename input{flex:1;min-width:180px}
+.modes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.mode{border:2px solid var(--border);padding:12px 6px;cursor:pointer;border-radius:14px;background:#f8fbff;color:var(--navy);font-weight:800;min-height:78px;font-size:15px}
+.mode.active{background:#e7f0ff;border-color:#2466cf;box-shadow:0 0 0 2px #2466cf33}
+.mode small{display:block;font-size:12px;font-weight:500;color:#526d90;margin-top:4px}
+.recent-row{display:flex;align-items:baseline;gap:10px;padding:8px 0;border-top:1px solid var(--border);font-size:14px;color:var(--muted)}
+.recent-row:first-child{border-top:0}
+.recent-row strong{font-size:18px;color:var(--navy);min-width:52px}
+/* 시험 */
+.quizbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:#4e6785;font-size:14px;font-weight:800;margin-top:14px}
+.quizbar .spacer{flex:1}
+.progress{height:10px;background:#e4eaf4;border-radius:50px;overflow:hidden;margin:10px 0 6px}
+.progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,#2f67cb,#71adff);transition:width .25s}
+.word-box{background:linear-gradient(175deg,#f3f8ff,#fff);border:1px solid #d9e7fa;border-radius:20px;text-align:center;padding:26px 18px 22px;margin-top:10px}
+.word-box .number{display:inline-block;background:#ffdf89;padding:3px 10px;border-radius:8px;font-weight:900;color:#122f5d;font-size:13px}
+.word-box .word{font-size:clamp(36px,9vw,56px);color:#153d7a;font-weight:850;letter-spacing:-.02em;line-height:1.3;margin:10px 0 6px;overflow-wrap:anywhere}
+.word-box .meaning{font-size:clamp(24px,5.5vw,32px);font-weight:850;color:#153d7a;margin:14px 0 8px;line-height:1.4}
+.word-box .hint{color:#5a7393;font-weight:550;font-size:14px}
+.step{border-top:1px solid #e9eef6;padding-top:16px;margin-top:16px}
+.step h3{font-size:17px;color:#173762;margin:0 0 4px}
+.step p{margin:0 0 10px;color:#64758c;font-size:14px}
+.step-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:stretch}
+.answerline{display:flex;gap:8px;margin-top:10px}
+.answerline input{min-width:0;flex:1;padding:12px;outline-color:#2265ca}
+#answerInput{min-height:60px;font-size:22px}
+.read-input{display:flex;gap:7px;flex-wrap:wrap;align-items:stretch;margin-top:10px}.read-input input{flex:1;min-width:0;padding:12px}.read-input button{flex-shrink:0}
+.answer-reveal{border-radius:13px;background:#f0f7f5;border:1px solid #c5e6d9;padding:14px;display:none;margin-top:16px;line-height:1.7}
+.answer-reveal strong{color:#135a43;font-size:18px}
 .answer-reveal .ipa{font-family:Arial,sans-serif;color:#53657c}
-.nextrow{display:flex;gap:9px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:16px}
-.mic-diagnosis{margin-top:9px;border-radius:12px;padding:12px;background:#eff5ff;border:1px solid #d4e3fc;font-weight:650;color:#26436e;font-size:13px;white-space:pre-line}.mic-diagnosis.warn{background:#fff3e7;border-color:#f3d2a4;color:#88541f}.mic-diagnosis.good{background:#e9f8ef;border-color:#b9e6cb;color:#176847}.kbd-hint{margin-top:10px;border:1px dashed #acc4e4;border-radius:11px;background:#f7faff;padding:11px;color:#2a4b79;font-size:13px}.kbd-hint b{color:#174d9e}.read-input{display:flex;gap:7px;flex-wrap:wrap;align-items:stretch;margin-top:10px}.read-input input{flex:1;min-width:0;padding:12px}.read-input button{flex-shrink:0}.notice{background:#fff9ea;color:#775d25;border:1px solid #f6e1a6;padding:11px 13px;border-radius:12px;font-size:12.5px;margin-top:16px}
-#finish{display:none;text-align:center;padding:40px 17px}
-#finish h2{color:var(--navy);font-size:28px;margin:8px 0}
-.bigscore{font-size:56px;color:#1c55a5;font-weight:900;line-height:1.2}
-#finish p{color:#526b8c}
-footer{margin:18px 5px;color:#62738b;font-size:12px;line-height:1.7}
-.pill{font-size:12px;border-radius:999px;background:#eef4ff;padding:3px 10px;color:#2c558f;font-weight:800}
-.hidden{display:none!important}
-@media(max-width:530px){main{padding:11px 10px 50px}header{padding:20px}.panel{padding:15px}.modes{gap:5px}.mode{padding:9px 4px;font-size:13px;min-height:72px}.mode small{font-size:10px}.word-box{padding:24px 12px}.btn{font-size:13px}.answerline{flex-wrap:wrap}.answerline input{flex-basis:100%}.answerline button{width:100%}}
-.history-entry{border-top:1px solid var(--border);padding:15px 0}.history-entry p{margin:5px 0}.history-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.history-score{font-size:22px;font-weight:800;color:var(--navy)}.history-meta{color:var(--muted);font-size:13px}.btn.unknown{background:#fff0cc;color:#765000;border:1px solid #e4c56f}.history-entry summary{cursor:pointer;color:var(--blue)}
-#answerInput{min-height:64px;font-size:22px} #spellingGuide{color:#526d90;font-size:13px}
-.ai-settings{margin-top:14px;border:1px solid var(--border);border-radius:14px;padding:12px 14px;background:#f8fbff}
-.ai-settings summary{cursor:pointer;font-weight:800;color:var(--navy);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.nextrow{display:flex;gap:9px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:16px}
+.nextrow .btn.primary{min-width:160px;min-height:56px;font-size:18px}
+details.help{margin-top:10px;border:1px dashed #acc4e4;border-radius:11px;background:#f7faff;padding:8px 12px;color:#2a4b79;font-size:13px}
+details.help summary{cursor:pointer;font-weight:800;color:#174d9e}
+details.help b{color:#174d9e}
+details.help ol{padding-left:18px;margin:8px 0}
+#spellingGuide{color:#526d90;font-size:13px}
+/* 결과 */
+.emoji{font-size:48px}
+.bigscore{font-size:58px;color:#1c55a5;font-weight:900;line-height:1.2}
+#finalDesc{color:#526b8c;font-size:16px}
+.missed{text-align:left;background:#fff7f0;border:1px solid #f3d2a4;border-radius:14px;padding:12px 16px;margin-top:14px}
+.missed h3{margin:0 0 6px;font-size:15px;color:#88541f}
+.missed ul{margin:0;padding-left:18px;color:#4e3a1c;font-size:15px;line-height:1.7}
+/* 편집기 */
+.photo-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.thumbs{display:flex;gap:8px;overflow-x:auto;padding:6px 0;scroll-snap-type:x mandatory}
+.thumb{height:96px;width:auto;border-radius:10px;border:1px solid var(--border);flex-shrink:0;scroll-snap-align:start}
+.table-wrap{overflow-x:auto;margin-top:8px;border:1px solid var(--border);border-radius:12px}
+#wordTable{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
+#wordTable th{position:sticky;top:0;background:#f3f7fd;color:#344b6b;font-size:13px;text-align:left;padding:8px;border-bottom:1px solid var(--border)}
+#wordTable td{padding:4px;border-bottom:1px solid #eef2f8;vertical-align:middle}
+#wordTable input.cell{min-height:40px;padding:6px 8px;border-radius:9px;font-size:15px;width:100%}
+#wordTable input.num{width:64px}#wordTable input.en{min-width:130px}#wordTable input.ko{min-width:170px}#wordTable input.alias{min-width:190px}#wordTable input.ipa{min-width:110px}
+#wordTable .row-delete{min-height:36px;padding:4px 10px}
+/* 기록 */
+.history-entry{border-top:1px solid var(--border);padding:14px 0}.history-entry p{margin:5px 0}.history-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.history-score{font-size:20px;font-weight:800;color:var(--navy)}.history-meta{color:var(--muted);font-size:13px}.history-entry summary{cursor:pointer;color:var(--blue);font-weight:700}
+/* 설정 */
+.ai-settings summary,.settings-section summary{cursor:pointer;font-weight:800;color:var(--navy);display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:16px}
 .ai-settings .controls{margin-top:10px}
-#aiServer,#aiPasscode{padding:10px 13px;width:100%;max-width:460px;min-width:0}
+#aiServer,#aiPasscode{max-width:460px;min-width:0}
+.mic-diagnosis{margin-top:9px;border-radius:12px;padding:12px;background:#eff5ff;border:1px solid #d4e3fc;font-weight:650;color:#26436e;font-size:13px;white-space:pre-line}.mic-diagnosis.warn{background:#fff3e7;border-color:#f3d2a4;color:#88541f}.mic-diagnosis.good{background:#e9f8ef;border-color:#b9e6cb;color:#176847}
+.kbd-hint{margin-top:10px;border:1px dashed #acc4e4;border-radius:11px;background:#f7faff;padding:11px;color:#2a4b79;font-size:13px}.kbd-hint b{color:#174d9e}
+/* 하단 탭 */
+.tabbar{position:fixed;left:0;right:0;bottom:0;height:var(--tab-h);display:flex;background:#fff;border-top:1px solid var(--border);z-index:30;padding-bottom:env(safe-area-inset-bottom)}
+.tab{flex:1;border:0;background:none;color:#6b7c93;font-weight:800;font-size:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer}
+.tab .ico{font-size:22px;line-height:1}
+.tab.active{color:var(--blue)}
+body.in-quiz .tabbar{display:none}
+body.in-quiz main{padding-bottom:30px}
+.global-notice{position:fixed;left:12px;right:12px;bottom:calc(var(--tab-h) + 10px);z-index:40;background:#fff3e7;border:1px solid #f3d2a4;color:#88541f;padding:10px 14px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px #0002}
+@media(max-width:530px){main{padding:10px 10px calc(var(--tab-h) + 20px)}.card{padding:14px}.modes{gap:5px}.mode{padding:10px 4px;font-size:13px;min-height:74px}.mode small{font-size:11px}.word-box{padding:22px 12px}.answerline{flex-wrap:wrap}.answerline input{flex-basis:100%}.answerline button{width:100%}.quizbar{font-size:13px}}
 </style>
 </head>
 <body>
-<main>
-<header>
-  <span class="eyebrow">매일 영단어 · 사진으로 만드는 학습 세트</span>
-  <h1>오늘의 단어를 모으고, 말하고, 기억해요</h1>
-  <p>영어 읽기 → 한국어 뜻 → 반대 방향 영단어 말하기와 스펠링 연습</p>
+<header class="topbar">
+  <div class="brand">📘 매일 영단어<small>사진으로 만드는 나만의 단어장</small></div>
+  <button type="button" class="icon-btn" id="openSettings" aria-label="설정">⚙️</button>
 </header>
-<section class="panel" aria-label="앱 상태">
-<div id="appStatus" role="status">버전 20261012-3 · 화면을 준비하는 중…</div>
-<div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
-</section>
-<section class="panel" id="setsPanel">
-<h2 class="section-title">날짜별 학습 세트</h2>
-<label for="setSelect">학습할 세트</label> <select id="setSelect"></select>
-<div class="actionbar"><button class="btn primary" id="createSet">새 세트 · 사진 업로드</button><button class="btn" id="editSet">세트 수정</button><button class="btn outline" id="deleteSet">세트 삭제</button><button class="btn" id="exportSets">전체 백업 JSON</button><label class="btn" for="importSets">JSON 가져오기</label><input id="importSets" type="file" accept="application/json" hidden><button class="btn hidden" id="installApp">홈 화면에 설치</button></div>
-<p class="history-meta">사진은 AI가 읽는 동안만 쓰고 저장하지 않습니다. 단어와 기록은 이 브라우저에 저장됩니다. Chrome 메뉴 → 홈 화면에 추가로 설치할 수 있습니다. 설치와 마이크 권한은 별개입니다.</p>
-<div id="setStatus" role="status" class="feedback info"></div>
-<details id="aiSettings" class="ai-settings">
-<summary>🔒 보호자 설정 · AI 연결 <span id="aiState" class="pill">설정 필요</span></summary>
-<p class="history-meta">보호자가 한 번만 설정합니다. 사진 속 단어는 가족용 AI 서버(Cloudflare Worker)를 거쳐 Claude가 읽어 줍니다. 서버 주소와 접속 코드는 이 기기에만 저장되며 백업에 포함되지 않습니다. 사진은 읽는 동안만 전송되고 저장되지 않습니다. 서버 만드는 방법은 저장소의 <code>worker/README.md</code>를 보세요.</p>
-<div class="controls"><label for="aiServer">AI 서버 주소</label> <input id="aiServer" type="url" autocomplete="off" spellcheck="false" placeholder="https://daily-vocab-ai.계정.workers.dev"></div>
-<div class="controls"><label for="aiPasscode">접속 코드</label> <input id="aiPasscode" type="password" autocomplete="off" spellcheck="false" placeholder="보호자가 정한 코드"></div>
-<div class="actionbar"><button type="button" class="btn primary" id="saveAi">저장</button><button type="button" class="btn outline" id="testAi" disabled>연결 확인</button><button type="button" class="btn outline" id="clearAi" disabled>설정 삭제</button></div>
-<div id="aiStatus" class="feedback info" role="status"></div>
-</details>
-<div id="editor" class="hidden">
-<p><label for="setName">날짜 / 교재 / DAY</label> <input id="setName" type="text" maxlength="120"></p>
-<label for="photos">사진 여러 장 선택</label> <input id="photos" type="file" accept="image/*" multiple>
-<label for="camera">사진 촬영</label> <input id="camera" type="file" accept="image/*" capture="environment">
-<p class="history-meta">최대 10장, 장당 10MB. 사진을 올리고 ‘사진에서 단어 가져오기’를 누르면 AI가 번호·영어·뜻·허용 답안을 정리해 줍니다. 결과를 책과 비교해 고친 뒤 확인란을 체크하고 저장하세요.</p>
-<div class="actionbar"><button type="button" class="btn primary" id="extractWords">✨ 사진에서 단어 가져오기</button><button type="button" class="btn outline" id="cancelExtract" disabled>취소</button></div>
-<div id="extractStatus" role="status" class="feedback info"></div><div id="photoPreview"></div>
-<label for="wordDraft">가져온 단어 / 직접 입력 (한 줄에 번호, 영어, 뜻, 허용 답안, 발음; 탭으로 구분)</label>
-<textarea id="wordDraft" rows="10" placeholder="1&#9;apple&#9;사과&#9;사과|사과 열매" style="width:100%;font:inherit;padding:12px"></textarea>
-<p id="draftWarnings" role="status"></p><label><input id="confirmed" type="checkbox"> 원본과 비교하여 단어·뜻·누락·중복을 확인했습니다</label>
-<div class="actionbar"><button class="btn primary" id="saveSet">확인한 세트 저장</button><button class="btn" id="closeEditor">편집 닫기</button></div>
-</div></section>
-<section class="panel" id="micPanel">
- <h2 class="section-title">🎤 음성 인식 점검 · 휴대폰용 안내</h2>
- <div id="micEnvironment" class="mic-diagnosis" role="status">현재 브라우저의 마이크 사용 가능 여부를 확인하는 중…</div>
- <div class="actionbar">
-  <button type="button" class="btn primary" id="micPermit">① 마이크 사용 권한 요청</button>
-  <button type="button" class="btn outline" id="micTest">② 음성 인식 시험</button>
- </div>
- <div id="micPermitResult" class="feedback info" aria-live="polite">버튼을 누르면 브라우저가 마이크 권한을 요청합니다. 권한은 사용자가 직접 허용해야 합니다.</div>
- <div id="micTestResult" class="feedback info" aria-live="polite"></div>
- <div class="actionbar"><button type="button" class="btn outline" id="micStop" disabled>음성 인식 중지</button></div>
- <details class="kbd-hint"><summary><b>Android 태블릿에서 마이크가 안 될 때</b></summary><ol><li>다운로드 파일이나 앱 안 미리보기 대신 이 HTTPS 주소를 Chrome에서 직접 여세요.</li><li>① 권한 요청 → 브라우저에서 허용 → ② 음성 인식 시험 순서로 누르세요. 권한 허용과 음성 인식 서비스의 작동 여부는 별개입니다.</li><li>Chrome → 설정 → 사이트 설정 → 마이크에서 이 사이트의 차단을 해제하세요.</li><li>Android 설정 → 애플리케이션 → Chrome → 권한 → 마이크를 허용하세요. 기기의 전체 마이크 접근 스위치도 확인하세요. 메뉴 이름은 기기마다 다릅니다.</li><li>네트워크 오류라면 인터넷 연결을 확인하세요. 권한이 허용되어도 브라우저·기기·관리자 정책에 따라 음성 인식을 사용할 수 없을 수 있습니다.</li></ol><p>음성 인식 과정에서 음성이 브라우저 제공업체의 서버로 전송될 수 있습니다. 이 앱은 음성을 자체 저장하거나 업로드하지 않습니다.</p></details>
- <div class="kbd-hint"><b>바로 사용 가능한 대안:</b> 단어를 풀 때 입력칸을 터치 → 휴대폰 <b>키보드의 🎤 버튼</b> → 영어 단어나 한국어 뜻을 말하세요. 음성으로 입력된 글자를 앱이 채점합니다. 키보드의 🎤는 앱 안의 파란 마이크 버튼과 다른 기능입니다.</div>
- <div class="kbd-hint"><b>중요:</b> 다운로드한 <code>file://</code> 파일은 권한을 허용해도 웹 음성 인식이 차단될 수 있습니다. 음성 자동 채점을 원하면 <b>HTTPS 웹주소에 게시</b>한 뒤 Chrome에서 열어야 합니다. 마이크 권한은 보안상 웹앱이 자동 승인할 수 없습니다.</div>
-</section>
-<section class="panel" id="settings">
-  <h2 class="section-title">① 테스트 방식 선택</h2>
-  <div class="modes" role="group" aria-label="테스트 방식">
-   <button type="button" class="mode active" data-mode="read_meaning" aria-pressed="true">읽기 + 뜻 <small>영어 읽기·뜻 말하기</small></button>
-   <button type="button" class="mode" data-mode="en_ko" aria-pressed="false">영어 → 한글 <small>한국어 뜻 정답 체크</small></button>
-   <button type="button" class="mode" data-mode="ko_en" aria-pressed="false">한글 → 영어 <small>철자 말하기·손글씨 테스트</small></button>
+<main>
+
+<!-- 홈 -->
+<section class="view active" id="home" aria-label="홈">
+  <div id="resumeCard" class="card resume hidden">
+    <strong>⏸ 쉬고 있던 시험이 있어요</strong>
+    <p id="resumeText"></p>
+    <div class="actionbar"><button type="button" class="btn primary" id="resumeQuiz">▶ 이어서 하기</button><button type="button" class="btn outline" id="discardSession">지우기</button></div>
   </div>
-  <h2 class="section-title" style="margin-top:22px">② 단어 범위 선택</h2>
-  <div class="controls">
-   <select id="range" aria-label="단어 범위">
-    <option value="all">전체 40단어 (121~160)</option>
-    <option value="121">121~130 (10단어)</option>
-    <option value="131">131~140 (10단어)</option>
-    <option value="141">141~150 (10단어)</option>
-    <option value="151">151~160 (10단어)</option>
-   </select>
-   <label class="check"><input type="checkbox" id="shuffle" checked /> 순서 섞기</label>
+  <div class="card">
+    <h2 class="section-title">📚 학습할 세트</h2>
+    <select id="setSelect" aria-label="학습할 세트"></select>
+    <p id="setSummary" class="muted"></p>
+    <div class="actionbar">
+      <button type="button" class="btn primary" id="createSet">➕ 새 세트 (사진)</button>
+      <button type="button" class="btn" id="editSet">단어 보기·수정</button>
+      <button type="button" class="btn" id="renameSet">✏️ 이름 바꾸기</button>
+      <button type="button" class="btn outline" id="deleteSet">삭제</button>
+      <button type="button" class="btn soft hidden" id="resumeEditor">✏️ 편집 중인 세트로 돌아가기</button>
+    </div>
+    <div id="renameBox" class="rename hidden"><input id="renameInput" type="text" maxlength="120" aria-label="새 세트 이름" placeholder="새 이름"><button type="button" class="btn primary" id="renameSave">저장</button><button type="button" class="btn outline" id="renameCancel">취소</button></div>
+    <div id="setStatus" role="status" class="feedback info"></div>
   </div>
-  <div class="actionbar">
-    <button type="button" class="btn primary" id="start">시험 시작</button>
-    <button type="button" class="btn outline" id="review" disabled>틀린 단어 다시 풀기</button>
-    <span class="pill" id="reviewCount">틀린 단어 기록 없음</span>
+  <div class="card">
+    <h2 class="section-title">🎯 어떻게 풀까요?</h2>
+    <div class="modes" role="group" aria-label="시험 방식">
+      <button type="button" class="mode active" data-mode="read_meaning" aria-pressed="true">읽기 + 뜻<small>영어 읽고 뜻 말하기</small></button>
+      <button type="button" class="mode" data-mode="en_ko" aria-pressed="false">영어 → 한글<small>뜻 맞히기</small></button>
+      <button type="button" class="mode" data-mode="ko_en" aria-pressed="false">한글 → 영어<small>스펠링 쓰기</small></button>
+    </div>
+    <div class="controls">
+      <label for="range">범위</label><select id="range" aria-label="단어 범위"></select>
+      <label class="check"><input type="checkbox" id="shuffle" checked /> 순서 섞기</label>
+    </div>
+    <button type="button" class="btn primary big" id="start">▶ 시작!</button>
+    <div class="actionbar"><button type="button" class="btn outline" id="review" disabled>틀린 단어 다시 풀기</button><span class="pill" id="reviewCount">틀린 단어 없음</span></div>
+  </div>
+  <div class="card">
+    <div class="row-between"><h2 class="section-title" style="margin:0">🕒 최근 결과</h2><button type="button" class="link-btn" id="seeHistory">전체 보기 →</button></div>
+    <div id="recentResults" class="recent"></div>
   </div>
 </section>
-<section class="panel" id="quiz" aria-label="단어 시험">
-  <p class="history-meta" id="sessionScope"></p>
-  <div class="topline"><span id="progressText">1 / 40</span><span id="scoreText">정답 0 · 오답 0</span></div>
+
+<!-- 시험 -->
+<section class="view" id="quiz" aria-label="단어 시험">
+  <div class="quizbar"><span id="progressText">1 / 40</span><span>·</span><span id="scoreText">정답 0 · 오답 0</span><span class="spacer"></span><button type="button" class="btn outline small" id="pauseQuiz">⏸ 쉬기</button><button type="button" class="btn outline small" id="backSettings">그만하기</button></div>
   <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+  <p class="muted" id="sessionScope" style="margin:0"></p>
   <div class="word-box" id="promptBox"><span class="number" id="wordNum">121</span><div class="word" id="promptWord">authority</div><div class="hint" id="promptHint">먼저 영어로 읽어 보세요</div></div>
-  <div id="readStep" class="step">
-    <h3 id="readTitle">1. 영어 단어 읽기</h3>
-    <p id="readInstruction">마이크를 누른 뒤 영어 단어를 소리 내어 읽으세요. 인식된 글자를 수정한 뒤 읽기 채점을 눌러 주세요.</p>
+  <div class="card" style="margin-top:12px">
+  <div id="readStep" class="step" style="border-top:0;padding-top:0;margin-top:0">
+    <h3 id="readTitle">1. 영어로 읽기</h3>
+    <p id="readInstruction">마이크를 누르고 영어 단어를 읽어 보세요.</p>
     <div class="step-actions">
      <button type="button" class="btn mic" id="micEnglish">🎙️ 영어로 말하기</button>
-     <button type="button" class="btn outline" id="hear">🔊 표준 발음 듣기</button>
-     <button type="button" class="btn soft" id="parentConfirm">보호자가 읽기 확인</button>
+     <button type="button" class="btn outline" id="hear">🔊 발음 듣기</button>
+     <button type="button" class="btn soft" id="parentConfirm">보호자 확인</button>
     </div>
-    <div class="read-input"><input type="text" id="readInput" lang="en" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="키보드 🎤를 누르고 영어 단어 말하기" aria-label="영어 읽기 인식 결과 입력" /><button type="button" class="btn outline" id="checkRead">읽기 채점</button></div>
-    <div class="kbd-hint">파란 마이크가 안 되나요? 위 입력칸을 터치하고 <b>휴대폰 키보드 🎤</b>로 영어 단어를 말한 뒤 <b>읽기 채점</b>을 누르세요.</div>
+    <div class="read-input"><input type="text" id="readInput" lang="en" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="인식된 영어 (키보드 🎤도 가능)" aria-label="영어 읽기 인식 결과 입력" /><button type="button" class="btn outline" id="checkRead">읽기 채점</button></div>
     <div id="readFeedback" class="feedback info" aria-live="polite">아직 읽기 확인 전</div>
+    <details class="help"><summary>마이크가 안 될 때</summary>위 입력칸을 터치하고 <b>휴대폰 키보드의 🎤</b>로 영어 단어를 말한 뒤 <b>읽기 채점</b>을 누르세요. 음성이 계속 안 되면 설정 → 마이크 점검을 보거나 <b>보호자 확인</b>을 눌러 넘어가세요.</details>
   </div>
   <div id="answerStep" class="step">
     <h3 id="answerTitle">2. 한국어 뜻 말하기</h3>
-    <p id="answerInstruction">음성으로 입력한 글자를 확인·수정한 뒤 정답 확인을 누르세요.</p>
+    <p id="answerInstruction">말하거나 입력한 뒤 정답 확인을 누르세요.</p>
     <div class="step-actions" id="micKoArea"><button type="button" class="btn mic" id="micKorean">🎙️ 한국어 뜻 말하기</button></div>
-    <div class="kbd-hint" id="answerVoiceGuide">한국어 뜻을 말하려면 아래 입력칸을 누른 다음 <b>키보드 🎤</b>를 누르세요. 글자가 입력되면 <b>정답 확인</b>을 누르세요.</div>
     <div class="step-actions hidden" id="spellingArea"><button type="button" class="btn mic" id="micSpelling">🎙️ 알파벳으로 철자 말하기</button></div>
-    <p class="hidden" id="spellingGuide">단어를 통째로 읽지 말고 알파벳 이름을 차례로 말하세요. 예: C, A, T → cat. 변환된 철자를 확인·수정한 뒤 정답 확인을 누르세요.</p>
+    <p class="hidden" id="spellingGuide">알파벳 이름을 차례로 말하세요. 예: C, A, T → cat. 변환된 철자를 확인·수정한 뒤 정답 확인을 누르세요.</p>
     <div class="answerline"><input type="text" id="answerInput" inputmode="text" enterkeyhint="done" lang="ko" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="한국어 뜻 입력" aria-label="정답 입력" /><button type="button" class="btn primary" id="check">정답 확인</button></div>
-    <div class="actionbar"><button type="button" class="btn outline" id="penInput">✍️ S펜·키보드로 입력</button></div>
-    <details class="kbd-hint"><summary><b>갤럭시 S펜 손글씨 입력 방법</b></summary><ol><li>‘S펜·키보드로 입력’을 누르거나 정답 입력칸을 S펜으로 터치하세요.</li><li>삼성 키보드 도구 모음의 손글씨 아이콘(없으면 ⋯ → 손글씨)을 선택하세요.</li><li>한글 → 영어 시험은 키보드 언어를 English로 바꾸고, S펜으로 영어 철자를 쓰세요. 한국어 뜻은 한국어로 씁니다.</li><li>삼성 키보드가 변환한 글자가 정답 입력칸에 들어오면 확인·수정하고 ‘정답 확인’을 누르세요.</li></ol><p>지원 기기에서는 설정 → 유용한 기능 → S펜 → S펜으로 텍스트 입력을 켜서 입력칸에 바로 쓸 수도 있습니다. 메뉴·지원 여부는 기기와 One UI 버전에 따라 다릅니다. 손글씨 인식은 기기의 삼성 키보드가 처리하며, 웹앱이 손글씨 모드를 자동으로 켜지는 못합니다.</p></details>
+    <div class="actionbar"><button type="button" class="btn outline small" id="penInput">✍️ S펜·키보드로 입력</button></div>
+    <details class="help" id="answerVoiceGuide"><summary>말하기·손글씨 도움말</summary>한국어 뜻을 말하려면 입력칸을 누른 다음 <b>키보드 🎤</b>를 누르세요. 갤럭시 S펜은 삼성 키보드의 손글씨 모드(없으면 ⋯ → 손글씨)로 입력칸에 바로 쓸 수 있어요. 한글 → 영어 시험은 키보드 언어를 English로 바꾸세요.</details>
     <div id="answerFeedback" class="feedback info" aria-live="polite">답을 입력하거나 마이크로 말해 보세요.</div>
   </div>
   <div id="answerReveal" class="answer-reveal"></div>
-  <div class="actionbar"><button type="button" class="btn unknown" id="unknown">모름 · 정답 보기</button><span class="history-meta">모르는 단어는 오답으로 기록하고 복습할 수 있어요.</span></div>
-  <div class="nextrow"><button type="button" class="btn outline" id="backSettings">설정으로</button><button type="button" class="btn primary" id="next" disabled>다음 문제 →</button></div>
+  <div class="nextrow"><button type="button" class="btn unknown" id="unknown">모름 · 정답 보기</button><button type="button" class="btn primary" id="next" disabled>다음 →</button></div>
+  </div>
 </section>
-<section class="panel" id="finish" aria-live="polite">
-  <div style="font-size:36px">🏅</div>
-  <h2>테스트 완료!</h2>
-  <div class="bigscore" id="finalScore">0 / 40</div>
-  <p id="finalDesc">수고했어요!</p>
-  <div class="actionbar" style="justify-content:center"><button type="button" class="btn primary" id="retryMissed">틀린 문제 다시 도전</button><button type="button" class="btn outline" id="newTest">새 시험 시작</button></div>
+
+<!-- 결과 -->
+<section class="view" id="finish" aria-live="polite" aria-label="시험 결과">
+  <div class="card center">
+    <div class="emoji" id="finalEmoji">🏅</div>
+    <h2 style="color:var(--navy);margin:6px 0">시험 완료!</h2>
+    <div class="bigscore" id="finalScore">0 / 40</div>
+    <p id="finalDesc">수고했어요!</p>
+    <p id="finalStats" class="muted"></p>
+    <div id="missedBox" class="missed hidden"><h3>다시 볼 단어</h3><ul id="missedList"></ul></div>
+    <div class="actionbar center"><button type="button" class="btn primary" id="retryMissed">틀린 단어 다시 풀기</button><button type="button" class="btn" id="againSame">같은 범위 다시</button><button type="button" class="btn outline" id="newTest">홈으로</button></div>
+  </div>
 </section>
-<section class="panel" id="historyPanel" aria-label="시험 점수 기록">
- <h2 class="section-title">📚 시험 점수 기록</h2>
- <p class="history-meta">완료한 시험의 날짜, 점수, 모르는 단어를 이 브라우저에 저장합니다. 기기 간 공유는 되지 않으며 브라우저 데이터를 지우면 기록도 없어집니다.</p>
- <div class="actionbar"><button type="button" class="btn outline" id="exportHistory" disabled>기록 내려받기 (CSV)</button><button type="button" class="btn outline" id="clearHistory" disabled>전체 기록 삭제</button></div>
- <div id="historyStatus" class="feedback info" role="status"></div>
- <div id="historyList"></div>
+
+<!-- 세트 편집 -->
+<section class="view" id="editor" aria-label="세트 편집">
+  <div class="card">
+    <h2 class="section-title" id="editorTitle">➕ 새 세트 만들기</h2>
+    <label for="setName">세트 이름</label>
+    <input id="setName" type="text" maxlength="120" placeholder="예: DAY 05 (161~200)">
+    <div class="photo-row">
+      <label class="btn" for="photos">🖼️ 사진 고르기</label><input id="photos" type="file" accept="image/*" multiple hidden>
+      <label class="btn" for="camera">📷 촬영</label><input id="camera" type="file" accept="image/*" capture="environment" hidden>
+      <button type="button" class="btn primary" id="extractWords">✨ 사진에서 단어 가져오기</button>
+      <button type="button" class="btn outline" id="cancelExtract" disabled>취소</button>
+    </div>
+    <p class="muted">최대 10장, 장당 10MB. AI가 번호·영어·뜻·발음·허용 답안을 정리해 줍니다. 책과 비교해 고친 뒤 저장하세요.</p>
+    <div id="extractStatus" role="status" class="feedback info"></div>
+    <div id="photoPreview" class="thumbs"></div>
+    <div class="row-between" style="margin-top:12px"><h3 style="margin:0;font-size:16px;color:var(--navy)">단어 <span id="wordCount" class="pill">단어 없음</span></h3><div class="actionbar" style="margin:0"><button type="button" class="btn small" id="addRow">＋ 단어 추가</button><button type="button" class="btn outline small" id="toggleDraftText">텍스트로 편집</button></div></div>
+    <div id="wordTableWrap" class="table-wrap"><table id="wordTable"><thead><tr><th>번호</th><th>영어</th><th>뜻</th><th>허용 답안</th><th>발음</th><th></th></tr></thead><tbody id="wordTableBody"></tbody></table></div>
+    <textarea id="wordDraft" class="hidden" rows="10" aria-label="단어 텍스트 (한 줄에 번호, 영어, 뜻, 허용 답안, 발음; 탭으로 구분)" placeholder="1&#9;apple&#9;사과&#9;사과|사과 열매"></textarea>
+    <p id="draftWarnings" role="status" class="feedback bad"></p>
+    <label class="check"><input id="confirmed" type="checkbox"> 책과 비교해서 확인했어요</label>
+    <div class="actionbar"><button type="button" class="btn primary" id="saveSet" style="min-width:140px;min-height:54px;font-size:17px">저장</button><button type="button" class="btn outline" id="closeEditor">닫기</button></div>
+  </div>
 </section>
-<div class="notice" role="note">🎙️ 음성 기능은 HTTPS 웹주소의 Chrome 등 지원 브라우저와 마이크 권한이 필요합니다. 파일로 열 때는 휴대폰 키보드 🎤를 이용하세요. 음성 인식이 되지 않으면 입력창으로 뜻과 철자를 채점할 수 있습니다. <strong>영어 읽기 판정은 음성 인식 텍스트 기준</strong>으로, 전문적인 발음 정확도 평가는 아닙니다.</div>
-<footer>점수 기록과 오답 기록은 사용 중인 브라우저에 저장합니다. 정답 비교는 책의 대표 뜻과 자주 쓰는 유의 표현을 사용합니다. 한글 발음은 참고용이며 실제 발음은 ‘표준 발음 듣기’를 이용하세요. 오답 기록은 사용 중인 브라우저에만 저장합니다. 브라우저의 음성 인식 기능은 서비스 제공업체의 음성 처리 방식을 따를 수 있습니다.</footer>
+
+<!-- 기록 -->
+<section class="view" id="history" aria-label="시험 기록">
+  <div class="card">
+    <h2 class="section-title">📚 시험 기록</h2>
+    <div class="controls"><label for="historyFilter">세트</label><select id="historyFilter" aria-label="기록 세트 선택"></select></div>
+    <p id="historySummary" class="muted"></p>
+    <div class="actionbar"><button type="button" class="btn outline" id="exportHistory" disabled>CSV 내려받기</button><button type="button" class="btn outline" id="clearHistory" disabled>전체 삭제</button></div>
+    <div id="historyStatus" class="feedback info" role="status"></div>
+    <div id="historyList"></div>
+    <p class="muted">기록은 이 기기의 브라우저에만 저장돼요. 브라우저 데이터를 지우면 기록도 사라지니 설정 → 백업을 이용하세요.</p>
+  </div>
+</section>
+
+<!-- 설정 -->
+<section class="view" id="settings" aria-label="설정">
+  <div class="card">
+    <details id="aiSettings" class="ai-settings">
+      <summary>🔒 보호자 설정 · AI 연결 <span id="aiState" class="pill">설정 필요</span></summary>
+      <p class="muted">보호자가 한 번만 설정합니다. 사진 속 단어는 가족용 AI 서버(Cloudflare Worker)를 거쳐 Claude가 읽어 줍니다. 서버 주소와 접속 코드는 이 기기에만 저장되며 백업에 포함되지 않습니다. 사진은 읽는 동안만 전송되고 저장되지 않습니다. 서버 만드는 방법은 저장소의 <code>worker/README.md</code>를 보세요.</p>
+      <div class="controls"><label for="aiServer">AI 서버 주소</label> <input id="aiServer" type="url" autocomplete="off" spellcheck="false" placeholder="https://daily-vocab-ai.계정.workers.dev"></div>
+      <div class="controls"><label for="aiPasscode">접속 코드</label> <input id="aiPasscode" type="password" autocomplete="off" spellcheck="false" placeholder="보호자가 정한 코드"></div>
+      <div class="actionbar"><button type="button" class="btn primary" id="saveAi">저장</button><button type="button" class="btn outline" id="testAi" disabled>연결 확인</button><button type="button" class="btn outline" id="clearAi" disabled>설정 삭제</button></div>
+      <div id="aiStatus" class="feedback info" role="status"></div>
+    </details>
+  </div>
+  <div class="card">
+    <details id="micPanel" class="settings-section">
+      <summary>🎤 마이크·음성 인식 점검</summary>
+      <div id="micEnvironment" class="mic-diagnosis" role="status">현재 브라우저의 마이크 사용 가능 여부를 확인하는 중…</div>
+      <div class="actionbar">
+        <button type="button" class="btn primary" id="micPermit">① 마이크 권한 요청</button>
+        <button type="button" class="btn outline" id="micTest">② 음성 인식 시험</button>
+        <button type="button" class="btn outline" id="micStop" disabled>중지</button>
+      </div>
+      <div id="micPermitResult" class="feedback info" aria-live="polite">버튼을 누르면 브라우저가 마이크 권한을 요청합니다. 권한은 사용자가 직접 허용해야 합니다.</div>
+      <div id="micTestResult" class="feedback info" aria-live="polite"></div>
+      <details class="kbd-hint"><summary><b>Android 태블릿에서 마이크가 안 될 때</b></summary><ol><li>다운로드 파일이나 앱 안 미리보기 대신 이 HTTPS 주소를 Chrome에서 직접 여세요.</li><li>① 권한 요청 → 브라우저에서 허용 → ② 음성 인식 시험 순서로 누르세요.</li><li>Chrome → 설정 → 사이트 설정 → 마이크에서 이 사이트의 차단을 해제하세요.</li><li>Android 설정 → 애플리케이션 → Chrome → 권한 → 마이크를 허용하세요. 기기의 전체 마이크 접근 스위치도 확인하세요.</li><li>네트워크 오류라면 인터넷 연결을 확인하세요.</li></ol><p>음성 인식 과정에서 음성이 브라우저 제공업체의 서버로 전송될 수 있습니다. 이 앱은 음성을 저장하거나 업로드하지 않습니다. 영어 읽기 판정은 음성 인식 텍스트 기준이며 전문적인 발음 평가가 아닙니다.</p></details>
+      <div class="kbd-hint"><b>바로 쓸 수 있는 대안:</b> 시험에서 입력칸을 터치 → 휴대폰 <b>키보드의 🎤</b>로 말하면 앱이 채점합니다. 키보드의 🎤는 앱의 파란 마이크 버튼과 다른 기능입니다.</div>
+    </details>
+  </div>
+  <div class="card">
+    <h2 class="section-title">💾 백업</h2>
+    <div class="actionbar"><button type="button" class="btn" id="exportSets">전체 백업 JSON</button><label class="btn" for="importSets">JSON 가져오기</label><input id="importSets" type="file" accept="application/json" hidden><button type="button" class="btn hidden" id="installApp">홈 화면에 설치</button></div>
+    <div id="backupStatus" class="feedback info" role="status"></div>
+    <p class="muted">세트·시험 기록·틀린 단어를 한 파일로 내보냅니다. 가져오기는 새 세트로 복사하며 기존 세트는 그대로입니다. AI 접속 코드는 포함되지 않습니다. Chrome 메뉴 → 홈 화면에 추가로 앱처럼 설치할 수 있습니다.</p>
+  </div>
+  <div class="card">
+    <h2 class="section-title">ℹ️ 앱 정보</h2>
+    <div id="appStatus" role="status" class="muted">버전 20261012-4 · 화면을 준비하는 중…</div>
+    <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
+    <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
+  </div>
+</section>
 </main>
+<nav class="tabbar" aria-label="메뉴">
+  <button type="button" class="tab active" id="tabHome" aria-current="page"><span class="ico">🏠</span>홈</button>
+  <button type="button" class="tab" id="tabHistory" aria-current="false"><span class="ico">📚</span>기록</button>
+  <button type="button" class="tab" id="tabSettings" aria-current="false"><span class="ico">⚙️</span>설정</button>
+</nav>
+<div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261012-3';
+  var release = '20261012-4';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
-  function report(message) { banner.textContent = message; }
-  window.markVocabAppReady = function () { ready = true; report('버전 ' + release + ' · 사진 선택과 단어 추출 준비 완료'); };
+  var notice = document.getElementById('globalNotice');
+  function report(message, alert) {
+    banner.textContent = message;
+    if (alert) { notice.textContent = message; notice.classList.remove('hidden'); }
+  }
+  window.markVocabAppReady = function () { ready = true; report('버전 ' + release + ' · 준비 완료'); };
   window.addEventListener('error', function (event) {
     lastError = event.message || '화면 파일을 불러오지 못했습니다';
-    report('화면 처리 오류가 발생했습니다. 새 버전 불러오기를 눌러 주세요. 오류: ' + lastError);
+    report('화면 처리 오류가 발생했습니다. 설정 → 새 버전 불러오기를 눌러 주세요. 오류: ' + lastError, true);
   });
   window.addEventListener('unhandledrejection', function (event) {
     lastError = event.reason && event.reason.message || String(event.reason || '알 수 없는 오류');
-    report('화면 처리 오류: ' + lastError + ' · 새 버전 불러오기를 눌러 주세요.');
+    report('화면 처리 오류: ' + lastError + ' · 설정 → 새 버전 불러오기를 눌러 주세요.', true);
   });
+  notice.addEventListener('click', function () { notice.classList.add('hidden'); });
   document.getElementById('checkApp').onclick = function () {
     var button = document.getElementById('extractWords');
     var input = document.getElementById('photos');
@@ -226,190 +344,10 @@ footer{margin:18px 5px;color:#62738b;font-size:12px;line-height:1.7}
     url.searchParams.set('update', String(Date.now()));
     location.replace(url.href);
   };
-  setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 새 버전 불러오기를 눌러 주세요.'); }, 10000);
+  setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
-
 </script>
-<script>
-'use strict';
-let WORDS = [
- [121,'authority','권위 · 권한 · 당국','/əˈθɔːrəti/','어쏘러티','권위|권한|당국|권력|권위자|대가'],
- [122,'devote','바치다 · 헌신하다 · 기울이다','/dɪˈvoʊt/','디보우트','바치다|바치|헌신하다|헌신|기울이다|기울이'],
- [123,'indicate','나타내다 · 가리키다 · 보여주다','/ˈɪndɪkeɪt/','인디케이트','나타내다|나타내|가리키다|가리키|보여주다|보여주|표시하다|암시하다'],
- [124,'function','기능 · 역할 · 작용하다','/ˈfʌŋkʃən/','펑크션','기능|역할|작용하다|작용|기능하다'],
- [125,'interrupt','방해하다 · 중단시키다','/ˌɪntəˈrʌpt/','인터럽트','방해하다|방해|중단시키다|중단|끼어들다|가로막다'],
- [126,'strike','치다 · 부딪치다 · 파업 · 타격','/straɪk/','스트라이크','치다|때리다|부딪치다|파업|타격|공격|떠오르다'],
- [127,'evident','명백한 · 분명한','/ˈevɪdənt/','에비던트','명백한|명백하다|명백|분명한|분명하다|분명|뚜렷한'],
- [128,'output','생산량 · 산출량','/ˈaʊtpʊt/','아웃풋','생산량|생산|산출량|산출|생산물|출력|결과물'],
- [129,'violate','위반하다 · 어기다 · 침해하다','/ˈvaɪəleɪt/','바이얼레이트','위반하다|위반|어기다|어기|침해하다|침해|범하다'],
- [130,'declare','선언하다 · 발표하다 · 신고하다','/dɪˈkler/','디클레어','선언하다|선언|발표하다|발표|신고하다|신고|공표하다'],
- [131,'instant','즉각적인 · 즉시 · 찰나','/ˈɪnstənt/','인스턴트','즉각적인|즉각|즉시|찰나|순간|즉석의|인스턴트'],
- [132,'struggle','분투하다 · 버둥거리다 · 투쟁','/ˈstrʌɡəl/','스트러글','분투하다|분투|버둥거리다|버둥|투쟁|싸우다|고군분투하다'],
- [133,'induce','유도하다 · 설득하다 · 유발하다','/ɪnˈduːs/','인듀스','유도하다|유도|설득하다|설득|유발하다|유발|일으키다'],
- [134,'reveal','드러내다 · 누설하다 · 밝히다','/rɪˈviːl/','리빌','드러내다|드러내|누설하다|누설|밝히다|밝히|폭로하다|공개하다'],
- [135,'conceal','숨기다 · 감추다','/kənˈsiːl/','컨실','숨기다|숨기|감추다|감추|은폐하다|은폐'],
- [136,'dedicate','바치다 · 헌신하다','/ˈdedɪkeɪt/','데디케이트','바치다|바치|헌신하다|헌신|전념하다|전념'],
- [137,'addiction','중독','/əˈdɪkʃən/','어딕션','중독|중독증|의존증'],
- [138,'scarce','부족한 · 드문','/skers/','스케어스','부족한|부족하다|부족|드문|드물다|희귀한|희소한'],
- [139,'disturb','방해하다 · 어지럽히다','/dɪˈstɜːrb/','디스터브','방해하다|방해|어지럽히다|어지럽히|괴롭히다|귀찮게하다'],
- [140,'donation','기부 · 기증','/doʊˈneɪʃən/','도네이션','기부|기증|기부금|기증품'],
- [141,'disappear','사라지다','/ˌdɪsəˈpɪr/','디스어피어','사라지다|사라지|없어지다|없어지|자취를감추다'],
- [142,'vivid','생생한 · 선명한','/ˈvɪvɪd/','비비드','생생한|생생하다|생생|선명한|선명하다|선명|뚜렷한'],
- [143,'regard','여기다 · 간주하다 · 관심 · 존경 · 안부','/rɪˈɡɑːrd/','리가드','여기다|여기|간주하다|간주|관심|고려|존경|안부|인사'],
- [144,'disrupt','방해하다 · 지장을 주다','/dɪsˈrʌpt/','디스럽트','방해하다|방해|지장을주다|지장|혼란시키다|중단시키다|차질을빚게하다'],
- [145,'retire','은퇴하다 · 퇴직하다','/rɪˈtaɪər/','리타이어','은퇴하다|은퇴|퇴직하다|퇴직|물러나다'],
- [146,'enhance','높이다 · 강화하다 · 향상시키다','/ɪnˈhæns/','인핸스','높이다|높이|강화하다|강화|향상시키다|향상|개선하다'],
- [147,'adequate','적절한 · 충분한','/ˈædɪkwət/','애디쿼트','적절한|적절하다|적절|충분한|충분하다|충분|알맞은|적당한'],
- [148,'estimate','추정하다 · 평가하다 · 추정 · 견적서','/ˈestɪmeɪt/ (동사) · /ˈestɪmət/ (명사)','에스터메이트/에스터멋','추정하다|추정|평가하다|평가|견적|견적서|어림잡다|예측하다'],
- [149,'arrange','정리하다 · 준비하다 · 편곡하다','/əˈreɪndʒ/','어레인지','정리하다|정리|정돈하다|준비하다|준비|편곡하다|편곡|배열하다|배열|주선하다'],
- [150,'restrain','제지하다 · 억누르다 · 억제하다','/rɪˈstreɪn/','리스트레인','제지하다|제지|억누르다|억누르|억제하다|억제|자제하다|자제'],
- [151,'remarkable','주목할 만한 · 뛰어난','/rɪˈmɑːrkəbəl/','리마커블','주목할만한|주목할|뛰어난|뛰어나다|놀라운|훌륭한|특별한'],
- [152,'symptom','증상 · 징후','/ˈsɪmptəm/','심프텀','증상|징후|증세'],
- [153,'victim','피해자 · 희생자','/ˈvɪktɪm/','빅팀','피해자|희생자|피해입은사람'],
- [154,'empathy','공감 · 감정 이입','/ˈempəθi/','엠퍼씨','공감|감정이입|공감능력'],
- [155,'disaster','재해 · 재난','/dɪˈzæstər/','디재스터','재해|재난|참사|큰불행|대참사'],
- [156,'guardian','후견인 · 보호자 · 수호자','/ˈɡɑːrdiən/','가디언','후견인|보호자|수호자|법정보호자'],
- [157,'grab','붙잡다 · 낚아채다 · 잡아채기','/ɡræb/','그래브','붙잡다|붙잡|낚아채다|낚아채|잡아채다|잡아채|움켜잡다'],
- [158,'mindset','사고방식','/ˈmaɪndset/','마인드셋','사고방식|마음가짐|정신자세|생각하는방식'],
- [159,'indeed','사실은 · 정말 · 참으로','/ɪnˈdiːd/','인디드','사실은|사실|정말|참으로|실제로|진정으로'],
- [160,'hinder','방해하다 · 막다','/ˈhɪndər/','힌더','방해하다|방해|막다|막|저해하다|저해|가로막다|지장을주다']
-].map(([id,en,ko,ipa,hangul,aliases])=>({id,en,ko,ipa,hangul,aliases:aliases.split('|')}));
-const $=id=>document.getElementById(id);
-const SPEECH=window.SpeechRecognition||window.webkitSpeechRecognition;
-let mode='read_meaning',queue=[],position=0,results=[],question={},recognition=null,lastMissed=[],permissionPending=false;
-let sessionMeta=null,historyRecords=[],sessionRunning=false;
-const historyKey='daily_vocab_history_v2';
-const modeLabels={read_meaning:'읽기 + 뜻',en_ko:'영어 → 한글',ko_en:'한글 → 영어·스펠링'};
-let cacheKey='daily_vocab_missed_day04';
-const defaultWords=structuredClone(WORDS),setsKey='daily_vocab_sets_v2';
-let sets=[{id:'day04',name:'기본 예제 DAY04',words:defaultWords}],activeSetId='day04',storageAvailable=true;
-try{
- const raw=localStorage.getItem(setsKey);if(raw){const parsed=JSON.parse(raw);if(!Array.isArray(parsed)||!parsed.length||!parsed.every(s=>s&&typeof s.id==='string'&&typeof s.name==='string'&&Array.isArray(s.words)&&s.words.length&&s.words.every(w=>w&&typeof w.en==='string'&&typeof w.ko==='string'&&Array.isArray(w.aliases))))throw Error('세트 데이터 오류');sets=parsed;activeSetId=sets[0].id;WORDS=sets[0].words;cacheKey='daily_vocab_missed_'+activeSetId;}
- if(!localStorage.getItem(historyKey)){
-  const old=localStorage.getItem('day04_wordtest_history_v1'),missed=localStorage.getItem('day04_wordtest_missed_v2');
-  if(old||missed){localStorage.setItem('daily_vocab_legacy_backup_v1',JSON.stringify({history:old,missed}));const records=JSON.parse(old||'[]');if(!Array.isArray(records))throw Error('이력 데이터 오류');const converted=records.map(r=>({...r,setId:'day04',setName:'기본 예제 DAY04',results:r.results.map(x=>{const word=defaultWords.find(w=>w.id===x.id);if(!word)throw Error('이력 단어 오류');return {...x,word:structuredClone(word)}})}));localStorage.setItem(historyKey,JSON.stringify(converted));localStorage.setItem('daily_vocab_missed_day04',missed||'[]');}
- }
-}catch(e){storageAvailable=false;$('setStatus').textContent='저장 자료를 읽거나 이전하지 못했습니다. 기존 자료는 보존됩니다. JSON 백업 후 브라우저 저장 공간을 확인하세요.'}
-
-try{const old=JSON.parse(localStorage.getItem(cacheKey)||'[]'); if(Array.isArray(old))lastMissed=old.filter(n=>WORDS.some(w=>w.id===n))}catch(_){lastMissed=[]}
-function refreshReview(){ $('review').disabled=sessionRunning||lastMissed.length===0;$('reviewCount').textContent=lastMissed.length?`복습할 오답 ${lastMissed.length}개`:'틀린 단어 기록 없음'}
-refreshReview();
-function shuffleArray(arr){for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]]}return arr}
-function changeMode(m){if(sessionRunning)return;stopRec();$('quiz').style.display='none';mode=m; document.querySelectorAll('.mode').forEach(b=>{const active=b.dataset.mode===m;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active))})}
-document.querySelectorAll('.mode').forEach(b=>b.addEventListener('click',()=>{changeMode(b.dataset.mode)}));
-function newSession(missedOnly=false, snapshot=null, source=null){if(sessionRunning)return;stopRec();const startNum=$('range').value;let pool=snapshot|| (missedOnly?WORDS.filter(w=>lastMissed.includes(w.id)):(startNum==='all'?WORDS:WORDS.slice(Number(startNum),Number(startNum)+10)));if(!pool.length)return;queue=$('shuffle').checked?shuffleArray(pool.slice()):pool.slice();results=[];position=0;sessionRunning=true;setSettingsLocked(true);sessionMeta={id:crypto.randomUUID(),setId:source?.setId||activeSetId,setName:source?.setName||sets.find(s=>s.id===activeSetId)?.name||'이력 복습',mode,range:missedOnly?'오답 복습':$('range').selectedOptions[0].textContent,startedAt:new Date().toISOString(),saved:false};$('quiz').style.display='block';$('finish').style.display='none';displayQuestion()}
-function normEn(s){return String(s||'').toLowerCase().normalize('NFKC').replace(/[^a-z]/g,'')}
-function normKo(s){return String(s||'').toLowerCase().normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu,'').replace(/(라는뜻입니다|라는뜻이에요|이라는뜻입니다|이에요|입니다|이라는뜻|뜻이에요|뜻입니다|뜻이야|거예요|겁니다)$/g,'')}
-function correctKo(spoken,w){const ans=normKo(spoken);return !!ans&&[...w.aliases,...w.ko.split(/[·,;|]/)].some(x=>normKo(x)===ans)}
-function correctEn(spoken,w){const raw=String(spoken||'').toLowerCase();return raw.split(/[^a-z]+/).includes(w.en)||normEn(spoken)===w.en}
-const permissionHelp='Chrome → 설정 → 사이트 설정 → 마이크에서 이 사이트를 허용하고, Android 설정 → 애플리케이션 → Chrome → 권한 → 마이크 및 기기의 마이크 접근 스위치를 확인하세요.';
-function micReason(code){return ({
- 'not-allowed':'마이크 접근이 거부됐습니다. '+permissionHelp,
- 'service-not-allowed':'음성 인식 서비스가 차단됐습니다. Chrome에서 HTTPS 주소를 직접 열고 기기·관리자 정책을 확인하세요. 권한 허용만으로 해결되지 않을 수 있습니다.',
- 'no-speech':'음성이 들리지 않았습니다. 마이크와의 거리를 확인하고 다시 눌러 말해 주세요.',
- 'network':'음성 인식 서버에 연결하지 못했습니다. 인터넷 연결을 확인하세요. 계속 실패하면 키보드 🎤 또는 직접 입력을 이용하세요.',
- 'audio-capture':'마이크를 사용할 수 없습니다. 다른 녹음·통화 앱을 닫고 기기의 마이크 접근 스위치를 확인하세요.',
- 'language-not-supported':'선택한 언어의 음성 인식을 지원하지 않습니다. 키보드 🎤 또는 직접 입력을 이용하세요.',
- 'aborted':'음성 인식이 중지됐습니다.'
-})[code]||('음성 인식 오류: '+code+' · 다시 시도하거나 직접 입력하세요.')}
-function micContextError(){
- if(['file:','content:'].includes(location.protocol)||!window.isSecureContext)return '다운로드 파일 대신 배포된 HTTPS 웹주소를 Chrome에서 직접 열어 주세요.';
- if(window.self!==window.top)return '미리보기 화면을 벗어나 HTTPS 웹주소를 Chrome에서 직접 열어 주세요.';
- return '';
-}
-function refreshMicEnvironment(){
- const problem=micContextError();
- $('micEnvironment').textContent=(problem||'안전한 연결이 확인됐습니다.')+'\n'+(SPEECH?'음성 인식 기능이 감지됐습니다. ① 권한 요청 후 ② 음성 인식 시험으로 확인하세요.':'이 브라우저는 웹 음성 인식을 지원하지 않습니다. Chrome 또는 직접 입력을 이용하세요.');
- $('micEnvironment').className='mic-diagnosis'+(problem||!SPEECH?' warn':'');
-}
-function startRecognition(lang,out,button,onTranscript){
- if(permissionPending){setFeedback(out,'info','먼저 마이크 권한 요청 창에서 허용 또는 차단을 선택해 주세요.');return}
- if(recognition){stopRec();setFeedback(out,'info','음성 인식을 중지했습니다. 원하는 마이크 버튼을 다시 눌러 주세요.');return}
- const problem=micContextError();
- if(problem||!SPEECH){setFeedback(out,'bad',problem||'이 브라우저는 웹 음성 인식을 지원하지 않습니다. 키보드 🎤 또는 직접 입력을 이용하세요.');return}
- let rec;try{rec=new SPEECH()}catch(e){setFeedback(out,'bad','음성 인식을 시작할 수 없습니다. Chrome에서 다시 시도하세요.');return}
- recognition=rec;rec.lang=lang;rec.continuous=false;rec.interimResults=false;rec.maxAlternatives=1;
- let received=false,endedWithError=false;
- const timer=setTimeout(()=>{if(recognition===rec){stopRec();setFeedback(out,'bad','음성 인식 응답이 없습니다. 권한 창과 인터넷 연결을 확인한 뒤 다시 시도하세요.')}},30000);
- rec.cleanup=()=>{clearTimeout(timer);button.classList.remove('listening');button.removeAttribute('aria-busy');$('micStop').disabled=true;};
- setFeedback(out,'info','마이크 시작 중… 권한 창이 나타나면 허용해 주세요.');button.setAttribute('aria-busy','true');$('micStop').disabled=false;
- rec.onstart=()=>{if(recognition!==rec)return;button.classList.add('listening');setFeedback(out,'info','듣는 중… '+(lang==='ko-KR'?'한국어로':'영어로')+' 말해 주세요.');};
- rec.onresult=e=>{if(recognition!==rec)return;const transcript=e.results?.[e.resultIndex||0]?.[0]?.transcript?.trim()||'';if(!transcript)return;received=true;onTranscript(transcript)};
- rec.onerror=e=>{if(recognition!==rec)return;endedWithError=true;setFeedback(out,'bad',micReason(e.error));};
- rec.onend=()=>{if(recognition!==rec)return;recognition=null;rec.cleanup();if(!received&&!endedWithError)setFeedback(out,'info','인식된 말 없이 종료됐습니다. 다시 말하거나 입력칸에 직접 입력하세요.');};
- try{window.speechSynthesis?.cancel();rec.start()}catch(e){recognition=null;rec.cleanup();setFeedback(out,'bad','음성 인식 시작 실패 ('+e.name+'). 권한을 확인한 뒤 다시 눌러 주세요.')}
-}
-function testMicrophone(){startRecognition('ko-KR',$('micTestResult'),$('micTest'),text=>setFeedback($('micTestResult'),'good','✓ 음성 인식 성공! 인식 내용: '+text))}
-// Only a user click requests permission. Release the stream before speech recognition.
-async function requestMicPermission(){
- const out=$('micPermitResult'),button=$('micPermit');
- if(permissionPending)return;
- const problem=micContextError();
- if(problem||!navigator.mediaDevices?.getUserMedia){setFeedback(out,'bad',problem||'마이크 권한 요청을 지원하지 않습니다. Chrome의 HTTPS 주소에서 열어 주세요.');return}
- stopRec();permissionPending=true;button.disabled=true;
- setFeedback(out,'info','Chrome 마이크 권한 확인 중… 창에서 「허용」을 눌러 주세요. 창이 없으면 사이트 권한 설정을 확인하세요.');
- let media;
- try{
-  media=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
-  setFeedback(out,'good','✓ 마이크 접근 권한을 확인했습니다. 이제 「② 음성 인식 시험」을 눌러 주세요. 음성 인식 서비스는 별도로 확인합니다.');
- }catch(err){
-  const name=err?.name||'UnknownError';
-  const messages={NotAllowedError:'마이크 권한이 거부됐습니다. '+permissionHelp,PermissionDeniedError:'마이크 권한이 거부됐습니다. '+permissionHelp,NotFoundError:'사용 가능한 마이크를 찾지 못했습니다. 기기의 마이크 연결을 확인하세요.',NotReadableError:'마이크를 사용할 수 없습니다. 녹음·통화 앱을 닫고 기기의 마이크 접근 스위치를 확인하세요.',SecurityError:'브라우저 또는 기기 정책이 마이크 접근을 차단했습니다. Chrome에서 HTTPS 주소를 직접 열고 관리자 설정을 확인하세요.',AbortError:'마이크 연결이 중단됐습니다. 다시 시도해 주세요.'};
-  setFeedback(out,'bad',messages[name]||'마이크 권한 확인 실패 ('+name+'). Chrome에서 다시 시도하세요.');
- }finally{if(media)media.getTracks().forEach(track=>track.stop());permissionPending=false;button.disabled=false}
-}
-refreshMicEnvironment();$('micPermit').addEventListener('click',requestMicPermission);$('micTest').addEventListener('click',testMicrophone);
-$('micStop').addEventListener('click',()=>{stopRec();setFeedback($('micTestResult'),'info','음성 인식을 중지했습니다.')});
-document.addEventListener('visibilitychange',()=>{if(document.hidden)stopRec()});
-window.addEventListener('pagehide',stopRec);
-function displayQuestion(){$('sessionScope').textContent='이번 시험: '+sessionMeta.range+' · 총 '+queue.length+'문제';const w=queue[position];question={w,unknown:false,readChecked:false,readPass:false,readSkipped:false,answerChecked:false,answerPass:false,voiceRecognized:''};$('progressText').textContent=`문제 ${position+1} / ${queue.length}`;$('scoreText').textContent=`정답 ${results.filter(x=>x.pass).length} · 오답 ${results.filter(x=>!x.pass).length}`;$('progressBar').style.width=`${position/queue.length*100}%`;$('wordNum').textContent=w.id;
- $('promptWord').textContent=mode==='ko_en'?w.ko:w.en;$('promptWord').className=mode==='ko_en'?'meaning':'word';$('promptHint').textContent=mode==='ko_en'?'뜻을 보고 영어로 말한 뒤 정확히 써 보세요':mode==='read_meaning'?'① 영어로 읽기 → ② 한국어 뜻 말하기':'한국어 뜻을 말하거나 입력하세요';
- $('readStep').classList.toggle('hidden',mode==='en_ko');$('readInput').value='';$('readInput').disabled=false;$('checkRead').disabled=false;$('readTitle').textContent=mode==='ko_en'?'1. 영어 단어 말하기 (선택)':'1. 영어 단어 소리 내어 읽기';$('readInstruction').textContent=mode==='ko_en'?'영어 단어를 생각해서 말해 보세요. 철자 채점은 아래에서 진행합니다.':'마이크를 누르고 화면의 영어 단어를 읽어 보세요. 인식된 글자를 확인·수정한 뒤 읽기 채점을 눌러 주세요.';$('parentConfirm').textContent=mode==='ko_en'?'음성 평가 생략':'보호자가 읽기 확인';$('hear').classList.toggle('hidden',mode==='ko_en');
- $('spellingArea').classList.toggle('hidden',mode!=='ko_en');$('spellingGuide').classList.toggle('hidden',mode!=='ko_en');$('micSpelling').disabled=false;$('penInput').disabled=false;$('answerTitle').textContent=mode==='ko_en'?'2. 영어 스펠링 테스트':mode==='en_ko'?'한국어 뜻 맞히기':'2. 한국어 뜻 말하기';$('answerInstruction').textContent=mode==='ko_en'?'철자를 알파벳으로 말하거나, 키보드·S펜 손글씨로 입력하세요. 대소문자는 구분하지 않습니다.':'음성으로 입력한 글자를 확인·수정한 뒤 정답 확인을 누르세요. 직접 입력도 가능합니다.';$('micKoArea').classList.toggle('hidden',mode==='ko_en');$('answerInput').lang=mode==='ko_en'?'en':'ko';$('answerVoiceGuide').classList.toggle('hidden',mode==='ko_en');$('answerInput').placeholder=mode==='ko_en'?'영어 철자 입력 · S펜 손글씨 가능':'한국어 뜻 입력 · S펜 손글씨 가능';$('answerInput').value='';$('answerInput').disabled=false;$('check').disabled=false;$('unknown').disabled=false;$('parentConfirm').disabled=false;$('micEnglish').disabled=false;$('micKorean').disabled=false;
- $('readFeedback').className='feedback info';$('readFeedback').textContent=mode==='ko_en'?'음성 말하기는 선택 사항입니다.':'아직 읽기 확인 전';$('answerFeedback').className='feedback info';$('answerFeedback').textContent='답을 말하거나 입력해 보세요.';$('answerReveal').style.display='none';$('answerReveal').textContent='';$('next').disabled=true;$('next').textContent=position+1===queue.length?'시험 결과 보기 →':'다음 문제 →';
- if(!SPEECH){$('readFeedback').textContent='현재 브라우저에 음성 인식 기능이 없습니다. 보호자 확인 또는 입력 채점을 이용하세요.'}
-}
-function setFeedback(el,type,text){el.className='feedback '+type;el.textContent=text}
-function setRead(pass,spoken,skipped=false){if(question.unknown)return;question.readChecked=true;$('readInput').value=spoken||$('readInput').value;$('checkRead').disabled=pass||skipped;question.readPass=pass;question.readSkipped=skipped;question.voiceRecognized=spoken||'';setFeedback($('readFeedback'),pass?'good':skipped?'info':'bad',skipped?'음성 채점을 생략했습니다. 철자만 채점합니다.':pass?`✓ 영어 읽기 확인${spoken?' · 인식: '+spoken:''}`:`✕ 인식된 말: ${spoken||'(없음)'} · 다시 말하거나 보호자에게 확인받으세요.`);updateNext()}
-function showAnswer(){const w=question.w;$('answerReveal').style.display='block';const parent=$('answerReveal');parent.textContent='';const label=document.createElement('strong');label.textContent=`정답: ${w.en} — ${w.ko}`;const detail=document.createElement('div');detail.className='ipa';detail.textContent=w.ipa?`발음 ${w.ipa} · 한글 참고 발음: ${w.hangul}`:'사진에 없는 발음은 저장하지 않았습니다.';parent.append(label,detail)}
-function normalizeSpelling(value){const text=String(value).normalize('NFKC').trim().toLowerCase();return /^[a-z](?:[\s,.-]+[a-z])+$/.test(text)?text.replace(/[\s,.-]/g,''):text}
-function decodeSpelling(transcript){
- const names={a:'a',ay:'a',aye:'a',b:'b',bee:'b',be:'b',c:'c',see:'c',sea:'c',d:'d',dee:'d',e:'e',ee:'e',f:'f',eff:'f',g:'g',gee:'g',h:'h',aitch:'h',haitch:'h',i:'i',eye:'i',j:'j',jay:'j',k:'k',kay:'k',l:'l',el:'l',ell:'l',m:'m',em:'m',n:'n',en:'n',o:'o',oh:'o',p:'p',pee:'p',q:'q',cue:'q',queue:'q',r:'r',are:'r',ar:'r',s:'s',ess:'s',t:'t',tee:'t',tea:'t',u:'u',you:'u',v:'v',vee:'v',w:'w',x:'x',ex:'x',y:'y',why:'y',z:'z',zee:'z',zed:'z',에이:'a',비:'b',씨:'c',시:'c',디:'d',이:'e',에프:'f',지:'g',에이치:'h',아이:'i',제이:'j',케이:'k',엘:'l',엠:'m',엔:'n',오:'o',피:'p',큐:'q',알:'r',아르:'r',에스:'s',티:'t',유:'u',브이:'v',더블유:'w',엑스:'x',와이:'y',지드:'z',제트:'z'};
- const tokens=String(transcript).normalize('NFKC').toLowerCase().replace(/double[ -]+(?:u|you|yoo)/g,'w').replace(/[.,!?;:]/g,' ').trim().split(/[\s-]+/).filter(Boolean);
- if(!tokens.length)return {text:'',unresolved:true};
- if(tokens.length===1&&!names[tokens[0]])return {text:tokens[0],unresolved:true};
- const unresolved=tokens.some(token=>!names[token]);return {text:unresolved?transcript:tokens.map(token=>names[token]).join(''),unresolved};
-}
-function listenSpelling(){if(!sessionRunning||mode!=='ko_en'||question.answerChecked)return;const target=question;startRecognition('en-US',$('answerFeedback'),$('micSpelling'),transcript=>{if(question!==target)return;const decoded=decodeSpelling(transcript);$('answerInput').value=decoded.text;setFeedback($('answerFeedback'),'info','인식된 말: '+transcript+' · '+(decoded.unresolved?'알파벳을 확실하게 변환하지 못했습니다. 입력칸의 철자를 직접 수정해 주세요.':'철자: '+decoded.text.toUpperCase()+' · 확인·수정한 뒤 정답 확인을 누르세요.'))})}
-$('micSpelling').addEventListener('click',listenSpelling);$('penInput').addEventListener('click',()=>{if(!$('answerInput').disabled)$('answerInput').focus()});
-function grade(input,origin='type'){if(!sessionRunning||question.answerChecked)return;stopRec();const w=question.w;const value=String(input||'').trim();if(!value){setFeedback($('answerFeedback'),'bad','답을 먼저 입력하거나 말해 주세요.');return}let pass=mode==='ko_en'?normalizeSpelling(value)===normalizeSpelling(w.en):correctKo(value,w);question.answerChecked=true;question.answerPass=pass;setFeedback($('answerFeedback'),pass?'good':'bad',`${pass?'✓ 정답!':'✕ 오답'} ${origin==='speech'?'음성 인식':'입력'}: ${value}${!pass?' · 아래 정답을 확인하세요.':''}${!pass&&mode==='ko_en'?' · 틀린 위치: '+Array.from(w.en).map((c,i)=>normalizeSpelling(value)[i]===c?'✓':c).join(' ')+(value.length>w.en.length?' (추가 글자 있음)':''):''}`);$('answerInput').value=value;$('answerInput').disabled=true;$('check').disabled=true;$('micSpelling').disabled=true;$('penInput').disabled=true;showAnswer();updateNext()}
-function markUnknown(){if(!question.w||question.unknown)return;stopRec();question.unknown=true;question.answerChecked=true;question.answerPass=false;question.readChecked=true;question.readPass=false;$('unknown').disabled=true;['answerInput','check','readInput','checkRead','micEnglish','micKorean','micSpelling','penInput','parentConfirm'].forEach(id=>$(id).disabled=true);setFeedback($('answerFeedback'),'info','모르는 단어로 체크했습니다. 오답으로 기록되며 복습에 포함됩니다.');showAnswer();updateNext()}
-$('unknown').addEventListener('click',markUnknown);
-function updateNext(){ $('next').disabled=!(question.answerChecked&&(mode!=='read_meaning'||question.readChecked));if(question.answerChecked&&mode==='read_meaning'&&!question.readChecked){setFeedback($('readFeedback'),'info','뜻은 채점했습니다. 영어 읽기 확인을 하면 다음으로 넘어갑니다.')}}
-function stopRec(){const rec=recognition;recognition=null;if(rec){rec.cleanup?.();try{rec.abort()}catch(_){}}document.querySelectorAll('.btn.mic').forEach(el=>el.classList.remove('listening'));$('micStop').disabled=true;window.speechSynthesis?.cancel()}
-function listen(lang,kind){
- if(!sessionRunning||!question.w||question.unknown||question.answerChecked&&kind==='ko')return;
- const targetQuestion=question;
- startRecognition(lang,kind==='en'?$('readFeedback'):$('answerFeedback'),kind==='en'?$('micEnglish'):$('micKorean'),transcript=>{
-  if(question!==targetQuestion)return;
-  const input=kind==='en'?$('readInput'):$('answerInput');input.value=transcript;if(kind==='en')$('checkRead').disabled=false;setFeedback(kind==='en'?$('readFeedback'):$('answerFeedback'),'info','인식된 말: '+transcript+' · 잘못 인식된 글자를 수정한 뒤 '+(kind==='en'?'읽기 채점':'정답 확인')+'을 눌러 주세요.');
- });
-}
-function speak(){stopRec();const w=question.w;if(!('speechSynthesis' in window)){alert('이 브라우저에는 음성 읽기 기능이 없습니다.');return}const synth=window.speechSynthesis;synth.cancel();const u=new SpeechSynthesisUtterance(w.en);u.lang='en-US';u.rate=.82;u.pitch=1;const v=synth.getVoices().find(v=>v.lang.toLowerCase().startsWith('en-us'));if(v)u.voice=v;synth.speak(u)}
-function advance(){if(!sessionRunning||$('next').disabled)return;stopRec();const spokenCount=mode==='ko_en'?(!question.readChecked||question.readSkipped||question.readPass):question.readPass;const pass=question.answerPass&&(mode!=='read_meaning'||spokenCount);results.push({id:question.w.id,word:structuredClone(question.w),pass:question.unknown?false:pass,unknown:question.unknown});position++;if(position>=queue.length){complete();return}displayQuestion();$('quiz').scrollIntoView({behavior:'smooth',block:'start'})}
-function complete(){sessionRunning=false;setSettingsLocked(false);saveSession();const missed=results.filter(x=>!x.pass).map(x=>x.id);if(sessionMeta.setId===activeSetId){lastMissed=missed;try{localStorage.setItem(cacheKey,JSON.stringify(lastMissed))}catch(_){setFeedback($('historyStatus'),'bad','오답 저장 실패. JSON 백업을 이용하세요.')}}refreshReview();$('quiz').style.display='none';$('finish').style.display='block';const correct=results.filter(x=>x.pass).length;$('finalScore').textContent=`${correct} / ${results.length}`;$('finalDesc').textContent=missed.length?`정답률 ${Math.round(correct/results.length*100)}% · 틀린 단어 ${missed.length}개를 한 번 더 복습해 봐요.`:'모든 단어 정답! 정말 잘했어요.';$('retryMissed').disabled=!missed.length;$('finish').scrollIntoView({behavior:'smooth',block:'start'})}
-function validRecord(r){return r&&typeof r.id==='string'&&Number.isFinite(Date.parse(r.completedAt))&&modeLabels[r.mode]&&typeof r.range==='string'&&Array.isArray(r.results)&&r.results.length>0&&r.results.length<=2000&&r.results.every(x=>x.word&&typeof x.word.en==='string'&&typeof x.word.ko==='string'&&Array.isArray(x.word.aliases)&&typeof x.pass==='boolean'&&typeof x.unknown==='boolean')}
-try{const saved=JSON.parse(localStorage.getItem(historyKey)||'[]');if(Array.isArray(saved))historyRecords=saved.filter(validRecord)}catch(_){setFeedback($('historyStatus'),'bad','저장된 기록을 읽지 못했습니다. 새 시험 기록부터 저장합니다.')}
-function persistHistory(next){if(!storageAvailable){setFeedback($('historyStatus'),'bad','저장 자료 오류로 원본을 보호합니다. JSON으로 백업하세요.');return false}try{localStorage.setItem(historyKey,JSON.stringify(next));historyRecords=next;setFeedback($('historyStatus'),'good','기록을 이 브라우저에 저장했습니다.');renderHistory();return true}catch(_){setFeedback($('historyStatus'),'bad','기록 저장에 실패했습니다. 저장 공간이나 브라우저 설정을 확인하세요. 현재 기록은 CSV로 내려받을 수 있습니다.');return false}}
-function saveSession(){if(!sessionMeta||sessionMeta.saved)return;sessionMeta.saved=true;const record={id:sessionMeta.id,setId:sessionMeta.setId,setName:sessionMeta.setName,mode:sessionMeta.mode,range:sessionMeta.range,startedAt:sessionMeta.startedAt,completedAt:new Date().toISOString(),results:results.map(x=>({...x}))};const next=[record,...historyRecords];if(!persistHistory(next)){historyRecords=next;renderHistory()}}
-function renderHistory(){const list=$('historyList');list.textContent='';$('exportHistory').disabled=!historyRecords.length;$('clearHistory').disabled=!historyRecords.length;if(!historyRecords.length){list.textContent='아직 완료한 시험이 없습니다.';return}
- for(const record of historyRecords.filter(r=>r.setId===activeSetId||!sets.some(s=>s.id===r.setId))){const correct=record.results.filter(x=>x.pass).length,total=record.results.length,unknown=record.results.filter(x=>x.unknown).length;const entry=document.createElement('article');entry.className='history-entry';const head=document.createElement('div');head.className='history-head';const score=document.createElement('span');score.className='history-score';score.textContent=correct+' / '+total+' · '+Math.round(correct/total*100)+'점';const remove=document.createElement('button');remove.type='button';remove.className='btn outline';remove.textContent='이 기록 삭제';remove.setAttribute('aria-label',new Date(record.completedAt).toLocaleString('ko-KR')+' 시험 기록 삭제');remove.addEventListener('click',()=>{if(confirm('이 시험 기록을 삭제할까요?'))persistHistory(historyRecords.filter(x=>x.id!==record.id))});head.append(score,remove);const meta=document.createElement('p');meta.className='history-meta';meta.textContent=new Date(record.completedAt).toLocaleString('ko-KR')+' · '+record.setName+' · '+modeLabels[record.mode]+' · '+record.range;const counts=document.createElement('p');counts.textContent='정답 '+correct+' · 오답 '+(total-correct)+' (모름 '+unknown+'개 포함)';entry.append(head,meta,counts);const missed=record.results.filter(x=>!x.pass);if(missed.length){const details=document.createElement('details'),summary=document.createElement('summary'),words=document.createElement('p'),retry=document.createElement('button');summary.textContent='오답·모르는 단어 확인';words.textContent=missed.map(x=>{const w=x.word;return w.id+'. '+w.en+(x.unknown?' [모름]':'')}).join(' · ');retry.type='button';retry.className='btn soft history-retry';retry.disabled=sessionRunning;retry.textContent='이 시험의 오답 다시 풀기';retry.addEventListener('click',()=>{if(sessionRunning)return;lastMissed=missed.map(x=>x.id);changeMode(record.mode);refreshReview();newSession(true,missed.map(x=>structuredClone(x.word)),record)});details.append(summary,words,retry);entry.append(details)}list.append(entry)}
-}
-function setSettingsLocked(locked){['range','shuffle','start','review','setSelect','createSet','editSet','deleteSet','saveSet','importSets'].forEach(id=>$(id).disabled=locked);document.querySelectorAll('.mode').forEach(button=>button.disabled=locked);refreshReview();$('retryMissed').disabled=locked||!lastMissed.length;document.querySelectorAll('.history-retry').forEach(button=>button.disabled=locked)}
-function exportHistory(){if(!historyRecords.length)return;const rows=[['완료 날짜','시험 방식','범위','정답','전체','점수','모름 개수','오답 번호','모름 번호'],...historyRecords.map(r=>{const correct=r.results.filter(x=>x.pass).length;return [new Date(r.completedAt).toLocaleString('ko-KR'),modeLabels[r.mode],r.range,correct,r.results.length,Math.round(correct/r.results.length*100),r.results.filter(x=>x.unknown).length,r.results.filter(x=>!x.pass).map(x=>x.id).join(' '),r.results.filter(x=>x.unknown).map(x=>x.id).join(' ')]})];const csv='\uFEFF'+rows.map(row=>row.map(value=> '"'+String(value).replace(/"/g,'""')+'"').join(',')).join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='매일영단어_시험기록_'+new Date().toISOString().slice(0,10)+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
-$('exportHistory').addEventListener('click',exportHistory);$('clearHistory').addEventListener('click',()=>{if(confirm('전체 시험 기록을 삭제할까요? 삭제 전에 CSV로 내려받을 수 있습니다.'))persistHistory([])});renderHistory();
-$('start').addEventListener('click',()=>newSession());$('review').addEventListener('click',()=>newSession(true));$('retryMissed').addEventListener('click',()=>newSession(true));$('newTest').addEventListener('click',()=>{$('finish').style.display='none';$('quiz').style.display='none';$('settings').scrollIntoView({behavior:'smooth'})});$('backSettings').addEventListener('click',()=>{if(!confirm('진행 중인 시험을 끝내고 설정으로 돌아갈까요? 완료하지 않은 시험은 점수 기록에 저장되지 않습니다.'))return;stopRec();sessionRunning=false;setSettingsLocked(false);$('quiz').style.display='none';$('settings').scrollIntoView({behavior:'smooth'})});$('micEnglish').addEventListener('click',()=>listen('en-US','en'));$('micKorean').addEventListener('click',()=>listen('ko-KR','ko'));$('hear').addEventListener('click',speak);$('parentConfirm').addEventListener('click',()=>setRead(mode!=='ko_en','',mode==='ko_en'));$('check').addEventListener('click',()=>grade($('answerInput').value));$('checkRead').addEventListener('click',()=>{stopRec();const value=$('readInput').value.trim();if(!value){setFeedback($('readFeedback'),'bad','영어 읽기 인식 결과를 먼저 입력하세요.');return}setRead(correctEn(value,question.w),value)});$('readInput').addEventListener('keydown',e=>{if(e.isComposing||e.keyCode===229)return;if(e.key==='Enter')$('checkRead').click()});$('next').addEventListener('click',advance);$('answerInput').addEventListener('keydown',e=>{if(e.isComposing||e.keyCode===229)return;if(e.key==='Enter'){if(!$('check').disabled)grade($('answerInput').value);else if(!$('next').disabled)advance()}});
-</script>
-<script src="./sets.js?v=20261012-3" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.'"></script>
+<script src="./quiz.js?v=20261012-4" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261012-4" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>
