@@ -4,7 +4,7 @@ const assert = require("assert");
 const path = require("path");
 const { pathToFileURL } = require("url");
 (async () => {
-  const { default: worker } = await import(
+  const { default: worker, AnthropicRelay } = await import(
     pathToFileURL(path.join(__dirname, "..", "worker", "worker.js")).href
   );
   const ORIGIN = "https://hongtaehwa.github.io";
@@ -168,13 +168,30 @@ const { pathToFileURL } = require("url");
     assert.equal(j.upstreamStatus, status);
   };
   await upstreamCase(401, "authentication_error", 502, "Anthropic API 키");
-  await upstreamCase(403, "permission_error", 502, "Anthropic API 키");
+  await upstreamCase(403, "permission_error", 502, "권한");
   await upstreamCase(404, "not_found_error", 502, "모델");
   await upstreamCase(413, "invalid_request_error", 413, "사진이 너무");
   await upstreamCase(429, "rate_limit_error", 429, "한도");
   await upstreamCase(529, "overloaded_error", 503, "혼잡");
   await upstreamCase(500, "api_error", 503, "혼잡");
   await upstreamCase(400, "invalid_request_error", 502, "upstream says 400");
+
+  // specific Anthropic 400s get actionable guidance; optional workspace header
+  upstream = () => ({ status: 400, json: { type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API." } } });
+  res = await worker.fetch(req("/ping", { body: {} }), env);
+  assert.equal(res.status, 402);
+  assert((await res.json()).message.includes("크레딧"));
+  upstream = () => ({ status: 400, json: { type: "error", error: { type: "invalid_request_error", message: "anthropic-workspace-id is required when authenticating with an identity-linked API key" } } });
+  res = await worker.fetch(req("/ping", { body: {} }), env);
+  assert.equal(res.status, 502);
+  assert((await res.json()).message.includes("워크스페이스"));
+  upstream = okResponse;
+  calls.length = 0;
+  await worker.fetch(req("/ping", { body: {} }), { ...env, ANTHROPIC_WORKSPACE_ID: "wrkspc_123" });
+  assert.equal(calls[0].headers["anthropic-workspace-id"], "wrkspc_123", "workspace header forwarded");
+  calls.length = 0;
+  await worker.fetch(req("/ping", { body: {} }), env);
+  assert.equal(calls[0].headers["anthropic-workspace-id"], undefined, "no workspace header by default");
 
   // stop reasons and bad payloads
   const recognizeCase = async (json, expect, includes) => {
@@ -192,6 +209,55 @@ const { pathToFileURL } = require("url");
     422,
     "흐립니다",
   );
+
+  // Durable Object relay: Worker forwards through env.RELAY (pinned to North America); the object forwards to Anthropic
+  upstream = okResponse;
+  const relayCalls = [];
+  const relayObject = new AnthropicRelay({}, env);
+  const RELAY = {
+    idFromName: (name) => "id:" + name,
+    get: (id, opts) => {
+      relayCalls.push({ id, opts });
+      return { fetch: (url, init) => relayObject.fetch(new Request(url, init)) };
+    },
+  };
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    const headers = Object.fromEntries(new Headers(init.headers));
+    const body = JSON.parse(init.body);
+    seen.push({ url: String(url), headers, body });
+    const r = okResponse(body);
+    return new Response(JSON.stringify(r.json), { status: r.status, headers: { "content-type": "application/json" } });
+  };
+  res = await worker.fetch(req("/ping", { body: {} }), { ...env, RELAY });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true, model: "claude-opus-5-5" });
+  assert.equal(relayCalls.length, 1, "relay used once");
+  assert.equal(relayCalls[0].opts.locationHint, "wnam", "relay pinned to North America");
+  assert.equal(seen.length, 1, "one upstream call via relay");
+  assert.equal(seen[0].url, "https://api.anthropic.com/v1/messages");
+  assert.equal(seen[0].headers["x-api-key"], "sk-ant-test", "relay forwards the key header");
+  assert.equal(seen[0].headers["anthropic-beta"], "server-side-fallback-2026-07-01");
+  assert.equal(seen[0].headers["x-app-passcode"], undefined, "relay never forwards the passcode");
+  assert.equal(seen[0].body.model, "claude-opus-5-5");
+  // relay failure falls back to a direct call
+  seen.length = 0;
+  res = await worker.fetch(req("/ping", { body: {} }), { ...env, RELAY: { idFromName: () => "x", get: () => ({ fetch: async () => { throw new Error("relay down"); } }) } });
+  assert.equal(res.status, 200, "falls back to direct fetch when relay fails");
+  assert.equal(seen.length, 1);
+  // region block from Anthropic is reported as temporary (503), not as a key problem
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { type: "forbidden", message: "Request not allowed" } }), { status: 403, headers: { "content-type": "application/json" } });
+  res = await worker.fetch(req("/ping", { body: {} }), env);
+  assert.equal(res.status, 503);
+  assert((await res.json()).message.includes("지역"));
+  // diag route needs no passcode and reports upstream status
+  globalThis.fetch = async () => new Response(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }), { status: 401, headers: { "content-type": "application/json" } });
+  res = await worker.fetch(new Request("https://ai.example.workers.dev/diag"), env);
+  assert.equal(res.status, 200);
+  const d = await res.json();
+  assert.equal(d.upstreamStatus, 401);
+  assert.equal(d.ok, true);
+  assert.equal(d.relay, false);
 
   // network failure / timeout
   globalThis.fetch = async () => {
