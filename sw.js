@@ -1,4 +1,4 @@
-const CACHE = "daily-vocab-shell-v1";
+const CACHE = "daily-vocab-shell-v2";
 const SHELL = [
   "./",
   "./index.html",

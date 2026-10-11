@@ -3,6 +3,8 @@ let editingId = null,
   ocrWorker = null,
   ocrGeneration = 0,
   photoUrls = [];
+let ocrAbort = null;
+let ocrOperation = null;
 const status = (text) => {
   $("setStatus").textContent = text;
 };
@@ -68,6 +70,7 @@ function releasePhotos() {
   $("photoPreview").textContent = "";
 }
 function openEditor(set) {
+  if ($("runOcr").disabled) cancelOcr();
   editingId = set?.id || null;
   $("setName").value = set?.name || new Date().toLocaleDateString("sv-SE");
   $("wordDraft").value = set
@@ -87,8 +90,10 @@ $("createSet").onclick = () => openEditor();
 $("editSet").onclick = () => openEditor(sets.find((s) => s.id === activeSetId));
 function cancelOcr() {
   ocrGeneration++;
+  ocrAbort?.();
+  ocrAbort = null;
   if (ocrWorker) {
-    ocrWorker.terminate();
+    Promise.resolve(ocrWorker.terminate()).catch(() => {});
     ocrWorker = null;
   }
   $("cancelOcr").disabled = true;
@@ -103,8 +108,11 @@ $("closeEditor").onclick = () => {
   $("editor").classList.add("hidden");
 };
 function preview(input) {
-  if (ocrWorker) cancelOcr();
+  if ($("runOcr").disabled) cancelOcr();
   releasePhotos();
+  $("ocrStatus").textContent = input.files.length
+    ? "사진을 선택했습니다. 아래 ‘사진에서 단어 추출’을 누르세요. 추출 후 원본과 비교하고 저장합니다."
+    : "사진을 선택하세요.";
   for (const file of input.files) {
     const url = URL.createObjectURL(file);
     photoUrls.push(url);
@@ -314,23 +322,46 @@ $("importSets").onchange = async () => {
     $("importSets").value = "";
   }
 };
+// OCR assets are served by this site, so tablet networks need no third-party CDN.
+const ocrBase = new URL("./vendor/ocr/", document.baseURI).href;
 let tesseractLoading;
 function loadTesseract() {
   if (window.Tesseract) return Promise.resolve();
   if (tesseractLoading) return tesseractLoading;
   tesseractLoading = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src =
-      "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
-    script.onload = resolve;
-    script.onerror = () => {
+    const timer = setTimeout(
+      () => fail("인식 도구 다운로드 시간이 초과됐습니다"),
+      30000,
+    );
+    function fail(message) {
+      clearTimeout(timer);
       script.remove();
       tesseractLoading = null;
-      reject(Error("OCR 도구 다운로드 실패"));
+      reject(Error(message));
+    }
+    script.src = ocrBase + "tesseract.min.js";
+    script.onload = () => {
+      clearTimeout(timer);
+      window.Tesseract ? resolve() : fail("인식 도구를 불러오지 못했습니다");
     };
+    script.onerror = () => fail("인식 도구 다운로드 실패");
     document.head.append(script);
   });
   return tesseractLoading;
+}
+async function prepareOcrPhoto(file) {
+  const image = await createImageBitmap(file);
+  try {
+    const scale = Math.min(1, 2000 / Math.max(image.width, image.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  } finally {
+    image.close();
+  }
 }
 $("runOcr").onclick = async () => {
   const files = [...$("photos").files, ...$("camera").files];
@@ -344,63 +375,117 @@ $("runOcr").onclick = async () => {
     return;
   }
   const generation = ++ocrGeneration;
-  let worker;
+  const operation = {};
+  ocrOperation = operation;
+  let worker, failure, timer;
+  const interrupted = new Promise((_, reject) => {
+    failure = (reason) =>
+      reject(reason instanceof Error ? reason : Error(String(reason)));
+    ocrAbort = () => failure(Error("인식을 취소했습니다"));
+  });
+  function deadline(message, ms = 90000) {
+    clearTimeout(timer);
+    timer = setTimeout(
+      () => failure(Error(message + " 시간이 초과됐습니다")),
+      ms,
+    );
+  }
+  const step = (promise) => Promise.race([promise, interrupted]);
   $("runOcr").disabled = true;
   $("cancelOcr").disabled = false;
   $("confirmed").checked = false;
+  $("ocrStatus").textContent =
+    "사진 인식을 시작합니다. 인식 도구를 준비하는 중… 처음에는 다운로드에 시간이 걸립니다.";
   try {
-    await loadTesseract();
+    deadline("인식 도구 준비", 35000);
+    await step(loadTesseract());
     if (generation !== ocrGeneration) return;
-    worker = await Tesseract.createWorker("eng+kor", 1, {
-      workerPath:
-        "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js",
-      corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1",
-      langPath: "https://cdn.jsdelivr.net/gh/naptha/tessdata@gh-pages/4.0.0",
+    $("ocrStatus").textContent = "영어·한글 인식 데이터를 준비하는 중…";
+    deadline("인식 데이터 준비");
+    const creating = Tesseract.createWorker("eng+kor", 1, {
+      workerPath: ocrBase + "worker.min.js",
+      corePath: ocrBase,
+      langPath: ocrBase,
+      errorHandler: failure,
       logger: (m) => {
-        if (generation === ocrGeneration)
-          $("ocrStatus").textContent =
-            m.status + " " + Math.round((m.progress || 0) * 100) + "%";
+        if (generation !== ocrGeneration) return;
+        const labels = {
+          "loading tesseract core": "인식 엔진 준비",
+          "initializing tesseract": "인식 엔진 시작",
+          "loading language traineddata": "영어·한글 데이터 다운로드",
+          "initializing api": "인식 준비",
+          "recognizing text": "사진에서 단어 인식",
+        };
+        $("ocrStatus").textContent =
+          (labels[m.status] || "사진 인식 준비") +
+          " " +
+          Math.round((m.progress || 0) * 100) +
+          "% · 취소 후 직접 입력도 가능합니다.";
       },
     });
-    if (generation !== ocrGeneration) {
-      await worker.terminate();
-      return;
-    }
+    // A cancelled/expired startup may still finish; release its worker then.
+    creating.then(
+      (w) => {
+        if (generation !== ocrGeneration)
+          Promise.resolve(w.terminate()).catch(() => {});
+      },
+      () => {},
+    );
+    worker = await step(creating);
     ocrWorker = worker;
     const lines = [];
     for (let i = 0; i < files.length; i++) {
-      const { data } = await worker.recognize(files[i]);
+      $("ocrStatus").textContent =
+        `${i + 1}/${files.length}장 · 사진 크기를 조정하는 중…`;
+      deadline("사진 준비", 30000);
+      const photo = await step(prepareOcrPhoto(files[i]));
+      deadline("사진 인식", 120000);
+      const { data } = await step(worker.recognize(photo));
       if (generation !== ocrGeneration) return;
+      photo.width = photo.height = 1;
       lines.push(
         ...parseDraft(data.text).map((w, j) =>
-          [String(lines.length + j + 1), w.en, w.ko, ""].join("\t"),
+          [
+            String(
+              $("wordDraft")
+                .value.split("\n")
+                .filter((l) => l.trim()).length +
+                j +
+                1,
+            ),
+            w.en,
+            w.ko,
+            "",
+          ].join("\t"),
         ),
       );
+      $("wordDraft").value = [$("wordDraft").value, ...lines.splice(0)]
+        .filter(Boolean)
+        .join("\n");
       $("ocrStatus").textContent =
-        i +
-        1 +
-        "/" +
-        files.length +
-        "장 · 신뢰도 " +
-        Math.round(data.confidence) +
-        "% (검토 필수)";
+        `${i + 1}/${files.length}장 인식 완료 · 신뢰도 ${Math.round(data.confidence)}% · 아래 결과를 수정하고 확인란을 체크한 뒤 저장하세요.`;
     }
-    $("wordDraft").value = [$("wordDraft").value, ...lines]
-      .filter(Boolean)
-      .join("\n");
     $("draftWarnings").textContent =
-      "모든 추출 항목을 검토하세요. 빈 뜻은 미매칭, 중복 번호·단어는 수정이 필요합니다. 예문·품사·발음은 직접 정리하고 누락 단어를 추가하세요.";
+      "원본과 비교해 빈 뜻·중복·예문을 수정하고 누락 단어를 추가하세요. 추출 결과가 비어 있으면 직접 입력하거나 선명한 사진으로 재시도하세요.";
+    $("wordDraft").scrollIntoView({ behavior: "smooth", block: "center" });
   } catch (e) {
-    if (generation === ocrGeneration)
-      $("ocrStatus").textContent =
-        "인식 실패: " + e.message + " · 재시도하거나 직접 입력하세요.";
-  } finally {
-    if (worker) await worker.terminate();
     if (generation === ocrGeneration) {
-      ocrWorker = null;
+      $("ocrStatus").textContent =
+        "인식 실패: " +
+        (e?.message || String(e)) +
+        " · 인터넷 연결을 확인하고 한 장씩 재시도하세요. 아래에 단어와 뜻을 직접 입력해 저장할 수도 있습니다.";
+      ocrGeneration++;
+    }
+  } finally {
+    clearTimeout(timer);
+    if (ocrWorker === worker) ocrWorker = null;
+    if (ocrOperation === operation) {
+      ocrOperation = null;
+      ocrAbort = null;
       $("runOcr").disabled = false;
       $("cancelOcr").disabled = true;
     }
+    if (worker) Promise.resolve(worker.terminate()).catch(() => {});
   }
 };
 let installPrompt;

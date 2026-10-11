@@ -70,6 +70,11 @@ const { chromium } = require("playwright");
       }),
     };
   });
+  await p.setInputFiles("#photos", {
+    name: "valid.png",
+    mimeType: "image/png",
+    buffer: await p.screenshot(),
+  });
   await p.click("#runOcr");
   await p.click("#cancelOcr");
   await p.waitForTimeout(700);

@@ -1,5 +1,4 @@
 const { chromium } = require("playwright");
-const { execFileSync } = require("child_process");
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -10,31 +9,9 @@ const { execFileSync } = require("child_process");
   });
   const page = await browser.newPage({
     viewport: { width: 1200, height: 800 },
+    serviceWorkers: "block",
   });
-  await page.route("https://cdn.jsdelivr.net/**", async (route) => {
-    try {
-      const body = execFileSync(
-        "curl",
-        ["-fsSL", "--max-time", "60", route.request().url()],
-        { maxBuffer: 40 * 1024 * 1024 },
-      );
-      await route.fulfill({
-        status: 200,
-        body,
-        headers: {
-          "access-control-allow-origin": "*",
-          "content-type": route.request().url().endsWith(".gz")
-            ? "application/gzip"
-            : route.request().url().endsWith(".wasm")
-              ? "application/wasm"
-              : "application/javascript",
-        },
-      });
-    } catch (e) {
-      console.log("DOWNLOAD FAILED", route.request().url());
-      await route.abort();
-    }
-  });
+  await page.route("https://**/*", (route) => route.abort());
   await page.setContent(
     '<html lang="ko"><body style="font:48px sans-serif;background:white;color:black;padding:50px;line-height:2">1 apple 사과<br>2 book 책</body></html>',
   );
