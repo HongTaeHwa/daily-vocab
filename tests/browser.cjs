@@ -33,9 +33,11 @@ const { chromium } = require("playwright");
     );
     page.once("dialog", (d) => d.accept());
     await page.click("#backSettings");
+    await page.click("#newTest");
   }
   await page.click("#createSet");
   await page.fill("#setName", "2026-10-11 테스트");
+  await page.click("#toggleDraftText");
   await page.fill("#wordDraft", "1\tapple\t사과\t사과 열매\n2\tbook\t책\t도서");
   await page.check("#confirmed");
   await page.click("#saveSet");
@@ -57,22 +59,30 @@ const { chromium } = require("playwright");
       "apple",
     "snapshot",
   );
+  await page.click("#newTest");
   await page.selectOption("#setSelect", "day04");
   assert(
-    (await page.locator("#historyList .history-entry").count()) === 0,
-    "set isolation",
+    (await page.locator("#historyList .history-entry").count()) === 3,
+    "set isolation (only the three partial day04 records)",
   );
   const custom = await page.evaluate(
     () => sets.find((s) => s.id !== "day04").id,
   );
   await page.selectOption("#setSelect", custom);
+  await page.click("#editSet");
   page.once("dialog", (d) => d.accept());
   await page.click("#deleteSet");
   assert(
-    (await page.locator("#historyList .history-entry").count()) === 1,
-    "deleted history visible",
+    (await page.locator("#historyList .history-entry").count()) === 3,
+    "set filter shows only its own records after delete",
   );
-  await page.click("#historyList summary");
+  await page.click("#tabHistory");
+  await page.selectOption("#historyFilter", "all");
+  assert(
+    (await page.locator("#historyList .history-entry").count()) === 4,
+    "deleted history visible under all sets",
+  );
+  await page.click("#historyList details:has(.history-retry) summary");
   await page.click(".history-retry");
   assert(
     (await page.evaluate(() => queue.length)) === 2,
@@ -109,6 +119,7 @@ const { chromium } = require("playwright");
     "migration backup",
   );
   assert((await page.evaluate(() => lastMissed[0])) === 121, "migrate missed");
+  await page.click("#tabSettings");
   const downloadPromise = page.waitForEvent("download");
   await page.click("#exportSets");
   const download = await downloadPromise;
@@ -121,8 +132,10 @@ const { chromium } = require("playwright");
       throw Error("quota");
     };
   });
+  await page.click("#tabHome");
   await page.click("#createSet");
   await page.fill("#setName", "저장 실패");
+  await page.click("#toggleDraftText");
   await page.fill("#wordDraft", "1\tcat\t고양이");
   await page.check("#confirmed");
   await page.click("#saveSet");

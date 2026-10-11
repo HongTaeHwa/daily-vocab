@@ -18,7 +18,7 @@ const { chromium } = require("playwright");
     }),
   );
   await p.goto(url);
-  if (!(await p.textContent("#appStatus")).includes("20261012-3"))
+  if (!(await p.textContent("#appStatus")).includes("20261012-4"))
     throw Error("version missing");
   await p.click("#createSet");
   await p.setInputFiles("#photos", {
@@ -28,6 +28,7 @@ const { chromium } = require("playwright");
   });
   if (!(await p.textContent("#extractStatus")).includes("사진을 선택했습니다"))
     throw Error("current photo handler missing");
+  await p.click("#tabSettings");
   await p.click("#checkApp");
   if (
     !(await p.textContent("#appStatus")).includes("사진 1장 · 추출 버튼 연결됨")
