@@ -206,15 +206,25 @@ function tableRow(r = {}) {
   ];
   for (const [key, cls, placeholder, lang] of columns) {
     const td = document.createElement("td");
-    const input = document.createElement("input");
-    input.type = "text";
+    const input = document.createElement(key === "id" ? "input" : "textarea");
+    if (key === "id") input.type = "text";
+    else input.rows = 1;
     input.className = "cell " + cls;
     input.placeholder = placeholder;
     input.autocomplete = "off";
+    input.spellcheck = false;
     if (lang) input.lang = lang;
     input.value = key === "aliases" ? (r.aliases || []).join("|") : r[key] ?? "";
     input.dataset.key = key;
     input.addEventListener("input", tableToDraft);
+    // Enter는 줄바꿈 대신 아래 칸으로 이동(마지막 줄이면 새 단어 추가)
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.isComposing) return;
+      e.preventDefault();
+      const next = tr.nextElementSibling?.querySelector(`[data-key="${key}"]`);
+      if (next) next.focus();
+      else $("addRow").click();
+    });
     td.append(input);
     tr.append(td);
   }
@@ -256,8 +266,8 @@ function draftToTable() {
 function tableToDraft() {
   const lines = [];
   for (const tr of $("wordTableBody").querySelectorAll("tr")) {
-    if (!tr.querySelector("input[data-key]")) continue;
-    const get = (k) => tr.querySelector(`input[data-key="${k}"]`).value.replace(/[\t\r\n]+/g, " ").trim();
+    if (!tr.querySelector("[data-key]")) continue;
+    const get = (k) => tr.querySelector(`[data-key="${k}"]`).value.replace(/[\t\r\n]+/g, " ").trim();
     const id = get("id"), en = get("en"), ko = get("ko"), ipa = get("ipa");
     const aliases = get("aliases").split(/[|,·]/).map((x) => x.trim()).filter(Boolean).join("|");
     if (!en && !ko && !aliases && !ipa) continue;
@@ -280,11 +290,11 @@ $("toggleDraftText").onclick = () => setTextMode(!draftTextMode);
 $("addRow").onclick = () => {
   if (draftTextMode) return;
   $("wordTableBody").querySelector(".empty-row")?.remove();
-  const ids = [...$("wordTableBody").querySelectorAll('input[data-key="id"]')].map((i) => Number(i.value)).filter(Number.isInteger);
+  const ids = [...$("wordTableBody").querySelectorAll('[data-key="id"]')].map((i) => Number(i.value)).filter(Number.isInteger);
   const nextId = ids.length ? Math.max(...ids) + 1 : $("wordTableBody").children.length + 1;
   const tr = tableRow({ id: String(nextId) });
   $("wordTableBody").append(tr);
-  tr.querySelector("input.en").focus();
+  tr.querySelector(".en").focus();
   $("confirmed").checked = false;
 };
 $("wordDraft").oninput = () => {
