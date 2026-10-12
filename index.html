@@ -108,11 +108,12 @@ details.help ol{padding-left:18px;margin:8px 0}
 .thumb-remove{position:absolute;top:-6px;right:-6px;width:28px;height:28px;border-radius:50%;border:1px solid #e4a8a8;background:#fff;color:#b83a48;font-weight:900;cursor:pointer;box-shadow:0 2px 6px #0002}
 .manage{margin-top:18px;padding-top:14px;border-top:1px dashed var(--border)}
 .table-wrap{overflow-x:auto;margin-top:8px;border:1px solid var(--border);border-radius:12px}
-#wordTable{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
-#wordTable th{position:sticky;top:0;background:#f3f7fd;color:#344b6b;font-size:13px;text-align:left;padding:8px;border-bottom:1px solid var(--border)}
-#wordTable td{padding:4px;border-bottom:1px solid #eef2f8;vertical-align:middle}
-#wordTable input.cell{min-height:40px;padding:6px 8px;border-radius:9px;font-size:15px;width:100%}
-#wordTable input.num{width:64px}#wordTable input.en{min-width:130px}#wordTable input.ko{min-width:170px}#wordTable input.alias{min-width:190px}#wordTable input.ipa{min-width:110px}
+#wordTable{border-collapse:collapse;width:100%;min-width:640px;table-layout:fixed;font-size:14px}
+#wordTable th{position:sticky;top:0;background:#f3f7fd;color:#344b6b;font-size:13px;text-align:left;padding:8px 6px;border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#wordTable td{padding:4px;border-bottom:1px solid #eef2f8;vertical-align:top}
+#wordTable .cell{display:block;width:100%;min-height:42px;padding:8px;border:1.5px solid #bfcee0;border-radius:9px;font:inherit;font-size:15px;line-height:1.35;color:var(--ink);background:#fff;resize:none;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;word-break:keep-all;field-sizing:content}
+#wordTable .cell:focus{outline:2px solid #2265ca;outline-offset:-1px}
+#wordTable col.c-num{width:62px}#wordTable col.c-en{width:17%}#wordTable col.c-ko{width:31%}#wordTable col.c-alias{width:31%}#wordTable col.c-ipa{width:13%}#wordTable col.c-del{width:48px}
 #wordTable .row-delete{min-height:40px;padding:4px 12px}
 #wordTable .empty-row td{padding:16px 12px;color:var(--muted);text-align:center}
 /* 기록 */
@@ -132,6 +133,7 @@ body.in-quiz .tabbar{display:none}
 body.in-quiz #openSettings{display:none}
 .view:focus{outline:none}
 body.in-quiz main{padding-bottom:30px}
+@media(min-width:900px){body:has(#editor.active) main{max-width:1100px}}
 .global-notice{position:fixed;left:12px;right:12px;bottom:calc(var(--tab-h) + 10px);z-index:40;background:#fff3e7;border:1px solid #f3d2a4;color:#88541f;padding:10px 14px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px #0002}
 @media(max-width:530px){main{padding:10px 10px calc(var(--tab-h) + 20px)}.card{padding:14px}.modes{gap:5px}.mode{padding:10px 4px;font-size:13px;min-height:74px}.mode small{font-size:11px}.word-box{padding:22px 12px}.answerline{flex-wrap:wrap}.answerline input{flex-basis:100%}.answerline button{width:100%}.quizbar{font-size:13px}}
 </style>
@@ -245,7 +247,7 @@ body.in-quiz main{padding-bottom:30px}
     <div id="extractStatus" role="status" class="feedback info"></div>
     <div id="photoPreview" class="thumbs"></div>
     <div class="row-between" style="margin-top:12px"><h3 style="margin:0;font-size:16px;color:var(--navy)">단어 <span id="wordCount" class="pill">단어 없음</span></h3><div class="actionbar" style="margin:0"><button type="button" class="btn small" id="addRow">＋ 단어 추가</button><button type="button" class="btn outline small" id="toggleDraftText">텍스트로 편집</button></div></div>
-    <div id="wordTableWrap" class="table-wrap"><table id="wordTable"><thead><tr><th>번호</th><th>영어</th><th>뜻</th><th>다른 정답 (쉼표로 구분)</th><th>발음</th><th></th></tr></thead><tbody id="wordTableBody"></tbody></table></div>
+    <div id="wordTableWrap" class="table-wrap"><table id="wordTable"><colgroup><col class="c-num"><col class="c-en"><col class="c-ko"><col class="c-alias"><col class="c-ipa"><col class="c-del"></colgroup><thead><tr><th>번호</th><th>영어</th><th>뜻</th><th>다른 정답 (쉼표로 구분)</th><th>발음</th><th></th></tr></thead><tbody id="wordTableBody"></tbody></table></div>
     <textarea id="wordDraft" class="hidden" rows="10" aria-label="단어 텍스트 (한 줄에 번호, 영어, 뜻, 허용 답안, 발음; 탭으로 구분)" placeholder="1&#9;apple&#9;사과&#9;사과|사과 열매"></textarea>
     <p id="draftWarnings" role="status" class="feedback info"></p>
     <label class="check"><input id="confirmed" type="checkbox"> 책과 비교해서 확인했어요</label>
@@ -307,7 +309,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261012-4 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261012-5 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -321,7 +323,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261012-4';
+  var release = '20261012-5';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -357,7 +359,7 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./quiz.js?v=20261012-4" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261012-4" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261012-5" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261012-5" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

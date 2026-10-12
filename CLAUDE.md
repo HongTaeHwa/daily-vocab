@@ -61,13 +61,13 @@
 - 실제 Anthropic 호출 테스트는 없다(키 필요). 키·접속 코드를 코드·문서·테스트에 절대 넣지 않는다. 보호자 설정(AI 연결) UI·동작은 사용자 요청으로 그대로 유지한다.
 
 ## 버전·캐시 올리기 (앱 셸을 바꿀 때 반드시)
-릴리스 문자열 `20261012-4` 와 캐시 이름 `daily-vocab-shell-v8` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
+릴리스 문자열 `20261012-5` 와 캐시 이름 `daily-vocab-shell-v9` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
 1. `index.html` `#appStatus` 초기 텍스트의 버전
 2. `index.html` `var release = '...'`
 3. `index.html` 마지막 `<script src="./quiz.js?v=...">`와 `./sets.js?v=...` (둘 다)
-4. `sw.js` — `CACHE` 상수(`-v8` → `-v9`)와 `SHELL` 배열의 `./quiz.js?v=...`, `./sets.js?v=...`
+4. `sw.js` — `CACHE` 상수(`-v9` → `-v10`)와 `SHELL` 배열의 `./quiz.js?v=...`, `./sets.js?v=...`
 5. `tests/app-update.cjs` — 버전 문자열 검사
-확인: `grep -rn "20261012-4\|daily-vocab-shell-v" index.html sw.js tests/`
+확인: `grep -rn "20261012-5\|daily-vocab-shell-v" index.html sw.js tests/`
 
 ## 로컬 실행
 ```bash
