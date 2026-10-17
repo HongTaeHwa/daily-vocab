@@ -1,7 +1,7 @@
 # CLAUDE.md — daily-vocab (매일 영단어)
 
 ## 프로젝트 개요
-- 한국 학생용 영단어 학습 PWA. 음성 인식(읽기·뜻 말하기·알파벳 철자 말하기), 손글씨 입력, 사진에서 단어 세트 추가(AI 인식), 쉬기·이어서 하기, 시험 기록·오답 복습을 제공한다. 사용자는 아이와 보호자이므로 화면 문구는 쉬운 한국어로, 선택지는 최소로 유지한다.
+- 한국 학생용 영단어 학습 PWA. 음성 인식(읽기·뜻 말하기·알파벳 철자 말하기), 손글씨 입력, 사진에서 단어 세트 추가(AI 인식; 영어만 있는 사진은 AI 사전이 뜻·발음 보완), 빈 뜻·발음 AI 채우기, 쉬기·이어서 하기, 시험 기록·오답 복습을 제공한다. 사용자는 아이와 보호자이므로 화면 문구는 쉬운 한국어로, 선택지는 최소로 유지한다.
 - **앱은 순수 정적 사이트**: 빌드 단계·런타임 패키지·서버 없음. HTML + vanilla JS + localStorage. 외부 네트워크는 브라우저 음성 인식 서비스와 가족용 AI 서버(아래)뿐이다.
 - **AI 서버는 별도 배포하는 Cloudflare Worker**(`worker/`). Anthropic API 키는 Worker 비밀값에만 있고 앱·저장소·기기 어디에도 두지 않는다. 앱은 Worker 주소 + 가족용 접속 코드만 저장한다.
 - 배포: GitHub 저장소 `HongTaeHwa/daily-vocab`의 `main` 브랜치 루트가 그대로 GitHub Pages로 서비스된다.
@@ -15,11 +15,11 @@
 |---|---|
 | `index.html` | 마크업(홈·시험·결과·세트 편집·기록·설정 뷰 + 하단 탭) + CSS + 부트스트랩 스크립트(버전·오류 배너 `#appStatus`/`#globalNotice`, `앱 점검`, `새 버전 불러오기`). |
 | `quiz.js` | 데이터 로드/이전, `showView` 뷰 전환, 세트 선택·범위, 시험 진행(쉬기·이어서·그만하기), 채점·음성 인식·마이크 점검, 결과, 기록, 환경 설정 기억. 기본 40단어 `WORDS`도 여기. |
-| `sets.js` | 세트 만들기·수정(단어 표 편집기 ↔ `#wordDraft` 텍스트 동기화, 이름 바꾸기, 사진 → AI 서버), 백업/가져오기, 보호자 설정(AI 연결), 설치·서비스워커. 마지막에 `window.markVocabAppReady()` 호출. |
+| `sets.js` | 세트 만들기·수정(단어 표 편집기 ↔ `#wordDraft` 텍스트 동기화, 이름 바꾸기, 사진 → AI 서버, 빈 뜻·발음 AI 채우기), 백업/가져오기, 보호자 설정(AI 연결), 설치·서비스워커. 마지막에 `window.markVocabAppReady()` 호출. |
 | `sw.js` | 서비스워커. 앱 셸 캐시(`CACHE` 상수) + network-first/cache-fallback. 교차 출처 요청(AI 서버)은 건드리지 않는다. |
 | `manifest.webmanifest` | PWA 매니페스트 (`/daily-vocab/` 경로 고정). |
 | `icons/` | 192/512/maskable/apple-touch 아이콘. |
-| `worker/worker.js` | Cloudflare Worker 프록시. `POST /ping`, `POST /recognize`, `GET /diag`. 시스템 프롬프트·JSON 스키마·모델 선택·오류 변환·북미 중계(Durable Object)가 여기 있다. |
+| `worker/worker.js` | Cloudflare Worker 프록시. `POST /ping`, `POST /recognize`, `POST /define`(AI 사전), `GET /diag`. 시스템 프롬프트·JSON 스키마·모델 선택·오류 변환·북미 중계(Durable Object)가 여기 있다. |
 | `worker/wrangler.jsonc`, `worker/package.json`, `worker/README.md` | Worker 설정(`vars`, `ratelimits`, `durable_objects`), 배포 스크립트, 보호자용 배포 안내. 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE)은 `wrangler secret put`으로만 넣는다. |
 | `tests/*.cjs` | Playwright 브라우저 테스트 + Worker 단위 테스트 (아래 참고). |
 | `docs/DESIGN.md` | 2026-10-12 전면 개편 설계서(전수 검사 결과, 화면 구조, 데이터 모델, 진행 상태). |
@@ -31,8 +31,9 @@
 - 하단 탭 `#tabHome #tabHistory #tabSettings`, 상단 `#openSettings`(시험 중 숨김). 시험 중에는 탭이 숨고 `#pauseQuiz`(쉬기)·`#backSettings`(그만하기)가 있다. `showView`는 시험 중 다른 화면 요청을 쉬기로 바꾸고, `history.pushState`/`popstate`로 Android 뒤로 가기를 화면 되돌리기로 처리한다.
 - 세트 삭제·이름 바꾸기(`#renameSet #deleteSet #renameBox`)는 편집 화면의 `#manageBox`(기존 세트일 때만)에 있다. 아이가 쓰는 홈에는 두지 않는다. 미저장 초안(`draftDirty`)은 닫기·다른 세트 열기 전에 확인한다.
 - 사진 선택은 `selectedFiles` 배열: `#photos`는 바꿔치기, `#camera`는 누적(최대 10장), 썸네일 ✕로 제거. 가져오기 성공한 사진은 목록에서 빠진다.
-- 테스트가 참조하는 ID는 유지한다: `#start #review #reviewCount #range #shuffle #setSelect #createSet #editSet #renameSet #deleteSet #setStatus #resumeCard #resumeQuiz #discardSession #resumeEditor #unknown #next #check #answerInput #readInput #checkRead #parentConfirm #progressText #finalScore #missedList #againSame #newTest #historyList #historyFilter #historySummary #exportHistory #clearHistory #setName #photos #camera #pickPhotos #takePhoto #extractWords #cancelExtract #extractStatus #wordTableBody #addRow #toggleDraftText #wordDraft #wordCount #confirmed #saveSet #closeEditor #editorTitle #manageBox #manageStatus #finishTitle #aiSettings #aiServer #aiPasscode #saveAi #testAi #clearAi #aiState #aiStatus #backupStatus #appStatus #refreshApp #checkApp`.
-- 상태 문구도 테스트가 본다: "사진을 선택했습니다", "가져오지 못했습니다", "취소", "보호자 설정", "연결 성공", "중단".
+- 테스트가 참조하는 ID는 유지한다: `#start #review #reviewCount #range #shuffle #setSelect #createSet #editSet #renameSet #deleteSet #setStatus #resumeCard #resumeQuiz #discardSession #resumeEditor #unknown #next #check #answerInput #readInput #checkRead #parentConfirm #progressText #finalScore #missedList #againSame #newTest #historyList #historyFilter #historySummary #exportHistory #clearHistory #setName #photos #camera #pickPhotos #takePhoto #extractWords #cancelExtract #extractStatus #fillMeanings #wordTableBody #addRow #toggleDraftText #wordDraft #wordCount #confirmed #saveSet #closeEditor #editorTitle #manageBox #manageStatus #finishTitle #aiSettings #aiServer #aiPasscode #saveAi #testAi #clearAi #aiState #aiStatus #backupStatus #appStatus #refreshApp #checkApp`.
+- 상태 문구도 테스트가 본다: "사진을 선택했습니다", "가져오지 못했습니다", "취소", "보호자 설정", "연결 성공", "중단", "AI 사전으로 채웠어요", "노란 칸", "못 찾은 단어", "먼저 영어 단어", "다시 배포".
+- 표의 뜻·발음 칸에 AI 사전이 채운 값은 `.ai-filled`(노란 칸) 클래스로 표시한다(`aiFilled` Map, 편집 중에만; 직접 고치면 사라지고 저장 데이터·초안 텍스트에는 남지 않는다).
 
 ## 핵심 데이터 구조
 - 단어 객체: `{ id:number|string, en, ko, ipa, hangul, aliases:string[] }`. 기본 세트는 121~160번 40개(`quiz.js`의 `WORDS` 배열).
@@ -50,7 +51,9 @@
 - 저장 데이터는 **검증 실패 시 덮어쓰지 않는다**(`storageAvailable=false`로 보호). 이 원칙을 유지한다.
 
 ## AI 사진 인식 구조
-- 흐름: 앱이 사진을 `preparePhoto`(긴 변 2000px) → JPEG(0.92) base64 → `POST {server}/recognize` (헤더 `x-app-passcode`, JSON `{image, mediaType}`) → Worker가 Anthropic `POST /v1/messages`(모델 기본 `claude-opus-5-5`, `thinking` 생략=adaptive, `output_config.effort: "medium"`, `output_config.format` json_schema) → `{words:[{number,en,ko,ipa,aliases}], note, model, usage}` → 앱 `appendDraftRows`가 초안에 추가(인쇄 번호 유지, 없거나 겹치면 이어서 번호) → 표 갱신.
+- 흐름: 앱이 사진을 `preparePhoto`(긴 변 2000px) → JPEG(0.92) base64 → `POST {server}/recognize` (헤더 `x-app-passcode`, JSON `{image, mediaType}`) → Worker가 Anthropic `POST /v1/messages`(모델 기본 `claude-opus-5-5`, `thinking` 생략=adaptive, `output_config.effort: "medium"`, `output_config.format` json_schema) → `{words:[{number,en,ko,ipa,aliases,generated}], note, model, usage}` → 앱 `appendDraftRows`가 초안에 추가(인쇄 번호 유지, 없거나 겹치면 이어서 번호) → 표 갱신.
+- **영어만 있는 사진**: 프롬프트는 뜻이 인쇄된 항목은 인쇄된 뜻만 쓰고, 뜻이 인쇄되지 않은 항목(단어 목록·시험지·손글씨)은 학습자 사전처럼 뜻·발음을 채워 `generated:true`로 표시하게 한다(읽기 어려운 뜻은 생성하지 않고 건너뛰어 note). 앱은 `generated` 행을 노란 칸으로 표시하고 상태 문구에 ‘뜻 N개는 사진에 없어 AI 사전으로 채웠어요’를 넣는다.
+- **AI 사전 `/define`**: `POST {server}/define` JSON `{words:["apple",…]}`(최대 60개, `WORD_PATTERN` = 영문자로 시작·공백·.'’-·40자 이하, Worker와 앱에 같은 규칙) → `{words:[{en,ko,ipa,aliases}], note, model, usage}`. 요청한 철자 그대로 한 번씩만 돌려주고 모르는 단어는 빠진다(전부 모르면 422). 앱의 `#fillMeanings`(빈 뜻 AI로 채우기)는 뜻이나 발음이 빈 행의 영어만 40개씩 순차 전송해 빈 칸만 채운다(뜻이 빈 행: 뜻·허용 답안·발음, 발음만 빈 행: 발음; 적힌 칸은 바꾸지 않음). 옛 Worker(404)면 ‘다시 배포’ 안내. 사진 인식과 같은 `startOperation`(한 번에 하나, 취소·시간 초과·버튼 잠금·늦은 결과 폐기)을 쓴다.
 - 한 장당 요청 1개, 순차 처리, 앱 120초 타임아웃, 취소는 `AbortController`. Worker는 Anthropic 호출에 110초 타임아웃.
 - **북미 중계**: Anthropic은 홍콩(HKG) 등 미지원 지역발 요청을 `403 forbidden: Request not allowed`로 거절하는데, 한국발 요청이 Cloudflare HKG에서 실행될 때가 있다(2026-10-12 실측). 그래서 Anthropic 호출은 `locationHint: "wnam"`으로 북미에 고정한 Durable Object `AnthropicRelay`(RELAY 바인딩)를 거친다. RELAY가 없거나 실패하면 직접 호출로 폴백. `GET /diag`(비밀값 불필요)로 `ok:true`(upstream 401)를 확인할 수 있다. 이 구조를 없애면 안 된다.
 - 키 위생: 등록된 키는 trim 후 출력 가능한 ASCII·`sk-ant-` 접두사를 검사해 잘못 붙여넣은 키를 Anthropic 호출 전에 걸러 준다(길이·문자 종류만 알려 주고 값은 절대 로그·응답에 넣지 않는다). Anthropic 오류는 `[Anthropic <status> <type>: <message>]`를 덧붙여 앱에 전달한다. `wrangler tail` 로그에는 요청 헤더(접속 코드 포함)가 찍히므로 디버깅 외에는 보지 않는다.
@@ -61,13 +64,13 @@
 - 실제 Anthropic 호출 테스트는 없다(키 필요). 키·접속 코드를 코드·문서·테스트에 절대 넣지 않는다. 보호자 설정(AI 연결) UI·동작은 사용자 요청으로 그대로 유지한다.
 
 ## 버전·캐시 올리기 (앱 셸을 바꿀 때 반드시)
-릴리스 문자열 `20261012-5` 와 캐시 이름 `daily-vocab-shell-v9` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
+릴리스 문자열 `20261018-1` 와 캐시 이름 `daily-vocab-shell-v10` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
 1. `index.html` `#appStatus` 초기 텍스트의 버전
 2. `index.html` `var release = '...'`
 3. `index.html` 마지막 `<script src="./quiz.js?v=...">`와 `./sets.js?v=...` (둘 다)
-4. `sw.js` — `CACHE` 상수(`-v9` → `-v10`)와 `SHELL` 배열의 `./quiz.js?v=...`, `./sets.js?v=...`
+4. `sw.js` — `CACHE` 상수(`-v10` → `-v11`)와 `SHELL` 배열의 `./quiz.js?v=...`, `./sets.js?v=...`
 5. `tests/app-update.cjs` — 버전 문자열 검사
-확인: `grep -rn "20261012-5\|daily-vocab-shell-v" index.html sw.js tests/`
+확인: `grep -rn "20261018-1\|daily-vocab-shell-v" index.html sw.js tests/`
 
 ## 로컬 실행
 ```bash
@@ -86,12 +89,12 @@ node tests/worker.cjs                 # Worker 단위 테스트만 (서버·Play
 실행기가 NODE_PATH를 전역 모듈로 잡고, 8000 포트에 서버가 없으면 자동으로 띄운다.
 | 테스트 | 확인 내용 |
 |---|---|
-| `worker.cjs` | Worker: CORS/Origin, 접속 코드, 비밀값 누락, 요청 제한, 입력 검증, 결과 정리, fallbacks 재시도, Anthropic 오류 변환, 북미 중계·폴백, diag, 키 형식 검사, 타임아웃 |
+| `worker.cjs` | Worker: CORS/Origin, 접속 코드, 비밀값 누락, 요청 제한, 입력 검증, 결과 정리(`generated` 플래그), AI 사전 `/define`(검증·철자 매칭·중복 제거·빈 결과 422·거부), fallbacks 재시도, Anthropic 오류 변환, 북미 중계·폴백, diag, 키 형식 검사, 타임아웃 |
 | `browser.cjs` | 기본 세트 40단어, 3가지 모드 시험 흐름(그만하기 → 중단 기록), 세트 저장(텍스트 모드), 엄격 채점, 세트별 기록 격리, 삭제된 세트 기록 재시험, 구버전 이전, 백업 JSON 왕복, 저장 실패 안내 |
 | `pwa.cjs` | 서비스워커, 반응형 폭(768/1024/390) 오버플로 없음, 매니페스트 아이콘, 오프라인 셸, AI 서버 오류 안내·취소 |
 | `app-update.cjs` | 옛 `sets.js` 캐시 상황에서 버전 표시·초기화 실패 안내·자료 보존 |
 | `ten-photos.cjs` | 사진 10장 순차 전송·결과 보존, 11장 거부, 10단어 세트 시험 |
-| `ai-recognition.cjs` | v1 키 제거, 보호자 설정 검증·저장·삭제(설정 뷰), 연결 확인, 편집 복귀, 사진 2장 인식과 번호 병합·표 표시, 저장·시험, 401/503/연결 실패 안내, 취소 |
+| `ai-recognition.cjs` | v1 키 제거, 보호자 설정 검증·저장·삭제(설정 뷰), 연결 확인, 편집 복귀, 사진 2장 인식과 번호 병합·표 표시, `generated` 뜻 노란 칸 표시·수정 시 해제, 저장·시험, 빈 뜻·발음 AI 채우기(빈 칸만, 두 번째 호출 범위, 옛 Worker 404 안내), 401/503/연결 실패 안내, 취소 |
 | `session.cjs` | 탭 전환, 책 번호 기준 범위 라벨, 쉬기 → 새로고침 → 이어서 하기 → 완료(틀린 단어 목록·같은 범위 다시), 그만하기 중단 기록, 세트 이름 바꾸기(기록 반영·유지), 표 편집기 ↔ 텍스트 동기화·행 삭제·저장, 마지막 선택 기억, 편집 중 설정 다녀오기 |
 UI 요소를 바꾸면 위 ID 목록과 상태 문구를 테스트와 함께 맞춘다. 표 편집기 기본 화면에서는 `#wordDraft`가 숨겨져 있으므로 테스트에서 텍스트를 채우려면 먼저 `#toggleDraftText`를 누른다.
 

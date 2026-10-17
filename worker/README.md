@@ -1,6 +1,6 @@
-# AI 사진 인식 프록시 (Cloudflare Worker)
+# AI 사진 인식·사전 프록시 (Cloudflare Worker)
 
-앱(GitHub Pages)은 Anthropic API를 직접 부르지 않고 이 Worker만 호출합니다. Anthropic API 키는 Worker의 비밀값에만 있고, 앱·저장소·태블릿 어디에도 들어가지 않습니다. 가족용 **접속 코드**가 맞는 요청만 처리합니다.
+앱(GitHub Pages)은 Anthropic API를 직접 부르지 않고 이 Worker만 호출합니다. 사진 인식(`/recognize`)과 영어 단어 목록의 뜻·발음을 찾는 AI 사전(`/define`)을 처리합니다. Anthropic API 키는 Worker의 비밀값에만 있고, 앱·저장소·태블릿 어디에도 들어가지 않습니다. 가족용 **접속 코드**가 맞는 요청만 처리합니다.
 
 ```
 태블릿 앱 ──(사진 + 접속 코드)──▶ Worker ──(API 키)──▶ Anthropic
@@ -74,10 +74,13 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 | 요청 | 설명 |
 |---|---|
 | `POST /ping` · 헤더 `X-App-Passcode` | 접속 코드와 Anthropic 연결을 확인. `{ ok: true, model }` |
-| `POST /recognize` · 헤더 `X-App-Passcode` · JSON `{ image: base64, mediaType }` | 사진 한 장에서 단어 추출. `{ words: [{ number, en, ko, aliases }], note, model, usage }` |
+| `POST /recognize` · 헤더 `X-App-Passcode` · JSON `{ image: base64, mediaType }` | 사진 한 장에서 단어 추출. `{ words: [{ number, en, ko, ipa, aliases, generated }], note, model, usage }`. 사진에 뜻이 인쇄되지 않은 단어(영어만 있는 목록·시험지)는 AI가 뜻·발음을 채우고 `generated: true`로 표시합니다 |
+| `POST /define` · 헤더 `X-App-Passcode` · JSON `{ words: ["apple", …] }` | AI 사전. 영어 단어·짧은 구 최대 60개(영문자·공백·.'’- 40자 이하) → `{ words: [{ en, ko, ipa, aliases }], note, model, usage }`. 요청한 철자 그대로 한 번씩 돌려주고 모르는 단어는 빠집니다(전부 모르면 422). 앱의 ‘빈 뜻 AI로 채우기’가 40개씩 보냅니다 |
 
 오류는 `{ error, message }` JSON으로 돌려주며(원인은 `npm run tail` 로그의 `anthropic_error` 줄에서 확인) `message`는 앱이 그대로 보여 주는 한국어 안내입니다. 접속 코드 오류는 401, 허용되지 않은 주소는 403, 요청 과다는 429, Anthropic 쪽 문제는 502/503/504입니다. Anthropic 키 문제는 앱의 접속 코드 오류(401)와 구분하기 위해 502로 돌려줍니다.
 
 보안 메모: Origin 검사와 CORS는 다른 웹사이트가 이 Worker를 쓰지 못하게 막고, 접속 코드는 주소를 아는 사람의 무단 사용을 막습니다. 접속 코드는 태블릿 브라우저에 저장되므로, 기기를 잃어버리면 코드를 바꾸세요. 피해 범위는 어차피 Anthropic 콘솔의 사용 한도로 제한됩니다.
 
-`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·오류 변환을 Node에서 확인합니다 (`node tests/worker.cjs`).
+`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환을 Node에서 확인합니다 (`node tests/worker.cjs`).
+
+2026-10-18 이전에 배포한 Worker에는 `/define`이 없어 앱의 ‘빈 뜻 AI로 채우기’가 “다시 배포” 안내를 띄웁니다. `npm run deploy`로 다시 배포하면 됩니다(앱 배포와 별개, 먼저 배포해도 옛 앱과 호환).

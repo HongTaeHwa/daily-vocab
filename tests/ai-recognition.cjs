@@ -38,8 +38,19 @@ const { chromium } = require("playwright");
     if (mode === "abort") return route.abort("connectionrefused");
     if (mode === "auth") return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
     if (mode === "busy") return reply(route, 503, { error: "upstream", message: "AI 서버가 혼잡합니다. 잠시 후 다시 시도해 주세요." });
+    if (mode === "notfound") return reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
     if (mode === "slow") await new Promise((r) => setTimeout(r, 1500));
     if (url.pathname === "/ping") return reply(route, 200, { ok: true, model: "claude-opus-5-5" });
+    if (url.pathname === "/define") {
+      // AI 사전 가짜 응답: 아는 단어만 돌려주고 모르는 단어(zzz)는 메모로 알린다
+      const dict = {
+        apple: { ko: "사과", ipa: "ˈæpəl", aliases: ["사과", "애플"] },
+        run: { ko: "달리다 · 뛰다", ipa: "rʌn", aliases: ["달리다", "뛰다"] },
+        cat: { ko: "고양이", ipa: "kæt", aliases: ["고양이"] },
+      };
+      const words = (body.words || []).filter((w) => dict[w.toLowerCase()]).map((w) => ({ en: w, ...dict[w.toLowerCase()] }));
+      return reply(route, 200, { words, note: "zzz는 영어 단어가 아닙니다.", model: "claude-opus-5-5", usage: { input: 1, output: 1 } });
+    }
     const imageCount = requests.filter((r) => r.path === "/recognize").length;
     const words =
       imageCount % 2 === 1
@@ -48,7 +59,7 @@ const { chromium } = require("playwright");
             { number: 122, en: "devote", ko: "바치다 · 헌신하다", aliases: ["바치다", "바치", "헌신하다", "헌신"] },
           ]
         : [
-            { number: 0, en: "indicate", ko: "나타내다", aliases: ["나타내"] },
+            { number: 0, en: "indicate", ko: "나타내다", aliases: ["나타내"], generated: true },
             { number: 122, en: "function", ko: "기능", aliases: [] },
           ];
     return reply(route, 200, { words, note: "", model: "claude-opus-5-5", usage: { input: 1, output: 1 } });
@@ -125,6 +136,15 @@ const { chromium } = require("playwright");
   assert((await page.textContent("#extractStatus")).includes("2/2장 완료"), "completion status");
   assert((await page.textContent("#draftWarnings")).includes("책과 비교"), "review reminder");
   assert((await page.locator("#wordTableBody tr").count()) === 4, "table shows extracted rows");
+  // 사진에 뜻이 없어 AI가 채운 단어(generated)는 안내하고 노란 칸으로 표시한다
+  assert((await page.textContent("#extractStatus")).includes("뜻 1개는 사진에 없어 AI 사전으로 채웠어요"), "generated meaning announced");
+  assert((await page.textContent("#draftWarnings")).includes("노란 칸"), "generated meaning warning");
+  const cellClass = (row, key) => page.getAttribute(`#wordTableBody tr:nth-child(${row}) [data-key="${key}"]`, "class");
+  assert((await cellClass(3, "ko")).includes("ai-filled"), "generated ko marked");
+  assert(!(await cellClass(3, "ipa")).includes("ai-filled"), "empty ipa not marked");
+  assert(!(await cellClass(1, "ko")).includes("ai-filled"), "printed meaning not marked");
+  await page.fill('#wordTableBody tr:nth-child(3) [data-key="ko"]', "나타내다 · 가리키다");
+  assert(!(await cellClass(3, "ko")).includes("ai-filled"), "mark cleared after edit");
 
   // 저장 → 시험
   await page.fill("#setName", "AI 세트");
@@ -143,6 +163,42 @@ const { chromium } = require("playwright");
   await page.goto(url);
   assert((await page.textContent("#aiState")).includes("연결 설정됨"), "config survives reload");
   await page.click("#createSet");
+
+  // 영어만 적은 단어의 뜻·발음을 AI 사전으로 채우기: 빈 칸만 채우고 노란 칸으로 표시, 못 찾은 단어 안내
+  await page.click("#fillMeanings");
+  assert((await page.textContent("#extractStatus")).includes("먼저 영어 단어"), "fill needs words");
+  await page.click("#toggleDraftText");
+  await page.fill("#wordDraft", ["apple", "2\trun\t\t\trʌn", "zzz", "5\tcat\t고양이"].join("\n"));
+  await page.click("#toggleDraftText");
+  assert((await page.locator("#wordTableBody tr").count()) === 4, "english-only rows in table");
+  await page.click("#fillMeanings");
+  assert((await page.isDisabled("#extractWords")) && (await page.isDisabled("#fillMeanings")), "ai buttons locked while filling");
+  await page.waitForFunction(() => !document.getElementById("fillMeanings").disabled);
+  const defines = () => requests.filter((r) => r.path === "/define");
+  assert(defines().length === 1 && JSON.stringify(defines()[0].body.words) === JSON.stringify(["apple", "run", "zzz", "cat"]), "define request lists words with blanks: " + JSON.stringify(defines().map((d) => d.body)));
+  assert(defines()[0].headers["x-app-passcode"] === PASSCODE, "define passcode header");
+  const filled = await page.inputValue("#wordDraft");
+  assert(
+    filled === ["1\tapple\t사과\t사과|애플\tˈæpəl", "2\trun\t달리다 · 뛰다\t달리다|뛰다\trʌn", "3\tzzz\t\t", "5\tcat\t고양이\t\tkæt"].join("\n"),
+    "filled draft: " + JSON.stringify(filled),
+  );
+  const fillStatus = await page.textContent("#extractStatus");
+  assert(fillStatus.includes("뜻 2개") && fillStatus.includes("발음 2개") && fillStatus.includes("못 찾은 단어: zzz") && fillStatus.includes("영어 단어가 아닙니다"), "fill status: " + fillStatus);
+  assert((await cellClass(1, "ko")).includes("ai-filled") && (await cellClass(1, "ipa")).includes("ai-filled"), "filled ko/ipa marked");
+  assert(!(await cellClass(2, "ipa")).includes("ai-filled"), "own ipa kept");
+  assert(!(await cellClass(4, "ko")).includes("ai-filled") && (await cellClass(4, "ipa")).includes("ai-filled"), "own meaning kept, ipa-only fill marked");
+  await page.click("#fillMeanings");
+  await page.waitForFunction(() => !document.getElementById("fillMeanings").disabled);
+  assert(defines().length === 2 && JSON.stringify(defines()[1].body.words) === JSON.stringify(["zzz"]), "second fill asks only the still-empty word");
+  assert((await page.inputValue("#wordDraft")) === filled, "second fill changes nothing");
+  mode = "notfound";
+  await page.click("#fillMeanings");
+  await page.waitForFunction(() => !document.getElementById("fillMeanings").disabled);
+  assert((await page.textContent("#extractStatus")).includes("다시 배포"), "old worker (no /define) guidance");
+  mode = "ok";
+  await page.click("#toggleDraftText");
+  await page.fill("#wordDraft", "");
+  await page.click("#toggleDraftText");
   await page.setInputFiles("#photos", { name: "p3.png", mimeType: "image/png", buffer: shot });
   const runAndWait = async () => {
     await page.click("#extractWords");
@@ -171,7 +227,7 @@ const { chromium } = require("playwright");
   assert((await page.evaluate(() => localStorage.getItem("daily_vocab_ai_v2"))) === null, "storage cleared");
   if (errors.length) throw Error(errors.join(","));
   console.log(
-    "PASS: legacy key purge, guardian settings, ping, two-photo recognition with numbering, save/quiz, error guidance, cancel, clear",
+    "PASS: legacy key purge, guardian settings, ping, two-photo recognition with numbering and generated meanings, save/quiz, AI dictionary fill, error guidance, cancel, clear",
   );
   await browser.close();
 })().catch((e) => {

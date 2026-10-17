@@ -16,8 +16,8 @@ const { pathToFileURL } = require("url");
   };
   const okWords = {
     words: [
-      { number: 121, english: "authority", ipa: "əˈθɔːrəti", korean: "권위 · 권한", aliases: ["권위", "권한", "권위"] },
-      { number: 0, english: " devote ", ipa: "[dɪˈvoʊt]", korean: "바치다", aliases: ["바치다", "바치"] },
+      { number: 121, english: "authority", ipa: "əˈθɔːrəti", korean: "권위 · 권한", aliases: ["권위", "권한", "권위"], generated: "yes" },
+      { number: 0, english: " devote ", ipa: "[dɪˈvoʊt]", korean: "바치다", aliases: ["바치다", "바치"], generated: true },
       { number: 5, english: "", ipa: "", korean: "x", aliases: [] },
     ],
     note: "",
@@ -129,8 +129,8 @@ const { pathToFileURL } = require("url");
   assert.equal(res.status, 200);
   data = await res.json();
   assert.deepEqual(data.words, [
-    { number: 121, en: "authority", ko: "권위 · 권한", ipa: "əˈθɔːrəti", aliases: ["권위", "권한"] },
-    { number: 0, en: "devote", ko: "바치다", ipa: "dɪˈvoʊt", aliases: ["바치다", "바치"] },
+    { number: 121, en: "authority", ko: "권위 · 권한", ipa: "əˈθɔːrəti", aliases: ["권위", "권한"], generated: false },
+    { number: 0, en: "devote", ko: "바치다", ipa: "dɪˈvoʊt", aliases: ["바치다", "바치"], generated: true },
   ]);
   assert.equal(data.note, "");
   assert.equal(data.model, "claude-opus-5-5");
@@ -143,8 +143,94 @@ const { pathToFileURL } = require("url");
   assert.equal(sent.output_config.format.schema.additionalProperties, false);
   assert(sent.system.includes("aliases"));
   assert(sent.output_config.format.schema.properties.words.items.properties.ipa, "schema has ipa");
+  assert(sent.output_config.format.schema.properties.words.items.required.includes("generated"), "schema requires generated");
+  assert(sent.system.includes("generated") && sent.system.includes("no Korean meaning"), "prompt covers english-only pages");
+  assert(sent.messages[0].content[1].text.includes("generated"), "user text asks to flag generated meanings");
   assert.equal(sent.max_tokens, 8192);
   assert.equal(sent.thinking, undefined, "adaptive thinking by omission");
+
+  // define (AI 사전): validation, prompt, matching back to the requested spelling, dedup, unknown words dropped
+  res = await worker.fetch(req("/define", { body: {} }), env);
+  assert.equal(res.status, 400);
+  res = await worker.fetch(req("/define", { body: { words: "apple" } }), env);
+  assert.equal(res.status, 400);
+  res = await worker.fetch(req("/define", { body: { words: ["apple", "drop table;"] } }), env);
+  assert.equal(res.status, 400);
+  assert((await res.json()).message.includes("drop table;"));
+  res = await worker.fetch(req("/define", { body: { words: Array.from({ length: 61 }, (_, i) => "w" + i) } }), env);
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).error, "too_many");
+  res = await worker.fetch(req("/define", { raw: "nope" }), env);
+  assert.equal(res.status, 400);
+  res = await worker.fetch(new Request("https://ai.example.workers.dev/define", { method: "GET" }), env);
+  assert.equal(res.status, 404);
+  calls.length = 0;
+  upstream = (body) => ({
+    status: 200,
+    json: {
+      model: body.model,
+      stop_reason: "end_turn",
+      usage: { input_tokens: 3, output_tokens: 4 },
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            words: [
+              { english: "Apple", ipa: "[ˈæpəl]", korean: "사과", aliases: ["사과", "사과"] },
+              { english: "give up", ipa: "", korean: "포기하다", aliases: ["포기하다", "포기"] },
+              { english: "zzz", ipa: "", korean: "", aliases: [] },
+              { english: "banana", ipa: "", korean: "바나나", aliases: [] },
+              { english: "apple", ipa: "", korean: "중복", aliases: [] },
+            ],
+            note: "zzz는 영어 단어가 아닙니다.",
+          }),
+        },
+      ],
+    },
+  });
+  res = await worker.fetch(req("/define", { body: { words: ["apple", " give  up ", "zzz", "APPLE"] } }), env);
+  assert.equal(res.status, 200);
+  data = await res.json();
+  assert.deepEqual(data.words, [
+    { en: "apple", ko: "사과", ipa: "ˈæpəl", aliases: ["사과"] },
+    { en: "give up", ko: "포기하다", ipa: "", aliases: ["포기하다", "포기"] },
+  ]);
+  assert.equal(data.note, "zzz는 영어 단어가 아닙니다.");
+  assert.equal(data.model, "claude-opus-5-5");
+  assert.deepEqual(data.usage, { input: 3, output: 4 });
+  assert.equal(calls.length, 1, "one upstream call per define request");
+  const defineSent = calls[0].body;
+  assert(defineSent.system.includes("dictionary"), "dictionary prompt");
+  assert.equal(
+    defineSent.messages[0].content,
+    "다음 영어 단어들의 뜻·발음·허용 답안을 JSON으로 만드세요.\n1. apple\n2. give up\n3. zzz",
+    "deduped, numbered word list",
+  );
+  assert.equal(defineSent.output_config.format.type, "json_schema");
+  assert.deepEqual(defineSent.output_config.format.schema.properties.words.items.required, ["english", "ipa", "korean", "aliases"]);
+  assert.equal(defineSent.fallbacks, "default");
+  assert.equal(defineSent.thinking, undefined);
+  upstream = (body) => ({
+    status: 200,
+    json: {
+      model: body.model,
+      stop_reason: "end_turn",
+      usage: {},
+      content: [{ type: "text", text: JSON.stringify({ words: [{ english: "zzz", ipa: "", korean: "", aliases: [] }], note: "모르는 단어입니다" }) }],
+    },
+  });
+  res = await worker.fetch(req("/define", { body: { words: ["zzz"] } }), env);
+  assert.equal(res.status, 422, "nothing defined → 422");
+  assert((await res.json()).message.includes("모르는 단어입니다"));
+  upstream = (body) => ({ status: 200, json: { model: body.model, usage: {}, stop_reason: "refusal", content: [] } });
+  res = await worker.fetch(req("/define", { body: { words: ["apple"] } }), env);
+  assert.equal(res.status, 422);
+  assert((await res.json()).message.includes("거부"));
+  limiter.keys.length = 0;
+  limiter.allow = true;
+  upstream = okResponse;
+  res = await worker.fetch(req("/define", { body: { words: ["apple"] } }), { ...env, RATE_LIMITER: limiter });
+  assert(limiter.keys[0].startsWith("/define:"), "define has its own rate-limit bucket");
 
   // fallbacks unsupported (400) → retried without
   calls.length = 0;
@@ -274,7 +360,7 @@ const { pathToFileURL } = require("url");
   assert.equal((await res.json()).error, "upstream_timeout");
 
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/fallback retry/upstream error mapping",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/fallback retry/upstream error mapping",
   );
 })().catch((e) => {
   console.error(e);
