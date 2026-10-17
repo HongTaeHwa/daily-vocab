@@ -584,6 +584,7 @@ $("saveAi").onclick = () => {
   }
   if (!storeAi({ server, passcode })) return;
   renderAiSettings();
+  if (typeof renderFamilySettings === "function") renderFamilySettings();
   $("aiStatus").textContent =
     "저장했습니다. ‘연결 확인’을 눌러 AI 서버가 응답하는지 확인해 보세요." +
     (window.editorOpen ? " 편집 중이던 세트는 홈의 ‘편집 중인 세트로 돌아가기’에서 이어집니다." : "");
@@ -592,6 +593,7 @@ $("saveAi").onclick = () => {
 $("clearAi").onclick = () => {
   localStorage.removeItem(AI_STORAGE_KEY);
   renderAiSettings();
+  if (typeof renderFamilySettings === "function") renderFamilySettings();
   $("aiStatus").textContent = "AI 연결 설정을 삭제했습니다.";
 };
 function describeAiError(status, payload) {
@@ -923,5 +925,6 @@ if ("serviceWorker" in navigator)
     .catch(() => ($("backupStatus").textContent = "오프라인용 앱 저장은 이 브라우저에서 지원되지 않아요. 인터넷 연결 상태에서는 그대로 쓸 수 있어요."));
 renderAiSettings();
 renderHome();
+if (typeof initFamily === "function") initFamily(); // family.js: 가족 기록함(아이 이름·기록 보내기·아이들 탭)
 
 if (window.markVocabAppReady) window.markVocabAppReady();

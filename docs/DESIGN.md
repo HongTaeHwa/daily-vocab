@@ -132,3 +132,47 @@
 - 표시: AI가 채운 뜻·발음 칸은 `.ai-filled`(노란 칸)로 표시하고 직접 고치면 사라진다. 편집 중에만 기억하며 저장 데이터·초안 텍스트에는 남기지 않는다(데이터 모델·저장 키 불변).
 - 안내: ‘뜻 N개는 사진에 없어 AI 사전으로 채웠어요(노란 칸)’, ‘못 찾은 단어: …’, 옛 Worker(404)면 ‘다시 배포’. 확인란 문구는 그대로 두고 경고에 “사전과 비교해 확인”을 더했다.
 - 배포 순서: Worker 먼저(`generated` 필드 추가는 옛 앱과 호환), 그다음 앱(버전 `20261018-1`, 캐시 v10).
+
+## 10. 가족 기록함 — 보호자 폰에서 아이들 기록 보기 (2026-10-18 설계, 1단계)
+
+배경: 중2 아들에 이어 초5 딸도 각자 기기에서 쓰게 되었다. 기기별 localStorage라 데이터는 저절로 분리되지만, 부모가 자기 폰에서 두 아이의 시험 여부·점수를 선생님처럼 보려면 기록이 기기 밖으로 나가는 경로가 필요하다. 외부 서비스(Firebase 등)는 개인정보 원칙에 어긋나고 JSON 백업 전달은 매일 보기에 불편해, 이미 있는 가족 Worker에 “가족 기록함”을 붙인다. 앱 분리는 같은 계정의 GitHub Pages가 origin을 공유해 localStorage가 섞이므로 제외했다.
+
+결정(2026-10-18, 보호자 확인): ① 보호자 코드를 가족 코드와 따로 둔다 ② 저장소는 Worker의 SQLite 기반 Durable Object ③ 부모 화면은 보호자 코드가 있을 때만 보이는 하단 탭 ④ 기록 보내기는 아이 이름 저장 + 스위치 켜기 두 조건.
+
+### 10.1 역할과 코드
+- 가족 코드(`APP_PASSCODE`, 기존): AI 사진 인식·사전, 기록 보내기(`/sync`). 아이 기기에 저장.
+- 보호자 코드(`PARENT_PASSCODE`, 새 비밀값): 기록 읽기·삭제(`/family…`). 보호자 폰에만 저장. 가족 코드가 통하는 곳에서는 보호자 코드도 통한다.
+- 이유: 아이 기기에는 가족 코드가 이미 있어 그 코드로 읽기까지 열면 형제 기록을 볼 수 있다. 코드를 나누면 아이 기기에는 ‘아이들’ 탭 자체가 없다.
+
+### 10.2 아이 기기(보내는 쪽) — `family.js`
+- 설정 → ‘👨‍👩‍👧 가족 기록함’: 아이 이름(20자), ‘시험 기록을 보호자에게 보내기’ 스위치, 저장, 지금 보내기. 기기마다 한 번 만드는 `childId`(UUID).
+- 언제: `saveSession`이 기록을 확정할 때(완료·중단 모두) `queueFamilySync(record)` → 대기 목록(`pending`)에 id를 넣고 바로 전송. 실패하면 대기 목록에 남겨 앱을 열 때·화면 복귀·온라인 복귀 때 다시 보낸다. 처음 켤 때는 기존 기록 전체를 보낸다.
+- 무엇: 압축 기록 `{id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed:[{en,ko,unknown?}]}`(틀린 단어 최대 200개) + 세트 목록 `[{name,count}]`. 단어별 전체 결과·세트 단어는 보내지 않는다. 한 번에 50개씩.
+- 홈·시험·결과 화면은 바뀌지 않는다. 상태 문구는 설정에만(‘마지막 전송 …’, ‘못 보낸 기록 N개’).
+
+### 10.3 Worker — `FamilyStore`(Durable Object)
+- 저장소: SQLite 기반 DO 하나(`idFromName("family")`)의 내장 키-값 저장소. 키: `child:<childId>` = `{id,name,sets,createdAt,updatedAt,lastTestAt,recordCount}`, `rec:<childId>:<completedAt ISO>:<recordId>` = 압축 기록(+`receivedAt`). 같은 기록을 다시 보내면 같은 키라 덮어쓴다. 아이당 5,000개를 넘으면 오래된 것부터 지운다.
+- 엔드포인트: `POST /sync`(가족·보호자 코드) → `{ok, stored, trimmed, syncedAt}` / `GET /family`(보호자) → `{children:[{…child, records}], serverTime}`(아이별 최근 14일 기록, 20개 미만이면 최근 20개) / `GET /family/<childId>`(보호자) → `{child, records}`(전체, 최신순) / `DELETE /family/<childId>`(보호자) → `{ok, deleted}`.
+- 검증: 본문 256KB, 기록 100개/회, 이름 1~20자, id 형식, 시각·점수·방식 검사, 하나라도 틀리면 전체 거절. Origin 허용 목록·상수 시간 비교·요청 제한(`/sync`, `/family` 버킷)은 그대로.
+- 오류: 보호자 코드 미설정 500(`PARENT_PASSCODE` 안내), FAMILY 바인딩 없음 500(‘다시 배포’), 가족 코드로 읽기 401 ‘보호자 코드가 맞지 않습니다’, 모르는 아이 404 `unknown_child`(옛 Worker의 404 `not_found`와 구분).
+- 배포: `wrangler.jsonc`에 `FAMILY` 바인딩과 마이그레이션 `v2`(`new_sqlite_classes: ["FamilyStore"]`), `npx wrangler secret put PARENT_PASSCODE`, `npm run deploy`. Worker 먼저, 앱 나중.
+
+### 10.4 보호자 폰(보는 쪽)
+- 설정의 가족 기록함 아래 ‘보호자 폰’ 칸에 보호자 코드 저장 → 하단 ‘👨‍👩‍👧 아이들’ 탭 등장(`#tabFamily`, 코드 없으면 숨김) + 즉시 연결 확인.
+- 아이들 화면(`#family`): 아이별 카드 — 이름, ‘오늘 ✅ N회’/‘오늘 아직 안 했어요’, 마지막 시험(상대 시각·세트·점수), 최근 7일 칸(요일·평균 점수), 이번 주 횟수·평균. ‘기록 자세히 보기’ → 전체 기록 목록(기록 화면과 같은 모양: 점수·날짜·세트·방식·범위·소요 시간·중단, 틀린 단어 펼치기) + ‘이 아이 기록 삭제’.
+- 오늘·7일·이번 주는 폰의 현지 시간으로 계산한다(서버는 UTC로 저장). 마지막 응답은 `daily_vocab_family_cache_v1`에 두어 오프라인에도 직전 상태가 보인다.
+
+### 10.5 데이터 키(앱)
+- `daily_vocab_family_v1` = `{childId, childName, sendEnabled, lastSyncAt, lastError, pending:[기록 id], parentCode}` — 백업 JSON/CSV에 넣지 않는다.
+- `daily_vocab_family_cache_v1` = 마지막 `/family` 응답 + `fetchedAt`.
+- 기록 객체에 `activeMs`(실제 푼 시간, 선택)를 추가 저장한다. 기존 키·형식은 그대로.
+
+### 10.6 테스트·문서
+- `tests/worker.cjs`: /sync 검증·덮어쓰기·14일 요약·상한, 코드 역할(가족 코드로 /family 401, 보호자 코드로 /ping 허용), 미설정 안내, 삭제, DO 저장소 모의, 503 폴백.
+- `tests/family.cjs`: 아이 기기 — 켜기(기존 기록 전송) → 시험 완료 → 보낸 내용 검증 → 연결 실패 → 대기 → 새로고침 후 재전송 → 끄기; 보호자 폰 — 코드 오류·옛 Worker 안내 → 저장·탭 등장 → 카드(오늘·7일·이번 주) → 상세·틀린 단어 → 삭제 → 코드 삭제로 탭 숨김.
+- README(사용법·개인정보 절), worker/README(보호자 코드·마이그레이션·API), CLAUDE.md(파일·ID·문구·키·버전 체크리스트). 버전 `20261018-2`, 캐시 v11, `family.js?v=` 추가.
+
+### 10.7 이후 단계(미구현)
+- 2단계 숙제: 부모가 ‘오늘 DAY05 1~20’을 지정하면 아이 홈에 카드로 뜨고 완료되면 표시. 부모 한마디(‘잘했어!’). 같은 DO에 `task:` 키, 아이 앱이 열릴 때 `GET /tasks`.
+- 3단계 세트 보내기: 부모 폰에서 만든 세트를 아이 기기로 전송(JSON 수동 전달 대체).
+- 하지 않는 것: 푸시 알림, 계정·로그인, 외부 서비스. 기기를 바꾸면 새 childId로 새 아이처럼 보이므로 옛 항목을 삭제한다(이름 합치기는 2단계 검토).

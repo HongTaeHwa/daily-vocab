@@ -8,10 +8,15 @@
 //                    사진에 뜻이 인쇄되어 있지 않은 단어(영어만 있는 목록·시험지)는 AI가 사전처럼 뜻·발음을 채우고 generated:true 로 표시한다.
 //   POST /define     헤더 X-App-Passcode, JSON {words:["apple",…]} → { words:[{en,ko,ipa,aliases}], note, model, usage }  (AI 사전: 최대 60개)
 //   GET  /diag       (비밀값 사용 안 함) 이 Worker 위치에서 Anthropic이 요청을 받는지 확인
+//   POST /sync       헤더 X-App-Passcode(가족 또는 보호자 코드), JSON {child:{id,name}, records:[…], sets:[…]} → { ok, stored, trimmed, syncedAt }
+//                    아이 기기가 시험 기록(점수·틀린 단어·세트 이름)을 가족 기록함(FamilyStore)에 보낸다.
+//   GET  /family     헤더 X-App-Passcode(보호자 코드만) → { children:[{id,name,sets,lastTestAt,…,records}], serverTime }  (아이별 최근 기록)
+//   GET  /family/<childId>     보호자 코드 → { child, records }  (전체 기록, 최신순)
+//   DELETE /family/<childId>   보호자 코드 → { ok, deleted }
 //
-// 비밀값: ANTHROPIC_API_KEY, APP_PASSCODE   (wrangler secret put ...)
+// 비밀값: ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE(선택: 보호자 폰에서 아이들 기록 보기)   (wrangler secret put ...)
 // 변수:   CLAUDE_MODEL(기본 claude-opus-5-5), ALLOWED_ORIGINS(쉼표 구분), ANTHROPIC_WORKSPACE_ID(선택)   (wrangler.jsonc vars)
-// 바인딩: RATE_LIMITER(선택, ratelimits), RELAY(Durable Object, 아래 참고)
+// 바인딩: RATE_LIMITER(선택, ratelimits), RELAY(Durable Object, 아래 참고), FAMILY(Durable Object FamilyStore: 가족 기록함)
 //
 // 왜 Durable Object를 거치나: 한국에서 온 요청은 Cloudflare 홍콩(HKG) 데이터센터에서 실행될 때가 있는데,
 // Anthropic은 홍콩발 요청을 403 "Request not allowed"로 거절한다. 그래서 Anthropic 호출만 북미에 고정된
@@ -29,6 +34,22 @@ const WORD_PATTERN = /^[A-Za-z][A-Za-z .'’-]{0,39}$/;
 const UPSTREAM_TIMEOUT_MS = 110000;
 const RELAY_LOCATION = "wnam";
 const FORWARDED_HEADERS = ["content-type", "x-api-key", "anthropic-version", "anthropic-beta", "anthropic-workspace-id"];
+
+// ---- 가족 기록함(FamilyStore) 규칙 ----
+// 보내는 쪽(/sync)은 가족 코드, 보는 쪽(/family…)은 보호자 코드만. 아이 기기에는 가족 코드만 있으므로 형제 기록을 볼 수 없다.
+const FAMILY_PATH = /^\/family(?:\/([A-Za-z0-9-]{8,64}))?$/;
+const FAMILY_MODES = ["read_meaning", "en_ko", "ko_en"];
+const CHILD_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
+const RECORD_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_SYNC_BODY = 256 * 1024;
+const MAX_SYNC_RECORDS = 100;
+const MAX_SYNC_SETS = 100;
+const MAX_MISSED_WORDS = 200;
+const MAX_CHILD_NAME = 20;
+const MAX_CHILD_RECORDS = 5000; // 아이당 보관 기록 수. 넘으면 오래된 것부터 지운다.
+const SUMMARY_DAYS = 14; // GET /family 가 아이별로 돌려주는 최근 기록 범위
+const SUMMARY_MIN_RECORDS = 20; // 최근 14일 기록이 이보다 적으면 최근 20개를 돌려준다
+const STORAGE_BATCH = 128; // Durable Object storage put/delete 한 번에 넣을 수 있는 키 수
 
 // 실제 교재(예: 0161 amend [əménd] 동 (법 등을) 수정하다, 개정하다 ⊜ alter, revise / 예문 / ⊕ amendment …) 레이아웃 기준.
 // 영어 단어만 있는 사진(단어 목록·시험지·손글씨)은 뜻이 없으므로 AI가 학습자 사전처럼 채우고 generated 로 표시한다.
@@ -122,7 +143,7 @@ function corsHeaders(request, env) {
   const headers = { vary: "Origin" };
   if (allowedOrigins(env).includes(origin)) {
     headers["access-control-allow-origin"] = origin;
-    headers["access-control-allow-methods"] = "POST, OPTIONS";
+    headers["access-control-allow-methods"] = "GET, POST, DELETE, OPTIONS";
     headers["access-control-allow-headers"] = "content-type, x-app-passcode";
     headers["access-control-max-age"] = "86400";
   }
@@ -148,6 +169,21 @@ function safeEqual(a, b) {
   let diff = 0;
   for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
   return diff === 0;
+}
+
+// 접속 코드의 역할: 보호자 코드(PARENT_PASSCODE)는 모든 요청에, 가족 코드(APP_PASSCODE)는 AI와 기록 보내기에 쓴다.
+function roleOf(request, env) {
+  const given = request.headers.get("x-app-passcode") || "";
+  if (env.PARENT_PASSCODE && safeEqual(given, env.PARENT_PASSCODE)) return "parent";
+  if (env.APP_PASSCODE && safeEqual(given, env.APP_PASSCODE)) return "family";
+  return null;
+}
+
+async function rateLimited(request, env, bucket, cors) {
+  if (!env.RATE_LIMITER) return null;
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  const { success } = await env.RATE_LIMITER.limit({ key: bucket + ":" + ip });
+  return success ? null : json(429, { error: "rate_limited", message: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요." }, cors);
 }
 
 function pickModel(env) {
@@ -192,6 +228,195 @@ export class AnthropicRelay {
       status: upstream.status,
       headers: { "content-type": upstream.headers.get("content-type") || "application/json" },
     });
+  }
+}
+
+// ---- 가족 기록함: 아이 기기가 보낸 시험 기록을 저장하고 보호자 폰에 보여 준다 ----
+// SQLite 기반 Durable Object 하나(idFromName("family"))의 내장 키-값 저장소를 쓴다. 키 배치:
+//   child:<childId>                              {id, name, sets:[{name,count}], createdAt, updatedAt, lastTestAt, recordCount}
+//   rec:<childId>:<completedAt ISO>:<recordId>   압축 기록 {id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed, receivedAt}
+// 같은 기록을 다시 보내면 같은 키라 덮어쓴다. 키가 완료 시각 순이라 prefix 나열이 곧 시간순이다.
+export class FamilyStore {
+  constructor(state) {
+    this.storage = state.storage;
+  }
+  async fetch(request) {
+    const url = new URL(request.url);
+    const match = FAMILY_PATH.exec(url.pathname);
+    if (url.pathname === "/sync" && request.method === "POST") return this.sync(await request.json());
+    if (match && request.method === "GET") return match[1] ? this.child(match[1]) : this.summary();
+    if (match && match[1] && request.method === "DELETE") return this.remove(match[1]);
+    return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." });
+  }
+  recordPrefix(childId) {
+    return "rec:" + childId + ":";
+  }
+  async putMany(entries) {
+    const keys = Object.keys(entries);
+    for (let i = 0; i < keys.length; i += STORAGE_BATCH)
+      await this.storage.put(Object.fromEntries(keys.slice(i, i + STORAGE_BATCH).map((k) => [k, entries[k]])));
+  }
+  async deleteMany(keys) {
+    for (let i = 0; i < keys.length; i += STORAGE_BATCH) await this.storage.delete(keys.slice(i, i + STORAGE_BATCH));
+  }
+  async sync({ child, records, sets }) {
+    const now = new Date().toISOString();
+    const key = "child:" + child.id;
+    const current = (await this.storage.get(key)) || { id: child.id, createdAt: now, sets: [], recordCount: 0 };
+    const entries = {};
+    let lastTestAt = current.lastTestAt || null;
+    for (const r of records) {
+      entries[this.recordPrefix(child.id) + r.completedAt + ":" + r.id] = { ...r, receivedAt: now };
+      if (!lastTestAt || r.completedAt > lastTestAt) lastTestAt = r.completedAt;
+    }
+    const next = {
+      ...current,
+      name: child.name,
+      sets: sets === undefined ? current.sets || [] : sets,
+      updatedAt: now,
+      lastTestAt,
+      // 다시 보낸 기록도 세므로 대략값이다. 상한을 넘었을 때만 실제로 세어 정리한다.
+      recordCount: (current.recordCount || 0) + records.length,
+    };
+    await this.putMany({ ...entries, [key]: next });
+    let trimmed = 0;
+    if (next.recordCount > MAX_CHILD_RECORDS) {
+      const all = await this.storage.list({ prefix: this.recordPrefix(child.id) });
+      const extra = [...all.keys()].slice(0, Math.max(0, all.size - MAX_CHILD_RECORDS));
+      await this.deleteMany(extra);
+      trimmed = extra.length;
+      await this.storage.put(key, { ...next, recordCount: all.size - extra.length });
+    }
+    return json(200, { ok: true, stored: records.length, trimmed, syncedAt: now });
+  }
+  // 아이별 최근 14일 기록(20개 미만이면 최근 20개). 오늘·7일·이번 주 계산은 폰의 현지 시간으로 앱이 한다.
+  async summary() {
+    const since = new Date(Date.now() - SUMMARY_DAYS * 86400000).toISOString();
+    const children = [];
+    for (const c of (await this.storage.list({ prefix: "child:" })).values()) {
+      const prefix = this.recordPrefix(c.id);
+      let records = [...(await this.storage.list({ prefix, start: prefix + since })).values()].reverse();
+      if (records.length < SUMMARY_MIN_RECORDS)
+        records = [...(await this.storage.list({ prefix, reverse: true, limit: SUMMARY_MIN_RECORDS })).values()];
+      children.push({ ...c, records });
+    }
+    children.sort((a, b) => String(a.name).localeCompare(String(b.name), "ko"));
+    return json(200, { children, serverTime: new Date().toISOString() });
+  }
+  async child(childId) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    const records = [...(await this.storage.list({ prefix: this.recordPrefix(childId), reverse: true })).values()];
+    return json(200, { child: c, records });
+  }
+  async remove(childId) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    const keys = [...(await this.storage.list({ prefix: this.recordPrefix(childId) })).keys()];
+    await this.deleteMany(keys);
+    await this.storage.delete("child:" + childId);
+    return json(200, { ok: true, deleted: keys.length });
+  }
+}
+
+function isoDate(value) {
+  if (value == null || value === "") return null;
+  const t = Date.parse(value);
+  return Number.isFinite(t) ? new Date(t).toISOString() : undefined;
+}
+
+// 아이 기기가 보낸 기록 묶음을 검사·정리한다. 하나라도 틀리면 전체를 거절한다(부분 저장 없음).
+function parseSync(body) {
+  const id = typeof body?.child?.id === "string" ? body.child.id : "";
+  const name = clean(body?.child?.name);
+  if (!CHILD_ID_PATTERN.test(id)) return { error: "아이 기기 식별자(child.id)가 올바르지 않습니다." };
+  if (!name) return { error: "아이 이름이 필요합니다." };
+  if (name.length > MAX_CHILD_NAME) return { error: `아이 이름은 ${MAX_CHILD_NAME}자 이하여야 합니다.` };
+  const rawRecords = body.records === undefined ? [] : body.records;
+  if (!Array.isArray(rawRecords)) return { error: "records는 배열이어야 합니다." };
+  if (rawRecords.length > MAX_SYNC_RECORDS) return { error: `기록은 한 번에 ${MAX_SYNC_RECORDS}개까지 보낼 수 있습니다.` };
+  const records = [];
+  for (const r of rawRecords) {
+    const rid = typeof r?.id === "string" ? r.id : "";
+    if (!RECORD_ID_PATTERN.test(rid)) return { error: "기록 id가 올바르지 않습니다." };
+    const completedAt = isoDate(r.completedAt);
+    const startedAt = isoDate(r.startedAt);
+    if (!completedAt || startedAt === undefined) return { error: `기록 ${rid}의 시각이 올바르지 않습니다.` };
+    if (!Number.isInteger(r.total) || r.total < 1 || r.total > 2000 || !Number.isInteger(r.correct) || r.correct < 0 || r.correct > r.total)
+      return { error: `기록 ${rid}의 점수가 올바르지 않습니다.` };
+    if (!FAMILY_MODES.includes(r.mode)) return { error: `기록 ${rid}의 시험 방식이 올바르지 않습니다.` };
+    const rawMissed = r.missed === undefined ? [] : r.missed;
+    if (!Array.isArray(rawMissed) || rawMissed.length > MAX_MISSED_WORDS) return { error: `기록 ${rid}의 틀린 단어 목록이 올바르지 않습니다.` };
+    const missed = rawMissed
+      .map((m) => ({ en: clean(m?.en).slice(0, 80), ko: clean(m?.ko).slice(0, 200), ...(m?.unknown === true ? { unknown: true } : {}) }))
+      .filter((m) => m.en);
+    records.push({
+      id: rid,
+      setName: clean(r.setName).slice(0, 120) || "(이름 없음)",
+      mode: r.mode,
+      range: clean(r.range).slice(0, 60),
+      startedAt,
+      completedAt,
+      total: r.total,
+      correct: r.correct,
+      partial: r.partial === true,
+      activeMs: Number.isInteger(r.activeMs) && r.activeMs >= 0 ? Math.min(r.activeMs, 7 * 86400000) : null,
+      missed,
+    });
+  }
+  let sets;
+  if (body.sets !== undefined) {
+    if (!Array.isArray(body.sets) || body.sets.length > MAX_SYNC_SETS) return { error: "세트 목록이 올바르지 않습니다." };
+    sets = body.sets
+      .map((s) => ({ name: clean(s?.name).slice(0, 120), count: Number.isInteger(s?.count) && s.count >= 0 ? Math.min(s.count, 5000) : 0 }))
+      .filter((s) => s.name);
+  }
+  return { child: { id, name }, records, sets };
+}
+
+// /sync, /family… 처리. Anthropic은 부르지 않는다.
+async function family(request, env, path, cors) {
+  if (!env.APP_PASSCODE)
+    return json(500, { error: "misconfigured", message: "AI 서버에 비밀값(APP_PASSCODE)이 설정되지 않았습니다." }, cors);
+  const viewing = path !== "/sync";
+  if (viewing && !env.PARENT_PASSCODE)
+    return json(500, {
+      error: "misconfigured",
+      message: "보호자 코드(PARENT_PASSCODE)가 아직 설정되지 않았습니다. 보호자가 worker 폴더에서 npx wrangler secret put PARENT_PASSCODE 로 등록한 뒤 다시 시도해 주세요.",
+    }, cors);
+  const role = roleOf(request, env);
+  if (!role) return json(401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." }, cors);
+  if (viewing && role !== "parent") return json(401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." }, cors);
+  const limited = await rateLimited(request, env, viewing ? "/family" : "/sync", cors);
+  if (limited) return limited;
+  if (!env.FAMILY)
+    return json(500, { error: "misconfigured", message: "AI 서버에 가족 기록함(FAMILY)이 아직 없습니다. 보호자가 Worker를 새 버전으로 다시 배포해 주세요." }, cors);
+  let payload;
+  if (!viewing) {
+    const text = await request.text();
+    if (text.length > MAX_SYNC_BODY)
+      return json(413, { error: "too_large", message: "보내는 기록이 너무 큽니다. 앱을 새 버전으로 불러온 뒤 다시 시도해 주세요." }, cors);
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return json(400, { error: "bad_request", message: "JSON 본문이 필요합니다." }, cors);
+    }
+    const parsed = parseSync(body);
+    if (parsed.error) return json(400, { error: "bad_request", message: parsed.error }, cors);
+    payload = parsed;
+  }
+  try {
+    const stub = env.FAMILY.get(env.FAMILY.idFromName("family"));
+    const response = await stub.fetch("https://family.internal" + path, {
+      method: request.method,
+      headers: { "content-type": "application/json" },
+      body: payload ? JSON.stringify(payload) : undefined,
+    });
+    return json(response.status, await response.json(), cors);
+  } catch (e) {
+    console.error("family_store_failed", e?.name || "", e?.message || "");
+    return json(503, { error: "family_unavailable", message: "가족 기록함에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요." }, cors);
   }
 }
 
@@ -458,11 +683,14 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     if (path === "/diag") return diag(request, env, cors);
-    if (request.method !== "POST" || !["/ping", "/recognize", "/define"].includes(path))
+    const familyRoute = (path === "/sync" && request.method === "POST") || (FAMILY_PATH.test(path) && ["GET", "DELETE"].includes(request.method));
+    const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define"].includes(path);
+    if (!familyRoute && !aiRoute)
       return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." }, cors);
     const origin = request.headers.get("Origin");
     if (origin && !allowedOrigins(env).includes(origin))
       return json(403, { error: "forbidden_origin", message: "이 주소에서는 AI 서버를 쓸 수 없습니다. 보호자가 ALLOWED_ORIGINS를 확인해 주세요." }, cors);
+    if (familyRoute) return family(request, env, path, cors);
     const apiKey = String(env.ANTHROPIC_API_KEY || "").trim();
     if (apiKey && !/^[!-~]+$/.test(apiKey)) {
       const spaces = (apiKey.match(/ /g) || []).length;
@@ -475,14 +703,10 @@ export default {
       return json(500, { error: "bad_key_format", message: `AI 서버에 등록된 값이 Anthropic API 키 형식(sk-ant-…)이 아닙니다(길이 ${apiKey.length}). 보호자가 키를 다시 등록해 주세요.` }, cors);
     if (!apiKey || !env.APP_PASSCODE)
       return json(500, { error: "misconfigured", message: "AI 서버에 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE)이 설정되지 않았습니다." }, cors);
-    if (!safeEqual(request.headers.get("x-app-passcode") || "", env.APP_PASSCODE))
+    if (!roleOf(request, env))
       return json(401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." }, cors);
-    if (env.RATE_LIMITER) {
-      const ip = request.headers.get("cf-connecting-ip") || "unknown";
-      const { success } = await env.RATE_LIMITER.limit({ key: path + ":" + ip });
-      if (!success)
-        return json(429, { error: "rate_limited", message: "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요." }, cors);
-    }
+    const limited = await rateLimited(request, env, path, cors);
+    if (limited) return limited;
     const model = pickModel(env);
     if (path === "/ping") return ping(env, model, cors);
     if (path === "/define") return define(request, env, model, cors);
