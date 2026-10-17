@@ -1,9 +1,9 @@
 # CLAUDE.md — daily-vocab (매일 영단어)
 
 ## 프로젝트 개요
-- 한국 학생용 영단어 학습 PWA. 음성 인식(읽기·뜻 말하기·알파벳 철자 말하기), 손글씨 입력, 사진에서 단어 세트 추가(AI 인식; 영어만 있는 사진은 AI 사전이 뜻·발음 보완), 빈 뜻·발음 AI 채우기, 쉬기·이어서 하기, 시험 기록·오답 복습을 제공한다. 사용자는 아이와 보호자이므로 화면 문구는 쉬운 한국어로, 선택지는 최소로 유지한다.
+- 한국 학생용 영단어 학습 PWA. 음성 인식(읽기·뜻 말하기·알파벳 철자 말하기), 손글씨 입력, 사진에서 단어 세트 추가(AI 인식; 영어만 있는 사진은 AI 사전이 뜻·발음 보완), 빈 뜻·발음 AI 채우기, 쉬기·이어서 하기, 시험 기록·오답 복습, 가족 기록함(아이 기기 → 가족 Worker → 보호자 폰의 ‘아이들’ 탭)을 제공한다. 사용자는 아이와 보호자이므로 화면 문구는 쉬운 한국어로, 선택지는 최소로 유지한다.
 - **앱은 순수 정적 사이트**: 빌드 단계·런타임 패키지·서버 없음. HTML + vanilla JS + localStorage. 외부 네트워크는 브라우저 음성 인식 서비스와 가족용 AI 서버(아래)뿐이다.
-- **AI 서버는 별도 배포하는 Cloudflare Worker**(`worker/`). Anthropic API 키는 Worker 비밀값에만 있고 앱·저장소·기기 어디에도 두지 않는다. 앱은 Worker 주소 + 가족용 접속 코드만 저장한다.
+- **AI 서버는 별도 배포하는 Cloudflare Worker**(`worker/`). Anthropic API 키는 Worker 비밀값에만 있고 앱·저장소·기기 어디에도 두지 않는다. 앱은 Worker 주소 + 가족용 접속 코드(보호자 폰은 보호자 코드도)만 저장한다.
 - 배포: GitHub 저장소 `HongTaeHwa/daily-vocab`의 `main` 브랜치 루트가 그대로 GitHub Pages로 서비스된다.
   - 저장소: https://github.com/HongTaeHwa/daily-vocab
   - 서비스 URL: https://hongtaehwa.github.io/daily-vocab/
@@ -15,24 +15,25 @@
 |---|---|
 | `index.html` | 마크업(홈·시험·결과·세트 편집·기록·설정 뷰 + 하단 탭) + CSS + 부트스트랩 스크립트(버전·오류 배너 `#appStatus`/`#globalNotice`, `앱 점검`, `새 버전 불러오기`). |
 | `quiz.js` | 데이터 로드/이전, `showView` 뷰 전환, 세트 선택·범위, 시험 진행(쉬기·이어서·그만하기), 채점·음성 인식·마이크 점검, 결과, 기록, 환경 설정 기억. 기본 40단어 `WORDS`도 여기. |
-| `sets.js` | 세트 만들기·수정(단어 표 편집기 ↔ `#wordDraft` 텍스트 동기화, 이름 바꾸기, 사진 → AI 서버, 빈 뜻·발음 AI 채우기), 백업/가져오기, 보호자 설정(AI 연결), 설치·서비스워커. 마지막에 `window.markVocabAppReady()` 호출. |
+| `family.js` | 가족 기록함. 아이 기기: 아이 이름·‘기록 보내기’ 스위치, `queueFamilySync`(기록 확정 시) → `flushFamilySync`(50개씩 `POST /sync`, 실패분은 `pending`에 남겨 앱 열 때·화면 복귀·온라인 복귀 때 재전송). 보호자 폰: 보호자 코드 저장 → `#tabFamily` 표시, `renderFamily`(`GET /family` 캐시+새로고침, 아이 카드, 상세 `GET /family/<id>`, 삭제). quiz.js 다음·sets.js 앞에 로드되고 sets.js가 `initFamily()`를 부른다. |
+| `sets.js` | 세트 만들기·수정(단어 표 편집기 ↔ `#wordDraft` 텍스트 동기화, 이름 바꾸기, 사진 → AI 서버, 빈 뜻·발음 AI 채우기), 백업/가져오기, 보호자 설정(AI 연결), 설치·서비스워커. 마지막에 `initFamily()`와 `window.markVocabAppReady()` 호출. |
 | `sw.js` | 서비스워커. 앱 셸 캐시(`CACHE` 상수) + network-first/cache-fallback. 교차 출처 요청(AI 서버)은 건드리지 않는다. |
 | `manifest.webmanifest` | PWA 매니페스트 (`/daily-vocab/` 경로 고정). |
 | `icons/` | 192/512/maskable/apple-touch 아이콘. |
-| `worker/worker.js` | Cloudflare Worker 프록시. `POST /ping`, `POST /recognize`, `POST /define`(AI 사전), `GET /diag`. 시스템 프롬프트·JSON 스키마·모델 선택·오류 변환·북미 중계(Durable Object)가 여기 있다. |
-| `worker/wrangler.jsonc`, `worker/package.json`, `worker/README.md` | Worker 설정(`vars`, `ratelimits`, `durable_objects`), 배포 스크립트, 보호자용 배포 안내. 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE)은 `wrangler secret put`으로만 넣는다. |
+| `worker/worker.js` | Cloudflare Worker 프록시. `POST /ping`, `POST /recognize`, `POST /define`(AI 사전), `GET /diag`, 가족 기록함 `POST /sync`·`GET /family`·`GET|DELETE /family/<childId>`(Durable Object `FamilyStore`). 시스템 프롬프트·JSON 스키마·모델 선택·오류 변환·북미 중계(Durable Object)·코드 역할(`roleOf`)이 여기 있다. |
+| `worker/wrangler.jsonc`, `worker/package.json`, `worker/README.md` | Worker 설정(`vars`, `ratelimits`, `durable_objects` RELAY·FAMILY, `migrations` v1·v2), 배포 스크립트(`npm run parent-code` = PARENT_PASSCODE 등록), 보호자용 배포 안내. 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE)은 `wrangler secret put`으로만 넣는다. |
 | `tests/*.cjs` | Playwright 브라우저 테스트 + Worker 단위 테스트 (아래 참고). |
 | `docs/DESIGN.md` | 2026-10-12 전면 개편 설계서(전수 검사 결과, 화면 구조, 데이터 모델, 진행 상태). |
 | `.nojekyll` | GitHub Pages가 Jekyll 처리하지 않도록 함. 삭제 금지. |
 | `.claude/` | Claude Code 로컬 도구: `dev-server.cjs`, `run-tests.cjs`, `launch.json`. 앱 동작과 무관. |
 
 ## 화면 구조와 ID
-- 뷰: `#home`(세트 선택·시험 설정·최근 결과·이어서 하기 카드), `#quiz`, `#finish`(결과), `#editor`(세트 편집), `#history`, `#settings`. `showView(name)`이 `.view.active`를 바꾸고 `body.in-quiz`로 하단 탭을 숨긴다.
-- 하단 탭 `#tabHome #tabHistory #tabSettings`, 상단 `#openSettings`(시험 중 숨김). 시험 중에는 탭이 숨고 `#pauseQuiz`(쉬기)·`#backSettings`(그만하기)가 있다. `showView`는 시험 중 다른 화면 요청을 쉬기로 바꾸고, `history.pushState`/`popstate`로 Android 뒤로 가기를 화면 되돌리기로 처리한다.
+- 뷰: `#home`(세트 선택·시험 설정·최근 결과·이어서 하기 카드), `#quiz`, `#finish`(결과), `#editor`(세트 편집), `#history`, `#family`(보호자 폰 ‘아이들’ 기록), `#settings`. `showView(name)`이 `.view.active`를 바꾸고 `body.in-quiz`로 하단 탭을 숨긴다.
+- 하단 탭 `#tabHome #tabHistory #tabFamily #tabSettings`(`#tabFamily`는 보호자 코드가 저장된 기기에서만 보임), 상단 `#openSettings`(시험 중 숨김). 시험 중에는 탭이 숨고 `#pauseQuiz`(쉬기)·`#backSettings`(그만하기)가 있다. `showView`는 시험 중 다른 화면 요청을 쉬기로 바꾸고, `history.pushState`/`popstate`로 Android 뒤로 가기를 화면 되돌리기로 처리한다.
 - 세트 삭제·이름 바꾸기(`#renameSet #deleteSet #renameBox`)는 편집 화면의 `#manageBox`(기존 세트일 때만)에 있다. 아이가 쓰는 홈에는 두지 않는다. 미저장 초안(`draftDirty`)은 닫기·다른 세트 열기 전에 확인한다.
 - 사진 선택은 `selectedFiles` 배열: `#photos`는 바꿔치기, `#camera`는 누적(최대 10장), 썸네일 ✕로 제거. 가져오기 성공한 사진은 목록에서 빠진다.
-- 테스트가 참조하는 ID는 유지한다: `#start #review #reviewCount #range #shuffle #setSelect #createSet #editSet #renameSet #deleteSet #setStatus #resumeCard #resumeQuiz #discardSession #resumeEditor #unknown #next #check #answerInput #readInput #checkRead #parentConfirm #progressText #finalScore #missedList #againSame #newTest #historyList #historyFilter #historySummary #exportHistory #clearHistory #setName #photos #camera #pickPhotos #takePhoto #extractWords #cancelExtract #extractStatus #fillMeanings #wordTableBody #addRow #toggleDraftText #wordDraft #wordCount #confirmed #saveSet #closeEditor #editorTitle #manageBox #manageStatus #finishTitle #aiSettings #aiServer #aiPasscode #saveAi #testAi #clearAi #aiState #aiStatus #backupStatus #appStatus #refreshApp #checkApp`.
-- 상태 문구도 테스트가 본다: "사진을 선택했습니다", "가져오지 못했습니다", "취소", "보호자 설정", "연결 성공", "중단", "AI 사전으로 채웠어요", "노란 칸", "못 찾은 단어", "먼저 영어 단어", "다시 배포".
+- 테스트가 참조하는 ID는 유지한다: `#start #review #reviewCount #range #shuffle #setSelect #createSet #editSet #renameSet #deleteSet #setStatus #resumeCard #resumeQuiz #discardSession #resumeEditor #unknown #next #check #answerInput #readInput #checkRead #parentConfirm #progressText #finalScore #missedList #againSame #newTest #historyList #historyFilter #historySummary #exportHistory #clearHistory #setName #photos #camera #pickPhotos #takePhoto #extractWords #cancelExtract #extractStatus #fillMeanings #wordTableBody #addRow #toggleDraftText #wordDraft #wordCount #confirmed #saveSet #closeEditor #editorTitle #manageBox #manageStatus #finishTitle #aiSettings #aiServer #aiPasscode #saveAi #testAi #clearAi #aiState #aiStatus #backupStatus #appStatus #refreshApp #checkApp #familySettings #familyState #childName #familySend #saveFamily #syncNow #familyStatus #parentCode #saveParent #clearParent #parentStatus #parentState #tabFamily #refreshFamily #familyLoadStatus #childrenList #childDetail #childDetailTitle #childDetailSummary #childRecords #closeChildDetail #deleteChild`.
+- 상태 문구도 테스트가 본다: "사진을 선택했습니다", "가져오지 못했습니다", "취소", "보호자 설정", "연결 성공", "중단", "AI 사전으로 채웠어요", "노란 칸", "못 찾은 단어", "먼저 영어 단어", "다시 배포", 가족 기록함의 "아이 이름", "마지막 전송", "못 보낸 기록 N개", "보낼 기록 N개", "꺼짐"/"켜짐", "보호자 코드가 맞지 않아요", "연결 성공", "방금 확인했어요", "오늘 ✅ N회", "최근 7일 N회", "아직 기록을 보낸 아이가 없어요", "시험 N회".
 - 표의 뜻·발음 칸에 AI 사전이 채운 값은 `.ai-filled`(노란 칸) 클래스로 표시한다(`aiFilled` Map, 편집 중에만; 직접 고치면 사라지고 저장 데이터·초안 텍스트에는 남지 않는다).
 
 ## 핵심 데이터 구조
@@ -41,13 +42,15 @@
 - 초안(`#wordDraft`) 형식: 한 줄에 `번호\t영어\t뜻\t별칭|별칭\t발음`(발음은 선택). `parseDraft`가 읽고 `appendDraftRows`·`tableToDraft`가 쓴다. 표 편집기는 이 텍스트와 양방향 동기화되며 300단어를 넘으면 텍스트 모드로 자동 전환.
 - localStorage 키 (버전 접미사 유지, 깨뜨리면 사용자 기록 유실):
   - `daily_vocab_sets_v2` — 세트 배열 `[{id,name,words,updatedAt?}]`
-  - `daily_vocab_history_v2` — 시험 기록 `[{id,setId,setName,mode,range,startedAt,completedAt,results,partial?}]` (`partial`은 그만하기·쉬던 시험 포기로 끝난 중단 기록; `results[i].self`는 ‘소리 내어 읽었어요’로 직접 확인한 읽기). 기록 탭의 세트 필터는 그 세트 기록만, ‘전체 세트’는 삭제된 세트 기록까지 보여 준다.
+  - `daily_vocab_history_v2` — 시험 기록 `[{id,setId,setName,mode,range,startedAt,completedAt,activeMs?,results,partial?}]` (`activeMs`는 실제 푼 시간, 2026-10-18-2부터) (`partial`은 그만하기·쉬던 시험 포기로 끝난 중단 기록; `results[i].self`는 ‘소리 내어 읽었어요’로 직접 확인한 읽기). 기록 탭의 세트 필터는 그 세트 기록만, ‘전체 세트’는 삭제된 세트 기록까지 보여 준다.
   - `daily_vocab_missed_<setId>` — 세트별 오답 id 배열
   - `daily_vocab_session_v1` — 쉬는 중인 시험 `{meta, mode, queue, position, results, pausedAt}` (문제를 넘길 때마다·쉬기·화면 숨김 시 저장, 완료·그만하기 시 삭제). `meta.activeMs/resumedAt`로 실제 푼 시간을 누적한다. 쉬기 전에 채점이 끝난 문제는 결과로 넣고 넘긴다. 틀린 단어는 `meta.setId`의 키에 저장한다(선택 세트와 달라도).
   - `daily_vocab_prefs_v1` — `{mode, range, shuffle, setId}` 마지막 선택
   - `daily_vocab_legacy_backup_v1` — 구버전(`day04_wordtest_*`) 자동 변환 백업
   - `daily_vocab_ai_v2` — `{server, passcode}` AI 서버 주소·접속 코드. **백업 JSON/CSV에 절대 포함하지 않는다.**
   - `daily_vocab_ai_v1` — (폐기) 예전에 API 키를 저장하던 키. 시작 시 지운다.
+  - `daily_vocab_family_v1` — 가족 기록함 `{childId, childName, sendEnabled, lastSyncAt, lastError, pending:[기록 id], parentCode}`. **백업 JSON/CSV에 절대 포함하지 않는다.**
+  - `daily_vocab_family_cache_v1` — 보호자 폰의 마지막 `GET /family` 응답(+`fetchedAt`). 보호자 코드를 지우면 함께 지운다.
 - 저장 데이터는 **검증 실패 시 덮어쓰지 않는다**(`storageAvailable=false`로 보호). 이 원칙을 유지한다.
 
 ## AI 사진 인식 구조
@@ -63,14 +66,23 @@
 - 프롬프트·스키마를 바꾸면 Worker 재배포가 필요하다(앱 배포와 별개). 응답 형식을 바꾸면 `tests/worker.cjs`와 `tests/ai-recognition.cjs` 둘 다 고친다.
 - 실제 Anthropic 호출 테스트는 없다(키 필요). 키·접속 코드를 코드·문서·테스트에 절대 넣지 않는다. 보호자 설정(AI 연결) UI·동작은 사용자 요청으로 그대로 유지한다.
 
+## 가족 기록함 (보호자 폰에서 아이들 기록 보기)
+- 설계·결정 배경은 `docs/DESIGN.md` 10절. 아이들은 각자 기기(기기별 localStorage), 보호자는 자기 폰. 기록만 가족 Worker를 거쳐 공유되고 세트·단어는 기기에 남는다.
+- **코드 역할**: 가족 코드 `APP_PASSCODE`(AI + `/sync`), 보호자 코드 `PARENT_PASSCODE`(`/family…` 읽기·삭제, 가족 코드가 통하는 곳에도 통함). 아이 기기에는 가족 코드만 두므로 ‘아이들’ 탭이 생기지 않는다. 이 분리를 없애면 안 된다.
+- **아이 기기**: `saveSession`(완료·중단) → `queueFamilySync(record)` → `compactRecord`(id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed[{en,ko,unknown?}] 최대 200) → `POST /sync {child:{id,name}, records(≤50), sets:[{name,count}]}`. 처음 켤 때 기존 기록 전체를 대기 목록에 넣는다. 기기에서 지운 기록은 보내지 않지만 서버 사본은 지우지 않는다. 단어별 전체 결과·세트 단어·사진은 보내지 않는다.
+- **Worker**: `FamilyStore`(SQLite 기반 DO, `idFromName("family")`)의 키-값 저장소. 키 `child:<id>`(이름·세트·lastTestAt·recordCount), `rec:<childId>:<completedAt ISO>:<recordId>`(압축 기록 + receivedAt, 같은 키는 덮어씀). `GET /family`는 아이별 최근 14일(20개 미만이면 최근 20개) 기록, `GET /family/<id>`는 전체, 아이당 5,000개 초과분은 오래된 것부터 삭제. 검증은 `parseSync`(하나라도 틀리면 전체 400). 모르는 아이는 404 `unknown_child`(옛 Worker 404 `not_found`와 앱이 구분해 ‘다시 배포’ 안내).
+- **보호자 폰**: 보호자 코드 저장 즉시 `GET /family`로 확인 → `#tabFamily` 표시. 오늘·최근 7일은 폰의 현지 날짜로 계산(`dayKey`). 마지막 응답은 `daily_vocab_family_cache_v1`에 캐시.
+- 배포 순서: Worker 먼저(`cd worker && npm run deploy`, 마이그레이션 v2 포함) → `npm run parent-code`로 보호자 코드 등록 → 앱 배포. 옛 Worker에 앱이 요청하면 404 → ‘다시 배포’ 문구.
+- 응답 형식을 바꾸면 `tests/worker.cjs`와 `tests/family.cjs`(가짜 Worker 라우트)를 함께 고친다. 2단계(숙제·한마디)·3단계(세트 보내기)는 미구현.
+
 ## 버전·캐시 올리기 (앱 셸을 바꿀 때 반드시)
-릴리스 문자열 `20261018-1` 와 캐시 이름 `daily-vocab-shell-v10` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
+릴리스 문자열 `20261018-2` 와 캐시 이름 `daily-vocab-shell-v11` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
 1. `index.html` `#appStatus` 초기 텍스트의 버전
 2. `index.html` `var release = '...'`
-3. `index.html` 마지막 `<script src="./quiz.js?v=...">`와 `./sets.js?v=...` (둘 다)
-4. `sw.js` — `CACHE` 상수(`-v10` → `-v11`)와 `SHELL` 배열의 `./quiz.js?v=...`, `./sets.js?v=...`
+3. `index.html` 마지막 `<script src="./quiz.js?v=...">`, `./family.js?v=...`, `./sets.js?v=...` (셋 다)
+4. `sw.js` — `CACHE` 상수(`-v11` → `-v12`)와 `SHELL` 배열의 `./quiz.js?v=...`, `./family.js?v=...`, `./sets.js?v=...`
 5. `tests/app-update.cjs` — 버전 문자열 검사
-확인: `grep -rn "20261018-1\|daily-vocab-shell-v" index.html sw.js tests/`
+확인: `grep -rn "20261018-2\|daily-vocab-shell-v" index.html sw.js tests/`
 
 ## 로컬 실행
 ```bash
@@ -82,27 +94,28 @@ Claude Code 브라우저 미리보기(`.claude/launch.json`)가 예전 폴더 �
 ## 테스트
 Playwright는 **전역 설치**되어 있다(`npm i -g playwright` + `npx playwright install chromium`). 저장소 루트에는 `package.json`을 두지 않는다(앱 런타임 무의존 원칙). `worker/package.json`은 Worker 배포 전용이다.
 ```bash
-node .claude/run-tests.cjs            # 전체 7개 (약 25초)
+node .claude/run-tests.cjs            # 전체 8개 (약 30초)
 node .claude/run-tests.cjs session    # 특정 테스트만
 node tests/worker.cjs                 # Worker 단위 테스트만 (서버·Playwright 불필요)
 ```
 실행기가 NODE_PATH를 전역 모듈로 잡고, 8000 포트에 서버가 없으면 자동으로 띄운다.
 | 테스트 | 확인 내용 |
 |---|---|
-| `worker.cjs` | Worker: CORS/Origin, 접속 코드, 비밀값 누락, 요청 제한, 입력 검증, 결과 정리(`generated` 플래그), AI 사전 `/define`(검증·철자 매칭·중복 제거·빈 결과 422·거부), fallbacks 재시도, Anthropic 오류 변환, 북미 중계·폴백, diag, 키 형식 검사, 타임아웃 |
+| `worker.cjs` | Worker: CORS/Origin, 접속 코드, 비밀값 누락, 요청 제한, 입력 검증, 결과 정리(`generated` 플래그), AI 사전 `/define`(검증·철자 매칭·중복 제거·빈 결과 422·거부), fallbacks 재시도, Anthropic 오류 변환, 북미 중계·폴백, diag, 키 형식 검사, 타임아웃, 가족 기록함(`/sync` 검증·덮어쓰기·14일 요약·5,000개 상한, 코드 역할, 미설정 안내, 삭제, DO 저장소 모의, 503) |
 | `browser.cjs` | 기본 세트 40단어, 3가지 모드 시험 흐름(그만하기 → 중단 기록), 세트 저장(텍스트 모드), 엄격 채점, 세트별 기록 격리, 삭제된 세트 기록 재시험, 구버전 이전, 백업 JSON 왕복, 저장 실패 안내 |
 | `pwa.cjs` | 서비스워커, 반응형 폭(768/1024/390) 오버플로 없음, 매니페스트 아이콘, 오프라인 셸, AI 서버 오류 안내·취소 |
 | `app-update.cjs` | 옛 `sets.js` 캐시 상황에서 버전 표시·초기화 실패 안내·자료 보존 |
 | `ten-photos.cjs` | 사진 10장 순차 전송·결과 보존, 11장 거부, 10단어 세트 시험 |
 | `ai-recognition.cjs` | v1 키 제거, 보호자 설정 검증·저장·삭제(설정 뷰), 연결 확인, 편집 복귀, 사진 2장 인식과 번호 병합·표 표시, `generated` 뜻 노란 칸 표시·수정 시 해제, 저장·시험, 빈 뜻·발음 AI 채우기(빈 칸만, 두 번째 호출 범위, 옛 Worker 404 안내), 401/503/연결 실패 안내, 취소 |
 | `session.cjs` | 탭 전환, 책 번호 기준 범위 라벨, 쉬기 → 새로고침 → 이어서 하기 → 완료(틀린 단어 목록·같은 범위 다시), 그만하기 중단 기록, 세트 이름 바꾸기(기록 반영·유지), 표 편집기 ↔ 텍스트 동기화·행 삭제·저장, 마지막 선택 기억, 편집 중 설정 다녀오기 |
+| `family.cjs` | 가족 기록함: 보호자 코드 없으면 탭 없음, 이름 없이 켜기 거부, 켜기(기록 0개 등록 전송·세트 목록), 시험 완료 → 압축 기록 내용(점수·틀린 단어·activeMs, 전체 결과 미포함), 연결 실패 → ‘못 보낸 기록 1개’ → 새로고침 후 재전송, 끄기 후 미전송, 보호자 코드 길이·오류·옛 Worker 안내, 저장 → 연결 성공 → 아이들 탭·카드(오늘 2회·최근 7일)·상세·틀린 단어·삭제, 코드 삭제 → 탭·캐시 제거 |
 UI 요소를 바꾸면 위 ID 목록과 상태 문구를 테스트와 함께 맞춘다. 표 편집기 기본 화면에서는 `#wordDraft`가 숨겨져 있으므로 테스트에서 텍스트를 채우려면 먼저 `#toggleDraftText`를 누른다.
 
 ## 작업 규칙
 - 변경 전 관련 테스트를 실행하고, 변경 후 `node .claude/run-tests.cjs`가 모두 PASS인지 확인한다.
 - 기능·문구를 바꾸면 `README.md`의 해당 절도 같이 갱신한다(README는 사용 설명서 역할). Worker 설정을 바꾸면 `worker/README.md`도.
-- 실제 교재 사진, 학생 개인정보, 녹음 파일, API 키, 접속 코드는 절대 커밋하지 않는다. `worker/.dev.vars`, `samples/`, `*key*.txt`는 gitignore 대상이다. 커밋 전 `git status`로 낯선 파일이 없는지 본다.
-- 외부 CDN·추적 스크립트를 추가하지 않는다. 기기 밖으로 나가는 데이터는 브라우저 음성 인식과 AI 서버(사진)뿐이어야 하며, 새 외부 전송을 추가하려면 README의 개인정보 절도 함께 고친다.
+- 실제 교재 사진, 학생 개인정보, 녹음 파일, API 키, 접속 코드, 보호자 코드는 절대 커밋하지 않는다. `worker/.dev.vars`, `samples/`, `*key*.txt`는 gitignore 대상이다. 커밋 전 `git status`로 낯선 파일이 없는지 본다.
+- 외부 CDN·추적 스크립트를 추가하지 않는다. 기기 밖으로 나가는 데이터는 브라우저 음성 인식과 가족 Worker(사진·AI 사전 단어·가족 기록함의 시험 기록)뿐이어야 하며, 새 외부 전송을 추가하려면 README의 개인정보 절도 함께 고친다.
 - 아이가 쓰는 화면(홈·시험·결과)에 기술 선택지(엔진, 모델, 키, 백업)를 노출하지 않는다. 보호자용 기능은 설정 뷰에만 둔다.
 - Git 흐름: `main`에서 `fix/...` 또는 `feat/...` 브랜치 → 커밋 → push → PR → 머지. `main` 직접 push는 사용자가 요청할 때만.
 - 커밋 제목은 영어 명령형(기존 관례), 필요하면 본문에 한국어 설명.

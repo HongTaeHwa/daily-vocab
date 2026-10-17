@@ -118,7 +118,7 @@ function loadMissed() {
 loadMissed();
 
 // ---- 화면(뷰) 전환 ----
-const VIEWS = ["home", "quiz", "finish", "editor", "history", "settings"];
+const VIEWS = ["home", "quiz", "finish", "editor", "history", "settings", "family"];
 let currentView = "home";
 function showView(name, options = {}) {
   if (!VIEWS.includes(name)) name = "home";
@@ -136,13 +136,14 @@ function showView(name, options = {}) {
   }
   for (const v of VIEWS) $(v).classList.toggle("active", v === name);
   document.body.classList.toggle("in-quiz", name === "quiz");
-  for (const [tab, view] of [["tabHome", "home"], ["tabHistory", "history"], ["tabSettings", "settings"]]) {
+  for (const [tab, view] of [["tabHome", "home"], ["tabHistory", "history"], ["tabFamily", "family"], ["tabSettings", "settings"]]) {
     const active = view === name || (view === "home" && (name === "finish" || name === "editor"));
     $(tab).classList.toggle("active", active);
     $(tab).setAttribute("aria-current", active ? "page" : "false");
   }
   if (name === "history") renderHistory();
   if (name === "home") renderHome();
+  if (name === "family" && typeof renderFamily === "function") renderFamily(); // family.js (보호자 폰)
   window.scrollTo({ top: 0, behavior: "auto" });
   try { $(name).focus({ preventScroll: true }); } catch {}
 }
@@ -153,6 +154,7 @@ window.addEventListener("popstate", (e) => {
 });
 $("tabHome").addEventListener("click", () => showView("home"));
 $("tabHistory").addEventListener("click", () => showView("history"));
+$("tabFamily").addEventListener("click", () => showView("family"));
 $("tabSettings").addEventListener("click", () => showView("settings"));
 $("openSettings").addEventListener("click", () => showView("settings"));
 $("seeHistory").addEventListener("click", () => showView("history"));
@@ -737,10 +739,11 @@ function persistHistory(next) {
 function saveSession(partial = false) {
   if (!sessionMeta || sessionMeta.saved) return;
   sessionMeta.saved = true;
-  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), results: results.map((x) => ({ ...x })) };
+  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), results: results.map((x) => ({ ...x })) };
   if (partial) record.partial = true;
   const next = [record, ...historyRecords];
   if (!persistHistory(next)) { historyRecords = next; renderHistory(); }
+  if (typeof queueFamilySync === "function") queueFamilySync(record); // family.js: 보호자에게 기록 보내기(켜져 있을 때만)
 }
 function historyFilterValue() {
   const v = $("historyFilter").value;

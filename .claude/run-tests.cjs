@@ -1,5 +1,5 @@
 // Playwright 브라우저 테스트 실행기.
-//   node .claude/run-tests.cjs              → 전체 (worker, browser, pwa, app-update, ten-photos, ai-recognition)
+//   node .claude/run-tests.cjs              → 전체 (worker, browser, pwa, app-update, ten-photos, ai-recognition, session, family)
 //   node .claude/run-tests.cjs --all        → 위와 같음 (느린 테스트 없음)
 //   node .claude/run-tests.cjs browser pwa  → 지정한 테스트만
 // 전역 설치된 playwright(npm i -g playwright)를 NODE_PATH로 연결하고,
@@ -12,7 +12,7 @@ const fs = require("fs");
 
 const ROOT = path.resolve(__dirname, "..");
 const APP_URL = process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/";
-const FAST = ["worker", "browser", "pwa", "app-update", "ten-photos", "ai-recognition", "session"];
+const FAST = ["worker", "browser", "pwa", "app-update", "ten-photos", "ai-recognition", "session", "family"];
 const ALL = [...FAST];
 
 const args = process.argv.slice(2);

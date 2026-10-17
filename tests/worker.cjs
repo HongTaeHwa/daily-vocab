@@ -4,7 +4,7 @@ const assert = require("assert");
 const path = require("path");
 const { pathToFileURL } = require("url");
 (async () => {
-  const { default: worker, AnthropicRelay } = await import(
+  const { default: worker, AnthropicRelay, FamilyStore } = await import(
     pathToFileURL(path.join(__dirname, "..", "worker", "worker.js")).href
   );
   const ORIGIN = "https://hongtaehwa.github.io";
@@ -359,8 +359,156 @@ const { pathToFileURL } = require("url");
   assert.equal(res.status, 504);
   assert.equal((await res.json()).error, "upstream_timeout");
 
+  // ---- 가족 기록함: /sync(가족·보호자 코드) → FamilyStore(Durable Object), /family(보호자 코드만) ----
+  // Anthropic은 부르지 않는다(지금 globalThis.fetch 는 던지는 상태 그대로 둔다).
+  const familyStorage = () => {
+    const m = new Map();
+    const copy = (v) => structuredClone(v);
+    return {
+      async get(k) {
+        return m.has(k) ? copy(m.get(k)) : undefined;
+      },
+      async put(k, v) {
+        if (typeof k === "object") for (const [a, b] of Object.entries(k)) m.set(a, copy(b));
+        else m.set(k, copy(v));
+      },
+      async delete(k) {
+        if (Array.isArray(k)) return k.filter((x) => m.delete(x)).length;
+        return m.delete(k);
+      },
+      async list({ prefix = "", start, reverse = false, limit } = {}) {
+        let keys = [...m.keys()].filter((k) => k.startsWith(prefix) && (start === undefined || k >= start)).sort();
+        if (reverse) keys.reverse();
+        if (limit) keys = keys.slice(0, limit);
+        return new Map(keys.map((k) => [k, copy(m.get(k))]));
+      },
+    };
+  };
+  const familyObject = new FamilyStore({ storage: familyStorage() });
+  const FAMILY = { idFromName: (n) => "id:" + n, get: () => ({ fetch: (u, init) => familyObject.fetch(new Request(u, init)) }) };
+  const fenv = { ...env, PARENT_PASSCODE: "parent-9999", FAMILY };
+  const PARENT = { passcode: "parent-9999" };
+  const child = { id: "11111111-2222-4333-8444-555555555555", name: " 하늘 " };
+  const hoursAgo = (h) => new Date(Date.now() - h * 3600000).toISOString();
+  const rec = (id, completedAt, extra = {}) => ({
+    id, setName: "DAY04", mode: "en_ko", range: "121~130번", startedAt: completedAt, completedAt, total: 10, correct: 7, partial: false, activeMs: 65000,
+    missed: [{ en: " authority ", ko: "권위", unknown: true }, { en: "devote", ko: "바치다" }, { en: "", ko: "x" }],
+    ...extra,
+  });
+  const familyCase = async (p, opts, expect, includes) => {
+    const r = await worker.fetch(req(p, opts), opts.env || fenv);
+    assert.equal(r.status, expect, `${opts.method || "POST"} ${p} → ${expect}`);
+    const j = await r.json();
+    if (includes) assert(JSON.stringify(j).includes(includes), `${p}: ${JSON.stringify(j)}`);
+    return j;
+  };
+  res = await worker.fetch(req("/family", { method: "OPTIONS" }), fenv);
+  assert(res.headers.get("access-control-allow-methods").includes("DELETE"), "CORS allows GET/DELETE for the family routes");
+  // 바인딩·코드·설정
+  await familyCase("/sync", { body: { child }, env: { ...env } }, 500, "가족 기록함");
+  await familyCase("/sync", { body: { child }, passcode: "nope" }, 401);
+  await familyCase("/sync", { body: { child }, origin: "https://evil.example" }, 403);
+  await familyCase("/sync", { body: { child }, env: { ...fenv, APP_PASSCODE: "" } }, 500, "APP_PASSCODE");
+  await familyCase("/family", { method: "GET" }, 401, "보호자 코드"); // 가족 코드로는 읽을 수 없다
+  await familyCase("/family", { method: "GET", ...PARENT, env: { ...fenv, PARENT_PASSCODE: "" } }, 500, "PARENT_PASSCODE");
+  await familyCase("/family", { method: "POST", ...PARENT, body: {} }, 404);
+  await familyCase("/sync", { method: "GET" }, 404);
+  await familyCase("/family/short", { method: "GET", ...PARENT }, 404, "not_found");
+  // 검증(하나라도 틀리면 전체 거절)
+  await familyCase("/sync", { body: { child: { id: "short", name: "a" } } }, 400, "child.id");
+  await familyCase("/sync", { body: { child: { ...child, name: "  " } } }, 400, "이름");
+  await familyCase("/sync", { body: { child: { ...child, name: "가".repeat(21) } } }, 400, "20자");
+  await familyCase("/sync", { body: { child, records: Array.from({ length: 101 }, (_, i) => rec("r" + i, hoursAgo(1))) } }, 400, "100개");
+  await familyCase("/sync", { body: { child, records: [rec("bad", "not-a-date")] } }, 400, "시각");
+  await familyCase("/sync", { body: { child, records: [rec("bad", hoursAgo(1), { correct: 11 })] } }, 400, "점수");
+  await familyCase("/sync", { body: { child, records: [rec("bad", hoursAgo(1), { total: 0 })] } }, 400, "점수");
+  await familyCase("/sync", { body: { child, records: [rec("bad", hoursAgo(1), { mode: "x" })] } }, 400, "시험 방식");
+  await familyCase("/sync", { body: { child, records: [rec("bad id!", hoursAgo(1))] } }, 400, "기록 id");
+  await familyCase("/sync", { body: { child, records: [rec("bad", hoursAgo(1), { missed: Array(201).fill({ en: "a", ko: "b" }) })] } }, 400, "틀린 단어");
+  await familyCase("/sync", { body: { child, sets: "nope" } }, 400, "세트");
+  await familyCase("/sync", { raw: "{" }, 400);
+  await familyCase("/sync", { raw: JSON.stringify({ child, pad: "x".repeat(256 * 1024) }) }, 413);
+  // 아이 등록만(기록 0개) → 목록에 나타난다
+  data = await familyCase("/sync", { body: { child, sets: [{ name: "DAY04", count: 40 }, { name: "", count: 3 }] } }, 200);
+  assert.deepEqual([data.ok, data.stored, data.trimmed], [true, 0, 0]);
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  assert.equal(data.children.length, 1);
+  assert.equal(data.children[0].name, "하늘", "name trimmed");
+  assert.deepEqual(data.children[0].sets, [{ name: "DAY04", count: 40 }]);
+  assert.deepEqual(data.children[0].records, []);
+  assert.equal(data.children[0].lastTestAt, null);
+  // 기록 저장 → 최신순, 틀린 단어 정리, 14일 요약
+  const r1 = rec("r1", hoursAgo(1)), r2 = rec("r2", hoursAgo(25), { partial: true, total: 5, correct: 3 });
+  data = await familyCase("/sync", { body: { child, records: [r2, r1] } }, 200);
+  assert.equal(data.stored, 2);
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  let c = data.children[0];
+  assert.equal(c.lastTestAt, r1.completedAt);
+  assert.deepEqual(c.sets, [{ name: "DAY04", count: 40 }], "sets kept when omitted");
+  assert.deepEqual(c.records.map((r) => r.id), ["r1", "r2"], "newest first");
+  assert.deepEqual(c.records[0].missed, [{ en: "authority", ko: "권위", unknown: true }, { en: "devote", ko: "바치다" }]);
+  assert.equal(c.records[1].partial, true);
+  assert.equal(c.records[0].activeMs, 65000);
+  assert(typeof c.records[0].receivedAt === "string");
+  const recent = Array.from({ length: 25 }, (_, i) => rec("recent" + i, hoursAgo(2 + i)));
+  data = await familyCase("/sync", { body: { child, records: [...recent, rec("old", hoursAgo(24 * 30))] } }, 200);
+  assert.equal(data.stored, 26);
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  c = data.children[0];
+  assert.equal(c.records.length, 27, "summary = last 14 days when that is 20+ records");
+  assert(!c.records.some((r) => r.id === "old"), "30-day-old record not in summary");
+  assert.equal(c.records[0].id, "r1");
+  data = await familyCase("/family/" + child.id, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.child.name, "하늘");
+  assert.equal(data.records.length, 28, "detail = all records");
+  assert.equal(data.records[27].id, "old", "oldest last");
+  // 같은 기록을 다시 보내면 덮어쓴다(중복 없음)
+  await familyCase("/sync", { body: { child, records: [rec("r1", r1.completedAt, { correct: 9 })] } }, 200);
+  data = await familyCase("/family/" + child.id, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.records.length, 28, "resend does not duplicate");
+  assert.equal(data.records.find((r) => r.id === "r1").correct, 9, "resend overwrites");
+  // 보호자 코드는 /sync 에도, AI 요청에도 통한다
+  await familyCase("/sync", { body: { child }, ...PARENT }, 200);
+  globalThis.fetch = async (url, init) => {
+    const r = okResponse(JSON.parse(init.body));
+    return new Response(JSON.stringify(r.json), { status: r.status, headers: { "content-type": "application/json" } });
+  };
+  res = await worker.fetch(req("/ping", { body: {}, ...PARENT }), fenv);
+  assert.equal(res.status, 200, "parent code accepted for AI routes");
+  res = await worker.fetch(req("/ping", { body: {}, ...PARENT }), env);
+  assert.equal(res.status, 401, "parent code unknown when PARENT_PASSCODE is unset");
+  // 모르는 아이, 요청 제한 버킷, 저장소 장애
+  await familyCase("/family/99999999-aaaa-4bbb-8ccc-dddddddddddd", { method: "GET", ...PARENT }, 404, "unknown_child");
+  await familyCase("/family/99999999-aaaa-4bbb-8ccc-dddddddddddd", { method: "DELETE", ...PARENT }, 404, "unknown_child");
+  limiter.keys.length = 0;
+  limiter.allow = true;
+  await familyCase("/sync", { body: { child }, env: { ...fenv, RATE_LIMITER: limiter } }, 200);
+  await familyCase("/family/" + child.id, { method: "GET", ...PARENT, env: { ...fenv, RATE_LIMITER: limiter } }, 200);
+  assert(limiter.keys[0].startsWith("/sync:") && limiter.keys[1].startsWith("/family:"), "family rate-limit buckets: " + limiter.keys.join(","));
+  limiter.allow = false;
+  await familyCase("/sync", { body: { child }, env: { ...fenv, RATE_LIMITER: limiter } }, 429);
+  limiter.allow = true;
+  await familyCase("/sync", { body: { child }, env: { ...fenv, FAMILY: { idFromName: () => "x", get: () => ({ fetch: async () => { throw Error("down"); } }) } } }, 503, "가족 기록함");
+  // 상한: 아이당 5,000개를 넘으면 오래된 것부터 지운다
+  let lastTrim = 0;
+  for (let b = 0; b < 51; b++) {
+    const bulk = Array.from({ length: 100 }, (_, i) => rec("bulk" + (b * 100 + i), hoursAgo(2000 + b * 100 + i)));
+    const j = await familyCase("/sync", { body: { child, records: bulk } }, 200);
+    lastTrim = j.trimmed;
+  }
+  assert(lastTrim > 0, "last bulk sync trimmed old records");
+  data = await familyCase("/family/" + child.id, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.records.length, 5000, "capped at 5000 records per child");
+  assert(data.records.some((r) => r.id === "old") && !data.records.some((r) => r.id === "bulk5099"), "oldest bulk records dropped, newer kept");
+  // 삭제(보호자만) → 목록에서 사라진다
+  await familyCase("/family/" + child.id, { method: "DELETE" }, 401);
+  data = await familyCase("/family/" + child.id, { method: "DELETE", ...PARENT }, 200);
+  assert.equal(data.deleted, 5000);
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(data.children, []);
+
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/fallback retry/upstream error mapping",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/fallback retry/upstream error mapping/family store",
   );
 })().catch((e) => {
   console.error(e);
