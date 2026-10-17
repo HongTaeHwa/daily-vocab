@@ -113,6 +113,7 @@ details.help ol{padding-left:18px;margin:8px 0}
 #wordTable td{padding:4px;border-bottom:1px solid #eef2f8;vertical-align:top}
 #wordTable .cell{display:block;width:100%;min-height:42px;padding:8px;border:1.5px solid #bfcee0;border-radius:9px;font:inherit;font-size:15px;line-height:1.35;color:var(--ink);background:#fff;resize:none;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;word-break:keep-all;field-sizing:content}
 #wordTable .cell:focus{outline:2px solid #2265ca;outline-offset:-1px}
+#wordTable .cell.ai-filled{background:#fff6d6;border-color:#e3b53d}
 #wordTable col.c-num{width:62px}#wordTable col.c-en{width:17%}#wordTable col.c-ko{width:31%}#wordTable col.c-alias{width:31%}#wordTable col.c-ipa{width:13%}#wordTable col.c-del{width:48px}
 #wordTable .row-delete{min-height:40px;padding:4px 12px}
 #wordTable .empty-row td{padding:16px 12px;color:var(--muted);text-align:center}
@@ -243,10 +244,10 @@ body.in-quiz main{padding-bottom:30px}
       <button type="button" class="btn primary" id="extractWords">✨ 사진에서 단어 가져오기</button>
       <button type="button" class="btn outline" id="cancelExtract" disabled>취소</button>
     </div>
-    <p class="muted">최대 10장, 장당 10MB. AI가 번호·영어·뜻·발음·허용 답안을 정리해 줍니다. 책과 비교해 고친 뒤 저장하세요.</p>
+    <p class="muted">최대 10장, 장당 10MB. AI가 번호·영어·뜻·발음·허용 답안을 정리해 줍니다. 영어 단어만 있는 사진이면 뜻과 발음은 AI 사전이 채워 줍니다(노란 칸). 책과 비교해 고친 뒤 저장하세요.</p>
     <div id="extractStatus" role="status" class="feedback info"></div>
     <div id="photoPreview" class="thumbs"></div>
-    <div class="row-between" style="margin-top:12px"><h3 style="margin:0;font-size:16px;color:var(--navy)">단어 <span id="wordCount" class="pill">단어 없음</span></h3><div class="actionbar" style="margin:0"><button type="button" class="btn small" id="addRow">＋ 단어 추가</button><button type="button" class="btn outline small" id="toggleDraftText">텍스트로 편집</button></div></div>
+    <div class="row-between" style="margin-top:12px"><h3 style="margin:0;font-size:16px;color:var(--navy)">단어 <span id="wordCount" class="pill">단어 없음</span></h3><div class="actionbar" style="margin:0"><button type="button" class="btn small" id="addRow">＋ 단어 추가</button><button type="button" class="btn small" id="fillMeanings">✨ 빈 뜻 AI로 채우기</button><button type="button" class="btn outline small" id="toggleDraftText">텍스트로 편집</button></div></div>
     <div id="wordTableWrap" class="table-wrap"><table id="wordTable"><colgroup><col class="c-num"><col class="c-en"><col class="c-ko"><col class="c-alias"><col class="c-ipa"><col class="c-del"></colgroup><thead><tr><th>번호</th><th>영어</th><th>뜻</th><th>다른 정답 (쉼표로 구분)</th><th>발음</th><th></th></tr></thead><tbody id="wordTableBody"></tbody></table></div>
     <textarea id="wordDraft" class="hidden" rows="10" aria-label="단어 텍스트 (한 줄에 번호, 영어, 뜻, 허용 답안, 발음; 탭으로 구분)" placeholder="1&#9;apple&#9;사과&#9;사과|사과 열매"></textarea>
     <p id="draftWarnings" role="status" class="feedback info"></p>
@@ -309,7 +310,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261012-5 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-1 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -323,7 +324,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261012-5';
+  var release = '20261018-1';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -359,7 +360,7 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./quiz.js?v=20261012-5" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261012-5" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-1" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-1" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

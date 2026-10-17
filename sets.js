@@ -9,6 +9,8 @@ let extractOperation = null;
 let draftTextMode = false;
 let draftDirty = false;
 let selectedFiles = [];
+// AI 사전이 채운 칸: 영어(소문자) → { ko?: true, ipa?: true }. 이번 편집 중에만 노란 칸으로 표시한다.
+let aiFilled = new Map();
 const TABLE_LIMIT = 300;
 window.editorOpen = false;
 function draftWordCount() {
@@ -84,6 +86,7 @@ function openEditor(set) {
   if ($("extractWords").disabled) cancelExtract();
   editingId = set?.id || null;
   selectedFiles = [];
+  aiFilled = new Map();
   $("manageBox").classList.toggle("hidden", !set);
   $("manageStatus").textContent = "";
   $("renameBox").classList.add("hidden");
@@ -115,6 +118,7 @@ function cancelExtract() {
   extractAbort = null;
   $("cancelExtract").disabled = true;
   $("extractWords").disabled = false;
+  $("fillMeanings").disabled = false;
   $("extractStatus").textContent = "취소했습니다. 다시 시도하거나 아래에 직접 입력하세요.";
 }
 $("cancelExtract").onclick = cancelExtract;
@@ -204,6 +208,7 @@ function tableRow(r = {}) {
     ["aliases", "alias", "허용 답안 (|로 구분)", "ko"],
     ["ipa", "ipa", "발음", "en"],
   ];
+  const aiMarks = aiFilled.get(String(r.en || "").trim().toLowerCase()) || {};
   for (const [key, cls, placeholder, lang] of columns) {
     const td = document.createElement("td");
     const input = document.createElement(key === "id" ? "input" : "textarea");
@@ -217,6 +222,20 @@ function tableRow(r = {}) {
     input.value = key === "aliases" ? (r.aliases || []).join("|") : r[key] ?? "";
     input.dataset.key = key;
     input.addEventListener("input", tableToDraft);
+    if (aiMarks[key]) {
+      // AI 사전이 채운 칸은 직접 고칠 때까지 노란색으로 표시한다.
+      input.classList.add("ai-filled");
+      input.title = "AI 사전이 채운 내용이에요. 확인해 주세요.";
+      input.addEventListener(
+        "input",
+        () => {
+          input.classList.remove("ai-filled");
+          input.title = "";
+          delete aiMarks[key];
+        },
+        { once: true },
+      );
+    }
     // Enter는 줄바꿈 대신 아래 칸으로 이동(마지막 줄이면 새 단어 추가)
     input.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" || e.isComposing) return;
@@ -602,7 +621,9 @@ async function aiRequest(config, path, body, signal) {
     payload = await response.json();
   } catch {}
   if (response.status === 200 && payload) return payload;
-  throw Error(describeAiError(response.status, payload));
+  const error = Error(describeAiError(response.status, payload));
+  error.status = response.status;
+  throw error;
 }
 $("testAi").onclick = async () => {
   const config = aiConfig();
@@ -621,7 +642,15 @@ $("testAi").onclick = async () => {
     $("testAi").disabled = false;
   }
 };
+function markAiFilled(en, fields) {
+  const key = String(en || "").trim().toLowerCase();
+  if (!key) return;
+  const marks = aiFilled.get(key) || {};
+  for (const field of Object.keys(fields)) if (fields[field]) marks[field] = true;
+  aiFilled.set(key, marks);
+}
 // 가져온 단어를 초안에 추가한다. 인쇄된 번호가 있으면 쓰고, 없거나 겹치면 이어서 번호를 매긴다.
+// 사진에 뜻이 없어 AI가 채운 단어(generated)는 노란 칸으로 표시한다.
 function appendDraftRows(rows) {
   const existing = $("wordDraft").value.split("\n").filter((l) => l.trim());
   const used = new Set(existing.map((l) => l.split("\t")[0].trim()));
@@ -642,29 +671,31 @@ function appendDraftRows(rows) {
       id = String(next);
     }
     used.add(id);
+    if (r.generated) markAiFilled(r.en, { ko: true, ipa: Boolean(r.ipa) });
     return [id, r.en, r.ko, (r.aliases || []).join("|"), ...(r.ipa ? [r.ipa] : [])].join("\t");
   });
+  appendDraftRows.generated = fresh.filter((r) => r.generated).length;
   $("wordDraft").value = [...existing, ...lines].join("\n");
   draftDirty = true;
   if (!draftTextMode) draftToTable();
   else updateWordCount(existing.length + lines.length);
   return lines.length;
 }
-$("extractWords").onclick = async () => {
-  const files = selectedFiles.slice();
-  if (!files.length || files.length > 10 || files.some((f) => !f.type.startsWith("image/") || f.size > 10 * 1024 * 1024)) {
-    $("extractStatus").textContent = `사진 ${files.length}장을 선택했습니다. 한 번에 1~10장, 장당 최대 10MB의 이미지 파일을 선택하세요.`;
-    return;
-  }
+// ---- AI 작업 공통(사진 인식·빈 뜻 채우기): 한 번에 하나만, 취소·시간 초과·버튼 잠금 ----
+// 사전에 물어볼 수 있는 영어: 영문자로 시작하는 단어·짧은 구(공백, 마침표, 하이픈, 아포스트로피, 40자 이하). Worker와 같은 규칙.
+const WORD_PATTERN = /^[A-Za-z][A-Za-z .'’-]{0,39}$/;
+const DEFINE_BATCH = 40;
+function requireAiConfig(reason) {
   const config = aiConfig();
-  if (!config) {
-    $("extractStatus").textContent = "먼저 설정 → ‘보호자 설정 · AI 연결’에서 AI 서버 주소와 접속 코드를 입력하세요.";
-    showView("settings");
-    $("aiSettings").open = true;
-    $("aiStatus").textContent = "사진 인식을 쓰려면 접속 코드를 저장해 주세요.";
-    $("aiSettings").scrollIntoView({ behavior: "smooth", block: "center" });
-    return;
-  }
+  if (config) return config;
+  $("extractStatus").textContent = "먼저 설정 → ‘보호자 설정 · AI 연결’에서 AI 서버 주소와 접속 코드를 입력하세요.";
+  showView("settings");
+  $("aiSettings").open = true;
+  $("aiStatus").textContent = reason;
+  $("aiSettings").scrollIntoView({ behavior: "smooth", block: "center" });
+  return null;
+}
+function startOperation(statusText) {
   const generation = ++extractGeneration;
   const operation = {};
   extractOperation = operation;
@@ -677,27 +708,57 @@ $("extractWords").onclick = async () => {
     };
     extractAbort = () => failure(Error("취소했습니다"));
   });
-  function deadline(message, ms = 90000) {
-    clearTimeout(timer);
-    timer = setTimeout(() => failure(Error(message + " 시간이 초과됐습니다")), ms);
-  }
-  const step = (promise) => Promise.race([promise, interrupted]);
+  interrupted.catch(() => {});
   $("extractWords").disabled = true;
+  $("fillMeanings").disabled = true;
   $("cancelExtract").disabled = false;
   $("confirmed").checked = false;
-  $("extractStatus").textContent = "사진에서 단어를 가져옵니다. 사진을 준비하는 중…";
+  $("extractStatus").textContent = statusText;
+  return {
+    signal: controller.signal,
+    live: () => generation === extractGeneration,
+    step: (promise) => Promise.race([promise, interrupted]),
+    deadline(message, ms = 90000) {
+      clearTimeout(timer);
+      timer = setTimeout(() => failure(Error(message + " 시간이 초과됐습니다")), ms);
+    },
+    // 실패를 알린 뒤에는 늦게 도착하는 결과를 버린다.
+    fail: () => {
+      if (generation === extractGeneration) extractGeneration++;
+    },
+    end() {
+      clearTimeout(timer);
+      if (extractOperation !== operation) return;
+      extractOperation = null;
+      extractAbort = null;
+      $("extractWords").disabled = false;
+      $("fillMeanings").disabled = false;
+      $("cancelExtract").disabled = true;
+    },
+  };
+}
+$("extractWords").onclick = async () => {
+  const files = selectedFiles.slice();
+  if (!files.length || files.length > 10 || files.some((f) => !f.type.startsWith("image/") || f.size > 10 * 1024 * 1024)) {
+    $("extractStatus").textContent = `사진 ${files.length}장을 선택했습니다. 한 번에 1~10장, 장당 최대 10MB의 이미지 파일을 선택하세요.`;
+    return;
+  }
+  const config = requireAiConfig("사진 인식을 쓰려면 접속 코드를 저장해 주세요.");
+  if (!config) return;
+  const op = startOperation("사진에서 단어를 가져옵니다. 사진을 준비하는 중…");
   try {
     const notes = [];
+    let generatedTotal = 0;
     for (let i = 0; i < files.length; i++) {
       $("extractStatus").textContent = (i ? "" : "사진에서 단어를 가져옵니다. ") + `${i + 1}/${files.length}장 · 사진 크기를 조정하는 중…`;
-      deadline("사진 준비", 30000);
-      const photo = await step(preparePhoto(files[i]));
-      const image = await step(canvasToBase64Jpeg(photo));
+      op.deadline("사진 준비", 30000);
+      const photo = await op.step(preparePhoto(files[i]));
+      const image = await op.step(canvasToBase64Jpeg(photo));
       photo.width = photo.height = 1;
       $("extractStatus").textContent = `${i + 1}/${files.length}장 · AI가 단어를 읽는 중… (보통 10~40초) · 취소하고 직접 입력할 수도 있습니다.`;
-      deadline("AI 인식", 120000);
-      const result = await step(aiRequest(config, "/recognize", { image, mediaType: "image/jpeg" }, controller.signal));
-      if (generation !== extractGeneration) return;
+      op.deadline("AI 인식", 120000);
+      const result = await op.step(aiRequest(config, "/recognize", { image, mediaType: "image/jpeg" }, op.signal));
+      if (!op.live()) return;
       const rows = (Array.isArray(result?.words) ? result.words : [])
         .map((w) => ({
           number: Number.isInteger(w?.number) && w.number > 0 ? w.number : 0,
@@ -705,35 +766,131 @@ $("extractWords").onclick = async () => {
           ko: clean(w?.ko),
           ipa: clean(w?.ipa),
           aliases: (Array.isArray(w?.aliases) ? w.aliases : []).map(clean).filter(Boolean),
+          generated: w?.generated === true,
         }))
         .filter((w) => w.en && w.ko);
       if (!rows.length) throw Error("사진에서 단어를 찾지 못했습니다. 더 선명하게 찍어 다시 시도하세요.");
       const added = appendDraftRows(rows);
       if (result.note) notes.push(clean(result.note));
+      generatedTotal += appendDraftRows.generated;
+      const generated = appendDraftRows.generated ? ` (뜻 ${appendDraftRows.generated}개는 사진에 없어 AI 사전으로 채움)` : "";
       const skipped = appendDraftRows.skipped ? ` · 이미 있는 단어 ${appendDraftRows.skipped}개 건너뜀` : "";
-      $("extractStatus").textContent = `${i + 1}/${files.length}장 완료 · 단어 ${added}개 추가${skipped} · 책과 비교해 고친 뒤 확인란을 체크하고 저장하세요.`;
+      $("extractStatus").textContent = `${i + 1}/${files.length}장 완료 · 단어 ${added}개 추가${generated}${skipped} · 책과 비교해 고친 뒤 확인란을 체크하고 저장하세요.`;
       selectedFiles = selectedFiles.filter((f) => f !== files[i]);
     }
     renderPhotos();
-    $("extractStatus").textContent = `${files.length}/${files.length}장 완료 · 책과 비교해 고친 뒤 확인란을 체크하고 저장하세요.`;
+    $("extractStatus").textContent =
+      `${files.length}/${files.length}장 완료 · ` +
+      (generatedTotal ? `뜻 ${generatedTotal}개는 사진에 없어 AI 사전으로 채웠어요(노란 칸) · ` : "") +
+      "책과 비교해 고친 뒤 확인란을 체크하고 저장하세요.";
     if (notes.length) $("extractStatus").textContent += " · AI 메모: " + notes.join(" ");
-    $("draftWarnings").textContent = "책과 비교해 틀린 뜻·빠진 단어·중복을 고치세요. 결과가 비어 있으면 직접 입력하거나 더 선명한 사진으로 다시 시도하세요.";
+    $("draftWarnings").textContent =
+      (generatedTotal ? `사진에 뜻이 없던 단어 ${generatedTotal}개는 AI 사전이 뜻·발음을 채웠어요(노란 칸). 틀릴 수 있으니 사전과 비교해 확인하세요. ` : "") +
+      "책과 비교해 틀린 뜻·빠진 단어·중복을 고치세요. 결과가 비어 있으면 직접 입력하거나 더 선명한 사진으로 다시 시도하세요.";
     $("wordTableWrap").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
-    if (generation === extractGeneration) {
+    if (op.live()) {
+      op.fail();
       const done = files.length - selectedFiles.filter((f) => files.includes(f)).length;
       $("extractStatus").textContent = "단어를 가져오지 못했습니다: " + (e?.message || String(e)) + (done ? ` · ${done}/${files.length}장까지는 가져왔어요. 남은 사진만 다시 시도하세요.` : " · 인터넷 연결을 확인하고 다시 시도하세요.") + " 아래에 직접 입력해 저장할 수도 있어요.";
       renderPhotos();
-      extractGeneration++;
     }
   } finally {
-    clearTimeout(timer);
-    if (extractOperation === operation) {
-      extractOperation = null;
-      extractAbort = null;
-      $("extractWords").disabled = false;
-      $("cancelExtract").disabled = true;
+    op.end();
+  }
+};
+
+// ---- 빈 뜻·발음 채우기 (AI 사전) ----
+// 뜻이 비어 있는 단어는 뜻·허용 답안·발음을, 발음만 비어 있는 단어는 발음만 채운다. 이미 적힌 칸은 바꾸지 않는다.
+function fillDraftFrom(found) {
+  const rows = parseDraft($("wordDraft").value);
+  const counts = { ko: 0, ipa: 0 };
+  const lines = rows.map((r) => {
+    const hit = found.get(r.en.toLowerCase());
+    if (hit) {
+      if (!r.ko) {
+        r.ko = hit.ko;
+        if (!r.aliases.length) r.aliases = hit.aliases;
+        markAiFilled(r.en, { ko: true });
+        counts.ko++;
+      }
+      if (!r.ipa && hit.ipa) {
+        r.ipa = hit.ipa;
+        markAiFilled(r.en, { ipa: true });
+        counts.ipa++;
+      }
     }
+    return [r.id, r.en, r.ko, r.aliases.join("|"), ...(r.ipa ? [r.ipa] : [])].join("\t");
+  });
+  $("wordDraft").value = lines.join("\n");
+  draftDirty = true;
+  if (!draftTextMode) draftToTable();
+  else updateWordCount(lines.length);
+  return counts;
+}
+$("fillMeanings").onclick = async () => {
+  if ($("extractWords").disabled) return;
+  const rows = parseDraft($("wordDraft").value);
+  const targets = [...new Set(rows.filter((r) => r.en && (!r.ko || !r.ipa)).map((r) => r.en))];
+  if (!rows.length) {
+    $("extractStatus").textContent = "먼저 영어 단어를 넣어 주세요. 영어만 적어 두면 AI 사전이 뜻과 발음을 채워 줘요.";
+    return;
+  }
+  if (!targets.length) {
+    $("extractStatus").textContent = "빈 뜻·발음이 없어요. 뜻이나 발음 칸이 비어 있는 단어만 채웁니다.";
+    return;
+  }
+  const odd = targets.find((w) => !WORD_PATTERN.test(w));
+  if (odd) {
+    $("extractStatus").textContent = `‘${odd}’은(는) 영어 단어로 보이지 않아요. 영어 칸을 확인해 주세요.`;
+    return;
+  }
+  const config = requireAiConfig("뜻 채우기를 쓰려면 접속 코드를 저장해 주세요.");
+  if (!config) return;
+  const batches = [];
+  for (let i = 0; i < targets.length; i += DEFINE_BATCH) batches.push(targets.slice(i, i + DEFINE_BATCH));
+  const op = startOperation(`AI 사전에서 단어 ${targets.length}개의 뜻·발음을 찾습니다…`);
+  try {
+    const counts = { ko: 0, ipa: 0 };
+    const missing = [], notes = [];
+    for (let i = 0; i < batches.length; i++) {
+      $("extractStatus").textContent = (batches.length > 1 ? `${i + 1}/${batches.length}묶음 · ` : "") + `AI가 단어 ${batches[i].length}개의 뜻을 찾는 중… (보통 10~30초)`;
+      op.deadline("AI 사전", 120000);
+      let result;
+      try {
+        result = await op.step(aiRequest(config, "/define", { words: batches[i] }, op.signal));
+      } catch (e) {
+        if (e?.status === 404) throw Error("AI 서버가 아직 뜻 채우기를 지원하지 않아요. 보호자가 Worker를 새 버전으로 다시 배포하거나 설정의 서버 주소를 확인해 주세요.");
+        throw e;
+      }
+      if (!op.live()) return;
+      const found = new Map();
+      for (const w of Array.isArray(result?.words) ? result.words : []) {
+        const en = clean(w?.en).toLowerCase(), ko = clean(w?.ko);
+        if (en && ko) found.set(en, { ko, ipa: clean(w?.ipa), aliases: (Array.isArray(w?.aliases) ? w.aliases : []).map(clean).filter(Boolean) });
+      }
+      const added = fillDraftFrom(found);
+      counts.ko += added.ko;
+      counts.ipa += added.ipa;
+      missing.push(...batches[i].filter((w) => !found.has(w.toLowerCase())));
+      if (result?.note) notes.push(clean(result.note));
+    }
+    $("extractStatus").textContent =
+      `뜻 ${counts.ko}개 · 발음 ${counts.ipa}개를 AI 사전으로 채웠어요(노란 칸). 사전과 비교해 확인한 뒤 확인란을 체크하고 저장하세요.` +
+      (missing.length ? ` · 못 찾은 단어: ${missing.join(", ")}` : "") +
+      (notes.length ? " · AI 메모: " + notes.join(" ") : "");
+    $("draftWarnings").textContent =
+      counts.ko || counts.ipa
+        ? "AI 사전이 채운 노란 칸은 틀릴 수 있어요. 교재나 사전과 비교해 고친 뒤 저장하세요."
+        : "채운 칸이 없어요. 영어 철자를 확인해 주세요.";
+    if (!draftTextMode) $("wordTableWrap").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    if (op.live()) {
+      op.fail();
+      $("extractStatus").textContent = "뜻을 채우지 못했습니다: " + (e?.message || String(e)) + " 직접 입력해 저장할 수도 있어요.";
+    }
+  } finally {
+    op.end();
   }
 };
 
