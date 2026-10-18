@@ -19,6 +19,7 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -48,7 +49,7 @@ import java.util.Locale
  *  1. FLAG_SECURE — 이 앱 화면에서는 스크린샷·화면 녹화·서클 투 서치가 동작하지 않는다(다른 앱에는 영향 없음).
  *  2. 화면 분할 차단 — 매니페스트 resizeableActivity=false + 멀티윈도우(분할·팝업 화면)가 감지되면 웹앱을 가리고 안내만 보여 준다.
  *  3. 음성 인식·TTS 브리지 — WebView에는 Web Speech API가 없어 안드로이드 기본 인식기/TTS를 연결한다(SpeechBridge + assets/bridge.js).
- *  4. 사진 선택·촬영, 마이크 권한, 뒤로 가기, 아이 전용 링크 열기.
+ *  4. 사진 선택·촬영과 JSON 가져오기의 파일 선택(입력의 accept 를 따름), 마이크 권한, 뒤로 가기, 아이 전용 링크 열기.
  * 세트·기록·가족 기록함·오늘의 단어는 모두 웹앱 그대로다(앱은 웹앱 주소만 안다).
  */
 class MainActivity : AppCompatActivity() {
@@ -172,19 +173,29 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // 세트 만들기의 사진 선택(<input type=file>)·촬영(capture)
+            // 세트 만들기의 사진 선택(<input accept="image/*">)·촬영(capture), 설정의 JSON 가져오기(<input accept="application/json">).
+            // 입력의 accept 를 따른다: 사진이면 전처럼 사진·카메라, 그 밖이면 요청한 종류를 기본으로 하되 */* 도 함께 허용해
+            // 파일 관리자가 .json 을 text/plain 등으로 보고해도 고를 수 있게 한다(내용 검사는 웹앱이 한다).
             override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
                 fileCallback?.onReceiveValue(null)
                 fileCallback = callback
+                val mimeTypes = acceptedMimeTypes(params.acceptTypes)
+                val imagesOnly = mimeTypes.all { it.startsWith("image/") }
                 val pick = Intent(Intent.ACTION_GET_CONTENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "image/*"
+                    if (imagesOnly) {
+                        type = "image/*"
+                    } else {
+                        type = mimeTypes.first()
+                        putExtra(Intent.EXTRA_MIME_TYPES, (mimeTypes + "*/*").toTypedArray())
+                    }
                     putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params.mode == FileChooserParams.MODE_OPEN_MULTIPLE)
                 }
-                val camera = cameraIntent()
+                val camera = if (imagesOnly) cameraIntent() else null
+                val title = getString(if (imagesOnly) R.string.choose_photo else R.string.choose_file)
                 val intent = when {
                     params.isCaptureEnabled && camera != null -> camera
-                    else -> Intent.createChooser(pick, getString(R.string.choose_photo)).apply {
+                    else -> Intent.createChooser(pick, title).apply {
                         if (camera != null) putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(camera))
                     }
                 }
@@ -227,6 +238,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun hasMicPermission() =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    // <input accept="…"> 의 항목을 MIME 종류로 바꾼다(".json" → application/json). 비어 있으면 사진으로 본다.
+    private fun acceptedMimeTypes(accept: Array<String>?): List<String> {
+        val types = (accept ?: emptyArray()).map { it.trim().lowercase(Locale.US) }.filter { it.isNotEmpty() }.map {
+            if (it.startsWith(".")) MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.substring(1)) ?: "*/*" else it
+        }
+        return if (types.isEmpty()) listOf("image/*") else types.distinct()
+    }
 
     private fun cameraIntent(): Intent? {
         val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)

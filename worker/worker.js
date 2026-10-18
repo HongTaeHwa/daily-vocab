@@ -396,7 +396,13 @@ export class FamilyStore {
   async sync({ child, records, sets, anchor, device }) {
     const now = new Date().toISOString();
     const key = "child:" + child.id;
-    const current = (await this.storage.get(key)) || { id: child.id, createdAt: now, createdBy: "device", sets: [], recordCount: 0, devices: {} };
+    let current = await this.storage.get(key);
+    if (!current) {
+      // 보호자가 지운 아이(gone:<id> 묘비)는 연결돼 있던 기기가 기록을 보내도 되살리지 않는다. 그 밖의 모르는 아이는 옛 앱 호환으로 만든다.
+      if (await this.storage.get("gone:" + child.id))
+        return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 보호자 폰에서 아이를 다시 만들어 주세요." });
+      current = { id: child.id, createdAt: now, createdBy: "device", sets: [], recordCount: 0, devices: {} };
+    }
     const entries = {};
     let lastTestAt = current.lastTestAt || null;
     for (const r of records) {
@@ -409,12 +415,13 @@ export class FamilyStore {
       devices: registerDevice(current.devices, device, now),
       // 세트 동기화(/sets)를 시작한 아이는 서버가 계산한 요약이 기준이다(옛 앱이 보낸 이름·개수 목록으로 덮어쓰지 않는다).
       sets: current.setsSyncedAt ? current.sets || [] : sets === undefined ? current.sets || [] : sets,
-      ...(anchor ? { anchor: { ...anchor, updatedAt: now } } : {}),
+      ...(anchor?.words.length ? { anchor: { ...anchor, updatedAt: now } } : {}),
       updatedAt: now,
       lastTestAt,
       // 다시 보낸 기록도 세므로 대략값이다. 상한을 넘었을 때만 실제로 세어 정리한다.
       recordCount: (current.recordCount || 0) + records.length,
     };
+    if (anchor && !anchor.words.length) delete next.anchor; // 빈 앵커 = 기기에 수준 기준으로 쓸 세트가 없다(예제뿐): 옛 수준 기준을 지운다
     await this.putMany({ ...entries, [key]: next });
     for (const r of records) if (r.daily && !r.partial) await this.markDaily(child.id, r); // 오늘의 단어로 본 시험(중단 제외)이면 그날 것에 완료 표시
     let trimmed = 0;
@@ -472,6 +479,7 @@ export class FamilyStore {
     const dailies = [...(await this.storage.list({ prefix: "daily:" + childId + ":" })).keys()];
     const setKeys = [...(await this.storage.list({ prefix: this.setPrefix(childId) })).keys()];
     await this.deleteMany([...keys, ...dailies, ...setKeys, "served:" + childId, "child:" + childId, ...(c.joinCode ? ["code:" + c.joinCode] : [])]);
+    await this.storage.put("gone:" + childId, { deletedAt: new Date().toISOString() }); // 연결돼 있던 기기의 /sync 가 아이를 되살리지 못하게 묘비를 남긴다
     return json(200, { ok: true, deleted: keys.length });
   }
   // ---- 아이 만들기·아이 코드·기기 연결 ----
@@ -845,7 +853,7 @@ function parseSync(body) {
       .map((s) => ({ name: clean(s?.name).slice(0, 120), count: Number.isInteger(s?.count) && s.count >= 0 ? Math.min(s.count, 5000) : 0 }))
       .filter((s) => s.name);
   }
-  let anchor;
+  let anchor; // 교재 앵커(수준 기준). words가 비어 있으면 ‘보낼 세트가 없다’는 뜻이라 저장된 앵커를 지운다. 아예 없으면 그대로 둔다.
   if (body.anchor !== undefined) {
     if (!body.anchor || typeof body.anchor !== "object" || !Array.isArray(body.anchor.words)) return { error: "anchor 형식이 올바르지 않습니다." };
     const words = [...new Set(body.anchor.words.map((w) => clean(w)).filter((w) => WORD_PATTERN.test(w)))].slice(0, MAX_ANCHOR_WORDS);

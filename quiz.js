@@ -374,6 +374,7 @@ function pauseQuiz() {
   setSettingsLocked(false);
   showView("home");
   $("setStatus").textContent = "쉬는 중이에요. 위의 ‘이어서 하기’로 다시 시작할 수 있어요.";
+  notifyQuizEnded();
 }
 // 쉬어 둔 시험을 버릴 때도 푼 문제가 있으면 ‘중단’ 기록으로 남긴다(그만하기와 같은 규칙).
 function abandonSavedSession() {
@@ -405,6 +406,7 @@ function stopQuiz() {
     const missed = finishRecords(true);
     showResult(missed, true);
   } else showView("home");
+  notifyQuizEnded();
 }
 $("resumeQuiz").addEventListener("click", resumeSession);
 $("discardSession").addEventListener("click", discardSession);
@@ -809,6 +811,11 @@ function finishRecords(partial) {
   refreshReview();
   return missed;
 }
+// 시험이 끝나거나(완료·그만하기) 쉴 때, sessionRunning 을 끈 뒤 family.js 에 알린다:
+// 시험 중 미뤄 둔 세트 동기화(learnAlias 가 허용 답안을 넣어 세트가 바뀐 경우)를 바로 올린다.
+function notifyQuizEnded() {
+  if (typeof onQuizEnded === "function") onQuizEnded(); // family.js
+}
 function complete() {
   stopQuestionTimer();
   accumulateActive();
@@ -817,6 +824,7 @@ function complete() {
   const missed = finishRecords(false);
   clearSessionState();
   showResult(missed, false);
+  notifyQuizEnded();
 }
 function showResult(missed, partial) {
   const correct = results.filter((x) => x.pass).length;

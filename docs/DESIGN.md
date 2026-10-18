@@ -279,3 +279,13 @@
 - **학습**: 인정된 답은 `learnAlias`가 그 세트 단어의 허용 답안에 넣는다(`updatedAt` 갱신 → 세트 동기화로 같은 아이의 다른 기기·보호자 폰에도 반영). 다음부터는 기기에서 바로 정답. 오늘의 단어·기록 복습 시험은 세트가 아니므로 학습하지 않는다.
 - **기록**: `results[i].ai`, 기록 `aiPass`(개수) → 아이 기록 탭·보호자 기록에 ‘🤖 AI 인정 N개’. Worker `parseSync`가 보존.
 - 버전 `20261018-10`, 캐시 v19. Worker 재배포 필요(`/grade`).
+
+## 17. 전반 점검 보완 — 작은 결함 4건 (2026-10-18)
+
+점검에서 나온 작은 결함 네 가지를 한 PR로 고쳤다. 버전 `20261018-11`, 캐시 v20, 갤럭시 앱 v1.3(versionCode 4). Worker 재배포 필요(`/sync`의 빈 앵커 삭제·지운 아이 묘비).
+
+- **갤럭시 앱의 파일 선택기가 JSON을 막음**: `onShowFileChooser`가 늘 `image/*`로 열어 설정의 ‘JSON 가져오기’(`<input accept="application/json">`)에서 .json을 고를 수 없었다. `params.acceptTypes`를 MIME로 바꿔(`acceptedMimeTypes`, `.json` → `application/json`) 사진이면 전처럼 사진·카메라, 그 밖이면 요청한 종류를 기본으로 하되 `EXTRA_MIME_TYPES`에 `*/*`를 함께 넣어 파일 관리자가 .json을 `text/plain` 등으로 보고해도 고를 수 있게 했다(내용 검사는 웹앱 `importSets`가 한다). 선택기 제목 ‘파일 선택’. 앱에 `DownloadListener`가 없어 ‘전체 백업 JSON’ 내려받기는 앱 안에서 동작하지 않을 수 있다(실기기 미확인, 세트는 세트 동기화로 받으므로 급하지 않음).
+- **시험 중 생긴 세트 변경이 늦게 올라감**: `syncSets`는 시험 중 건너뛰므로 `learnAlias`(AI가 인정한 답을 허용 답안에 추가)의 `queueSetsSync`가 다음 화면 복귀(10분 간격)나 앱 재시작까지 미뤄졌다. 시험 중의 강제 동기화 요청은 `setsSyncDeferred`로 표시만 하고, quiz.js가 완료(`complete`)·그만하기(`stopQuiz`)·쉬기(`pauseQuiz`)에서 `sessionRunning`을 끈 뒤 `notifyQuizEnded` → family.js `onQuizEnded`가 한 번 `syncSets({force:true})`를 부른다.
+- **세트가 없는 아이의 수준 기준이 예제로 남음**: `anchorPayload`가 손대지 않은 기본 예제(`isUntouchedExample`)를 후보에서 빼고, 보낼 세트가 없으면 `{setName:"", words:[]}`를 보낸다. Worker `sync()`는 `words`가 빈 앵커를 받으면 저장된 `anchor`를 지우고(앵커를 아예 안 보내면 그대로), 보호자 계획 상자는 ‘수준 기준 세트가 아직 없어요’를 보인다. 옛 Worker는 빈 앵커를 빈 목록으로 저장하므로 결과는 같다(`words.length` 0).
+- **서버에서 지운 아이의 기기 안내**: 기기가 `/sync`·`/sets`·`/settings`·`/daily`에서 404 `unknown_child`를 받으면 `noteChildGone`이 `family.childGone`을 켜고, 설정의 가족 기록함에 ‘보호자가 이 아이를 서버에서 지웠어요. … 새로 만든 아이 코드로 다시 연결하세요’(상태 칩 ‘서버에서 지워짐’, 연결 해제 버튼 강조 `.btn.attention`, 세트 줄 안내)를 보이며 그 뒤 기록·세트·설정·오늘의 단어 요청을 모두 멈춘다(`syncReady`·`setsSyncReady`·`fetchSettings`·`checkDaily`). 연결 해제나 재연결(`joinChild`)이 풀어 주고 그동안의 기록은 재연결 때 올라간다. `checkDaily`의 옛 ‘다시 등록’(`flushFamilySync` 재시도)은 없앴다 — 아이 코드 체계에서는 코드 없는 유령 아이만 만들었다. Worker는 `/sync`가 모르는 id를 만들던 옛 앱 호환 때문에 지운 아이가 되살아날 수 있었으므로, 아이를 지울 때 `gone:<childId>` 묘비를 남겨 그 id의 `/sync`만 404 `unknown_child`로 거절한다(모르는 새 id는 계속 만든다).
+- 테스트: `tests/worker.cjs`(빈 앵커 삭제·앵커 없으면 유지, 지운 아이 `/sync`·`/settings` 404), `tests/family.cjs`(예제뿐이면 빈 앵커·동기화된 세트의 앵커와 보호자 표시, 시험 중 `/grade` 인정 → 시험 중 `/sets` 없음 → 완료 직후 전송, 지운 아이 안내·요청 중단·연결 해제·새 코드로 재연결), `tests/daily.cjs`(예제뿐이면 빈 앵커·‘아직 없어요’). 갤럭시 앱은 Actions ‘Android APK’ 빌드로 확인(실기기에서 .json 선택 확인 필요).
