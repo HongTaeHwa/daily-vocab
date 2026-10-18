@@ -647,8 +647,58 @@ const { pathToFileURL } = require("url");
   await familyCase("/daily/" + kid.id, { method: "GET" }, 404, "unknown_child");
   await familyCase("/family/" + kid2.id, { method: "DELETE", ...PARENT }, 200);
 
+  // ---- 아이 코드·전용 링크: 보호자가 아이를 만들고(코드 발급) 아이 기기가 코드로 연결한다. 같은 아이의 두 기기는 한곳에 모인다. ----
+  await familyCase("/family/children", { body: { name: "하늘" } }, 401, "보호자 코드");
+  await familyCase("/family/children", { ...PARENT, body: { name: "  " } }, 400, "이름");
+  await familyCase("/family/children", { ...PARENT, body: { name: "가".repeat(21) } }, 400, "이름");
+  data = await familyCase("/family/children", { ...PARENT, body: { name: " 하늘 " } }, 200);
+  const made = data.child;
+  assert(/^[0-9a-f-]{36}$/.test(made.id) && /^\d{6}$/.test(made.joinCode) && made.name === "하늘" && made.createdBy === "parent", "child created with a 6-digit code: " + JSON.stringify(made));
+  assert.deepEqual(made.devices, {});
+  assert.equal(made.plan.enabled, false);
+  await familyCase("/join", { body: { code: "12" } }, 400, "6자리");
+  await familyCase("/join", { body: { code: "000000" } }, 404, "unknown_code");
+  await familyCase("/join", { passcode: "nope", body: { code: made.joinCode } }, 401);
+  const phone = { id: "aaaaaaaa-1111-4222-8333-444444444444", label: "iPhone" };
+  const tablet = { id: "bbbbbbbb-1111-4222-8333-444444444444", label: " Android 태블릿 " };
+  data = await familyCase("/join", { body: { code: made.joinCode.slice(0, 3) + " " + made.joinCode.slice(3), device: phone } }, 200);
+  assert.deepEqual([data.childId, data.name], [made.id, "하늘"], "join returns the child id and the server name (space in the code tolerated)");
+  await familyCase("/join", { ...PARENT, body: { code: made.joinCode, device: tablet } }, 200); // 보호자 코드로도 연결된다
+  await familyCase("/join", { body: { code: made.joinCode, device: { id: "bad id", label: "x" } } }, 200); // 잘못된 기기 정보는 무시
+  data = await familyCase("/family/" + made.id, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(Object.keys(data.child.devices).sort(), [phone.id, tablet.id].sort(), "both devices registered, invalid one ignored");
+  assert.equal(data.child.devices[tablet.id].label, "Android 태블릿", "device label cleaned");
+  assert.equal(data.child.joinCode, made.joinCode);
+  // 같은 아이의 두 기기에서 온 기록은 한곳에 모이고, 기기가 보낸 이름은 서버 이름을 덮어쓰지 않는다
+  await familyCase("/sync", { body: { child: { id: made.id, name: "다른이름" }, device: phone, records: [rec("p1", hoursAgo(3))] } }, 200);
+  await familyCase("/sync", { body: { child: { id: made.id, name: "하늘" }, device: tablet, records: [rec("t1", hoursAgo(2))] } }, 200);
+  data = await familyCase("/family/" + made.id, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.child.name, "하늘", "server name is authoritative");
+  assert.deepEqual(data.records.map((r) => r.id), ["t1", "p1"], "records from both devices merged");
+  assert(data.child.devices[phone.id].lastSeenAt >= data.child.devices[phone.id].joinedAt, "lastSeenAt updated on sync");
+  // 이름 바꾸기·코드 새로 만들기(옛 코드는 무효)
+  await familyCase("/family/" + made.id + "/name", { body: { name: "하늘이" } }, 401, "보호자 코드");
+  await familyCase("/family/" + made.id + "/name", { ...PARENT, body: { name: "" } }, 400, "이름");
+  data = await familyCase("/family/" + made.id + "/name", { ...PARENT, body: { name: "하늘이" } }, 200);
+  assert.equal(data.child.name, "하늘이");
+  data = await familyCase("/family/" + made.id + "/code", { ...PARENT }, 200);
+  const newCode = data.child.joinCode;
+  assert(/^\d{6}$/.test(newCode) && newCode !== made.joinCode, "new code issued");
+  await familyCase("/join", { body: { code: made.joinCode, device: phone } }, 404, "unknown_code");
+  data = await familyCase("/join", { body: { code: newCode, device: phone } }, 200);
+  assert.equal(data.name, "하늘이", "join uses the renamed name");
+  await familyCase("/family/99999999-aaaa-4bbb-8ccc-dddddddddddd/code", { ...PARENT }, 404, "unknown_child");
+  // 목록에도 코드·기기가 나온다(보호자 전용 응답)
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  const listed = data.children.find((c) => c.id === made.id);
+  assert.equal(listed.joinCode, newCode);
+  assert.equal(Object.keys(listed.devices).length, 2);
+  // 삭제하면 코드도 지워져 더 연결할 수 없다
+  await familyCase("/family/" + made.id, { method: "DELETE", ...PARENT }, 200);
+  await familyCase("/join", { body: { code: newCode } }, 404, "unknown_code");
+
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/fallback retry/upstream error mapping/family store/daily words",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/fallback retry/upstream error mapping/family store/daily words/child codes",
   );
 })().catch((e) => {
   console.error(e);

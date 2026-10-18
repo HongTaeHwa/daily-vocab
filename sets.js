@@ -584,7 +584,7 @@ $("saveAi").onclick = () => {
   }
   if (!storeAi({ server, passcode })) return;
   renderAiSettings();
-  if (typeof renderFamilySettings === "function") renderFamilySettings();
+  if (typeof onAiSettingsSaved === "function") onAiSettingsSaved(); // family.js: 설정 갱신 + 링크로 받아 둔 아이 코드 자동 연결
   $("aiStatus").textContent =
     "저장했습니다. ‘연결 확인’을 눌러 AI 서버가 응답하는지 확인해 보세요." +
     (window.editorOpen ? " 편집 중이던 세트는 홈의 ‘편집 중인 세트로 돌아가기’에서 이어집니다." : "");

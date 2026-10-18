@@ -50,6 +50,7 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 아이 기기는 시험을 마칠 때마다 압축 기록(아이 이름, 세트 이름·단어 수, 방식·범위, 점수, 푼 시간, 틀린 단어의 영어·뜻)을 `POST /sync`로 보내고, 보호자 폰은 `GET /family`로 아이별 기록을 읽습니다. 저장소는 `worker.js`의 `FamilyStore`(SQLite 기반 Durable Object, `wrangler.jsonc`의 `FAMILY` 바인딩과 마이그레이션 `v2`)이며 무료 플랜에서 동작합니다. 외부 서비스는 쓰지 않습니다.
 
 - **코드 두 가지**: 가족 코드(`APP_PASSCODE`)는 사진 인식·AI 사전·기록 보내기에, 보호자 코드(`PARENT_PASSCODE`)는 기록 읽기·삭제에 씁니다. 보호자 코드는 가족 코드가 통하는 곳에 모두 통하지만 그 반대는 아닙니다. 아이 기기에는 가족 코드만 넣으므로 형제의 기록을 볼 수 없습니다.
+- **아이와 아이 코드**: 보호자 폰이 `POST /family/children`으로 아이를 만들면 6자리 아이 코드가 발급됩니다(`code:<코드>` → 아이 번호). 아이 기기는 `POST /join`(가족 코드)에 코드와 기기 정보를 보내 아이 번호를 받고, 이후 `/sync`에 그 번호로 기록을 보냅니다. 같은 코드를 넣은 기기(아이폰·태블릿)는 한 아이로 묶이며 `child.devices`에 기기 종류·마지막 접속이 남습니다(최대 10대). 코드는 `POST /family/<childId>/code`로 새로 만들 수 있고(옛 코드 무효), 이름은 `POST /family/<childId>/name`으로 바꿉니다. 아이 이름은 서버가 기준이라 기기가 보낸 이름으로 덮어쓰지 않습니다. 전용 링크 `…/daily-vocab/?child=<코드>`는 앱이 열릴 때 코드를 읽어 자동 연결합니다.
 - 보호자 코드 등록·변경: `npm run parent-code`(= `npx wrangler secret put PARENT_PASSCODE`, 4자 이상). 등록하지 않으면 `/family…`가 500으로 “보호자 코드(PARENT_PASSCODE)가 아직 설정되지 않았습니다”를 돌려줍니다.
 - 보관: 아이(기기)마다 최근 5,000개까지, 넘으면 오래된 것부터 지웁니다. 같은 기록을 다시 보내면 덮어씁니다. 아이 항목과 기록은 보호자 폰의 ‘아이들’ 탭에서 삭제(`DELETE /family/<childId>`)할 수 있고, 아이 기기에서 기록을 지워도 서버 사본은 남습니다. 기기를 바꾸면 새 `childId`로 새 아이처럼 보입니다.
 - 한도: 본문 256KB, 기록 100개/회, 틀린 단어 200개/기록, 이름 20자. 요청 제한은 `/sync`, `/family` 버킷으로 IP당 분당 30회(공통 설정).
@@ -109,13 +110,17 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 | `GET /family/<childId>` · 보호자 코드 | 한 아이의 전체 기록 `{ child, records }`(최신순). 모르는 아이는 404 `unknown_child` |
 | `DELETE /family/<childId>` · 보호자 코드 | 아이 항목과 기록·오늘의 단어 삭제. `{ ok, deleted }` |
 | `POST /family/<childId>/plan` · 보호자 코드 · JSON `{ enabled, level, dailyCount, hour }` | 오늘의 단어 계획 저장(빠진 항목은 유지). `{ ok, child }` |
+| `POST /family/children` · 보호자 코드 · JSON `{ name }` | 아이 만들기. 6자리 `joinCode`가 든 `{ ok, child }` |
+| `POST /family/<childId>/code` · 보호자 코드 | 아이 코드 새로 발급(옛 코드 무효). `{ ok, child }` |
+| `POST /family/<childId>/name` · 보호자 코드 · JSON `{ name }` | 이름 바꾸기. `{ ok, child }` |
+| `POST /join` · 가족 또는 보호자 코드 · JSON `{ code, device: { id, label } }` | 아이 기기 연결. `{ ok, childId, name }`. 모르는 코드는 404 `unknown_code` |
 | `GET /daily/<childId>?date=YYYY-MM-DD` · 가족 또는 보호자 코드 | 그날의 단어 `{ date, level, words: [{ id, en, ko, ipa, aliases, kind: "review"\|"new" }], note, completed? }`. 없으면 404 `no_daily`, 계획이 꺼져 있으면 409 `plan_disabled` |
 | `POST /daily/<childId>` · 가족 또는 보호자 코드 · JSON `{ date? }` | 그날 것이 없으면 Claude로 만들어 저장하고 돌려줍니다(있으면 그대로) |
 
-오류는 `{ error, message }` JSON으로 돌려주며(원인은 `npm run tail` 로그의 `anthropic_error` 줄에서 확인) `message`는 앱이 그대로 보여 주는 한국어 안내입니다. 접속 코드 오류는 401, 허용되지 않은 주소는 403, 요청 과다는 429, Anthropic 쪽 문제는 502/503/504입니다. 보호자 코드가 필요한 요청(`/family…`)에 가족 코드를 쓰면 401 “보호자 코드가 맞지 않습니다”, 보호자 코드를 등록하지 않았으면 500, 가족 기록함에 닿지 못하면 503입니다. Anthropic 키 문제는 앱의 접속 코드 오류(401)와 구분하기 위해 502로 돌려줍니다.
+오류는 `{ error, message }` JSON으로 돌려주며(원인은 `npm run tail` 로그의 `anthropic_error` 줄에서 확인) `message`는 앱이 그대로 보여 주는 한국어 안내입니다. 접속 코드 오류는 401, 허용되지 않은 주소는 403, 요청 과다는 429, Anthropic 쪽 문제는 502/503/504입니다. 보호자 코드가 필요한 요청(`/family…`)에 가족 코드를 쓰면 401 “보호자 코드가 맞지 않습니다”, 보호자 코드를 등록하지 않았으면 500, 가족 기록함에 닿지 못하면 503, 모르는 아이 코드는 404 `unknown_code`입니다. Anthropic 키 문제는 앱의 접속 코드 오류(401)와 구분하기 위해 502로 돌려줍니다.
 
 보안 메모: Origin 검사와 CORS는 다른 웹사이트가 이 Worker를 쓰지 못하게 막고, 접속 코드는 주소를 아는 사람의 무단 사용을 막습니다. 접속 코드는 태블릿 브라우저에 저장되므로, 기기를 잃어버리면 코드를 바꾸세요. 피해 범위는 어차피 Anthropic 콘솔의 사용 한도로 제한됩니다.
 
-`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의)·오늘의 단어(계획·앵커·생성·완료·크론)를 Node에서 확인합니다 (`node tests/worker.cjs`).
+`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의)·오늘의 단어(계획·앵커·생성·완료·크론)·아이 코드(아이 만들기·연결·기기·코드 재발급·이름)를 Node에서 확인합니다 (`node tests/worker.cjs`).
 
 2026-10-18 이전에 배포한 Worker에는 `/define`과 가족 기록함(`/sync`, `/family`)이 없어 앱의 ‘빈 뜻 AI로 채우기’와 가족 기록함이 “다시 배포” 안내를 띄웁니다. `npm run deploy`로 다시 배포하면 됩니다(앱 배포와 별개, 먼저 배포해도 옛 앱과 호환).
