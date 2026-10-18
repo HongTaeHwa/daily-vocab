@@ -1,6 +1,7 @@
 // 오늘의 단어: 아이 기기 — 계획이 꺼져 있으면 카드 없음 → 보호자가 켠 뒤 앱을 열면 GET(no_daily) → POST 생성 → 홈 카드 →
 // 풀기(기존 시험 엔진) → 기록에 daily 날짜가 붙어 전송 → ✅ 카드 → 새로고침해도 재생성 없음.
 // 보호자 폰 — 아이 카드의 오늘의 단어 상태, 상세의 계획 저장(요청 본문)·미리보기·지금 만들기. 가족 서버는 라우트로 가짜 응답을 준다.
+// 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보내고 보호자 계획 상자에 ‘수준 기준 세트가 아직 없어요’가 보인다.
 const { chromium } = require("playwright");
 (async () => {
   const browser = await chromium.launch({
@@ -81,7 +82,10 @@ const { chromium } = require("playwright");
       const c = children.get(body.child.id) || { id: body.child.id, sets: [], records: new Map(), lastTestAt: null, devices: {} };
       if (!c.name) c.name = body.child.name;
       if (body.sets) c.sets = body.sets;
-      if (body.anchor) c.anchor = body.anchor;
+      if (body.anchor) {
+        if (body.anchor.words.length) c.anchor = body.anchor;
+        else delete c.anchor; // 빈 앵커 = 수준 기준 삭제(Worker와 같은 규칙)
+      }
       c.updatedAt = new Date().toISOString();
       for (const r of body.records) {
         c.records.set(r.id, r);
@@ -150,7 +154,7 @@ const { chromium } = require("playwright");
   assert(paths("/daily/" + childId, "POST").length === 0, "no generation while the plan is off");
   assert(await page.isHidden("#dailyCard"), "no daily card while the plan is off");
   const anchor = paths("/sync")[0].body.anchor;
-  assert(anchor && anchor.setName === "기본 예제 DAY04" && anchor.words.length === 40 && anchor.words.includes("authority"), "anchor words sent from the current set: " + JSON.stringify(anchor).slice(0, 80));
+  assert(anchor && anchor.setName === "" && anchor.words.length === 0, "untouched example set is not a level anchor (empty anchor clears the server's): " + JSON.stringify(anchor));
   await waitFor(() => paths("/sets/" + childId, "POST").length >= 1, "set sync attempted");
   assert((await page.evaluate(() => sets.length)) === 1 && (await page.evaluate(() => sets[0].id)) === "day04", "old Worker (404 /sets): example set kept");
 
@@ -215,7 +219,7 @@ const { chromium } = require("playwright");
   assert((await page.$$eval("#dailyPreview .tag.review", (t) => t.length)) === 3, "three review tags");
   assert(await page.isChecked("#planEnabled"), "plan enabled shown");
   assert((await page.inputValue("#planLevel")) === "중2 상위권" && (await page.inputValue("#planCount")) === "10" && (await page.inputValue("#planHour")) === "16", "plan fields");
-  assert((await page.textContent("#planAnchor")).includes("기본 예제 DAY04") && (await page.textContent("#planAnchor")).includes("40단어"), "anchor info shown");
+  assert((await page.textContent("#planAnchor")).includes("수준 기준 세트가 아직 없어요"), "no level anchor while the child only has the example set: " + (await page.textContent("#planAnchor")));
   assert((await page.textContent("#dailyPreview")).includes("✅ 0 / 10"), "preview shows completion");
   await page.selectOption("#planCount", "15");
   await page.selectOption("#planLevel", "고1·수능 기초");

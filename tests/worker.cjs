@@ -632,6 +632,11 @@ const { pathToFileURL } = require("url");
   assert.equal(data.deleted, 5000);
   data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
   assert.deepEqual(data.children, []);
+  // 지운 아이 id로 온 기기의 /sync 는 404 unknown_child(되살리지 않음). 모르는 새 아이는 옛 앱 호환으로 그대로 만든다(아래 kid).
+  await familyCase("/sync", { body: { child, records: [rec("ghost", hoursAgo(1))] } }, 404, "unknown_child");
+  await familyCase("/settings/" + child.id, { method: "GET" }, 404, "unknown_child");
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(data.children, [], "a deleted child is not re-created by a device sync");
 
   // ---- 오늘의 단어: 계획(plan)·교재 앵커·생성(복습+새 단어, 제외 규칙, 재요청)·완료 표시·크론 ----
   const kid = { id: "22222222-3333-4444-8555-666666666666", name: "한결" };
@@ -670,6 +675,14 @@ const { pathToFileURL } = require("url");
   assert.deepEqual(data.child.plan, { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0 }, "default plan");
   assert.equal(data.today.exists, false);
   await familyCase("/sync", { body: { child: kid, anchor: { words: "nope" } } }, 400, "anchor");
+  // 빈 앵커(기기에 손대지 않은 예제 세트뿐)는 저장된 수준 기준을 지우고, 앵커를 아예 안 보내면 그대로 둔다
+  await familyCase("/sync", { body: { child: kid, anchor: { setName: "", words: [] } } }, 200);
+  data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.child.anchor, undefined, "empty anchor clears the stored anchor");
+  await familyCase("/sync", { body: { child: kid, anchor: { setName: "중등 DAY05", words: ["authority", "devote", "evident"] } } }, 200);
+  await familyCase("/sync", { body: { child: kid } }, 200);
+  data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(data.child.anchor.words, ["authority", "devote", "evident"], "anchor kept when a sync carries none");
   // 계획이 꺼져 있으면 409
   await familyCase("/daily/" + kid.id, { method: "GET" }, 409, "plan_disabled");
   await familyCase("/daily/" + kid.id, { body: {} }, 409, "plan_disabled");
