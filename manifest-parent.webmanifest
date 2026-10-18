@@ -1,0 +1,31 @@
+{
+  "id": "/daily-vocab/parent",
+  "name": "매일 영단어 보호자",
+  "short_name": "영단어 보호자",
+  "lang": "ko",
+  "start_url": "/daily-vocab/?mode=parent",
+  "scope": "/daily-vocab/",
+  "display": "standalone",
+  "theme_color": "#133263",
+  "background_color": "#f5f8fd",
+  "icons": [
+    {
+      "src": "icons/parent-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/parent-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/parent-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -1,11 +1,17 @@
-const CACHE = "daily-vocab-shell-v15";
+const CACHE = "daily-vocab-shell-v16";
 const SHELL = [
   "./",
   "./index.html",
-  "./quiz.js?v=20261018-6",
-  "./family.js?v=20261018-6",
-  "./sets.js?v=20261018-6",
+  "./quiz.js?v=20261018-7",
+  "./family.js?v=20261018-7",
+  "./sets.js?v=20261018-7",
   "./manifest.webmanifest",
+  "./parent.html",
+  "./manifest-parent.webmanifest",
+  "./icons/parent-192.png",
+  "./icons/parent-512.png",
+  "./icons/parent-maskable-512.png",
+  "./icons/parent-apple-touch-icon.png",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./icons/maskable-512.png",

@@ -123,6 +123,19 @@ const { chromium } = require("playwright");
   const statusHas = (id, text) => page.evaluate(([i, t]) => document.getElementById(i).textContent.includes(t), [id, text]);
   const url = process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/";
 
+  // 보호자 아이콘으로 설치된 기기(?mode=parent): 코드가 없어도 보호자 모드로 시작해 코드 입력 화면만 보인다
+  await page.goto(url + "parent.html");
+  assert((await page.title()).includes("보호자") && (await page.$eval('a[href="./?mode=parent"]', (a) => a.textContent)).includes("보호자 화면"), "parent.html install page");
+  await page.goto(url + "?mode=parent");
+  await waitFor(() => page.evaluate(() => document.body.classList.contains("parent-mode")), "parent mode from the install link");
+  assert(!page.url().includes("mode="), "mode removed from the address: " + page.url());
+  assert(await page.isVisible("#family") && (await page.isVisible("#parentSetup")) && (await page.isHidden("#familyMain")), "setup card only");
+  assert((await page.isHidden("#tabHome")) && (await page.isHidden("#tabHistory")) && (await page.isVisible("#tabFamily")), "parent tabs");
+  assert((await page.textContent("#brandTagline")).includes("보호자"), "tagline for the parent mode");
+  await page.goto(url + "?mode=child");
+  await waitFor(() => page.evaluate(() => !document.body.classList.contains("parent-mode")), "back to the child mode");
+  assert(await page.isVisible("#tabHome"), "child tabs restored");
+
   // 아이 기기: 전용 링크로 열었지만 접속 코드가 아직 없다 → 설정 화면에 코드가 채워지고 안내, 주소에서 코드는 지워진다
   await page.goto(url + "?child=" + HANEUL_CODE);
   await waitFor(() => statusHas("familyStatus", "접속 코드를 저장"), "link code waits for the family passcode");
@@ -266,11 +279,18 @@ const { chromium } = require("playwright");
   assert((await page.textContent("#parentStatus")).includes("1명"), "one child reported");
   assert(await page.isVisible("#tabFamily"), "family tab appears");
   assert((await page.inputValue("#parentCode")) === "", "code field cleared after save");
+  // 보호자 코드를 저장하면 보호자 모드로 자동 전환: 아이들 화면으로 이동, 홈·기록 탭과 아이용 설정은 숨김
+  await waitFor(() => page.isVisible("#family"), "switched to the family view");
+  assert(await page.evaluate(() => document.body.classList.contains("parent-mode")), "parent mode on");
+  assert((await page.isHidden("#tabHome")) && (await page.isHidden("#tabHistory")), "child tabs hidden");
+  assert(await page.isVisible("#familyMain") && (await page.isHidden("#parentSetup")), "overview shown once the code exists");
 
   // 아이들 화면: 카드(오늘 3회 = 완료 1 + 중단 2, 재연결 때 보내기가 꺼져 있던 기록도 올라감; 연결 기기), 상세(코드·링크·기기·기록·틀린 단어)
   await page.click("#tabFamily");
   assert(await page.isVisible("#family") && (await page.isHidden("#settings")), "family view");
   await waitFor(() => statusHas("familyLoadStatus", "방금 확인했어요"), "family loaded");
+  const overview = await page.textContent("#familyOverview");
+  assert(overview.includes("🧒 하늘") && overview.includes("오늘 시험 ✅ 3회") && overview.includes("이번 주 3회") && overview.includes("⚠️ 화면 이탈 1회"), "overview row: " + overview);
   const card = await page.textContent("#childrenList");
   assert(card.includes("하늘") && card.includes("오늘 ✅ 3회") && card.includes("최근 7일 3회") && card.includes("마지막 시험") && /연결 기기: .+ 1/.test(card), "child card: " + card);
   assert(card.includes("⚠️ 오늘 화면 이탈 1회"), "card warns about today's away episodes");
@@ -282,6 +302,9 @@ const { chromium } = require("playwright");
   assert((await page.textContent("#childCodeText")) === "483 921", "code shown in the detail");
   assert((await page.textContent("#childLinkText")) === url + "?child=" + HANEUL_CODE, "child link shown: " + (await page.textContent("#childLinkText")));
   assert((await page.textContent("#deviceList")).includes("연결된 기기: "), "device list shown");
+  const missedTop = await page.textContent("#missedTop");
+  assert(missedTop.includes("authority") && missedTop.includes("3회") && missedTop.includes("권위"), "most-missed words: " + missedTop);
+  assert((await page.$$eval("#missedTop .chip", (c) => c.length)) === 10, "top ten chips");
   const detail = await page.textContent("#childDetail");
   assert(detail.includes("시험 3회") && detail.includes("중단") && detail.includes("0 / 10") && detail.includes("기본 예제 DAY04 40단어"), "detail summary: " + detail);
   assert(detail.includes("⚠️ 문제 중 화면 이탈 1회"), "record shows the away flag: " + detail.slice(0, 200));
@@ -312,6 +335,30 @@ const { chromium } = require("playwright");
   assert(requests.some((r) => r.path === "/family/child-777777/code" && r.passcode === PARENT_CODE), "regenerate request sent");
   assert((await page.textContent("#childLinkText")).endsWith("?child=777778"), "link follows the new code");
 
+  // 한눈에 보기 줄을 누르면 상세가 열린다
+  await page.click("#closeChildDetail");
+  assert(await page.isHidden("#childDetail"), "detail closed by the back link");
+  await page.click("#familyOverview .overview-row");
+  await waitFor(() => page.isVisible("#childDetail"), "overview row opens the detail");
+  assert((await page.textContent("#childDetailTitle")).includes("하늘"), "first child's detail");
+  await page.click("#closeChildDetail");
+  await page.click("#childrenList button >> nth=1");
+  await waitFor(() => page.evaluate(() => document.getElementById("childDetailTitle").textContent.includes("둘째야")), "second child's detail reopened");
+
+  // 아이 기기처럼 보기: 보호자 모드를 끄면 홈 탭이 돌아오고, 다시 켜면 아이들 화면으로
+  await page.click("#tabSettings");
+  await openFamilySettings();
+  assert(await page.isVisible("#parentModeRow") && (await page.isHidden("#familyChildPart")) && (await page.isHidden("#micPanel")), "parent mode hides child-only settings");
+  await page.check("#parentModeOff");
+  await waitFor(() => page.isVisible("#home"), "home shown when parent mode is off");
+  assert((await page.isVisible("#tabHome")) && !(await page.evaluate(() => document.body.classList.contains("parent-mode"))), "child UI back");
+  await page.click("#tabSettings");
+  await openFamilySettings();
+  await page.uncheck("#parentModeOff");
+  await waitFor(() => page.isVisible("#family"), "parent mode back on");
+  await page.click("#childrenList button >> nth=1");
+  await waitFor(() => page.evaluate(() => document.getElementById("childDetailTitle").textContent.includes("둘째야")), "detail open again");
+
   // 삭제 → 목록에서 빠짐, 보호자 코드 삭제 → 탭 숨김·캐시 삭제
   page.once("dialog", (d) => d.accept());
   await page.click("#deleteChild");
@@ -321,6 +368,7 @@ const { chromium } = require("playwright");
   await page.click("#tabSettings");
   await page.click("#clearParent");
   assert(await page.isHidden("#tabFamily"), "family tab hidden after clearing the code");
+  assert(!(await page.evaluate(() => document.body.classList.contains("parent-mode"))) && (await page.isVisible("#tabHome")), "parent mode off after clearing the code");
   assert((await page.evaluate(() => localStorage.getItem("daily_vocab_family_cache_v1"))) === null, "cache cleared");
   assert(!(await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).parentCode)), "parent code removed");
 

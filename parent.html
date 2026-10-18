@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>매일 영단어 보호자 — 설치</title>
+<!-- 보호자 전용 설치 페이지. 이 주소에서 홈 화면에 추가하면 ‘매일 영단어 보호자’라는 별도 아이콘으로 설치되고,
+     실행하면 보호자 모드(아이들 관리 화면)로 시작한다. 앱 본체는 index.html 하나이며 ?mode=parent 로 구분한다. -->
+<link rel="manifest" href="./manifest-parent.webmanifest">
+<meta name="theme-color" content="#133263">
+<meta name="apple-mobile-web-app-title" content="영단어 보호자">
+<link rel="apple-touch-icon" href="./icons/parent-apple-touch-icon.png">
+<style>
+body{margin:0;background:#f3f6fb;font-family:system-ui,-apple-system,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#1d2a3d;line-height:1.55}
+header{background:linear-gradient(118deg,#123466,#2359b0);color:#fff;padding:calc(18px + env(safe-area-inset-top)) 20px 18px}
+header h1{margin:0;font-size:22px}header p{margin:4px 0 0;color:#dfebff;font-size:14px}
+main{max-width:640px;margin:0 auto;padding:16px}
+.card{background:#fff;border:1px solid #dbe5f1;border-radius:18px;padding:18px;margin-top:14px}
+h2{font-size:17px;color:#133263;margin:0 0 8px}
+ol{padding-left:20px;margin:6px 0}li{margin:4px 0}
+.btn{display:inline-block;margin-top:10px;background:#265cc3;color:#fff;text-decoration:none;font-weight:800;padding:12px 18px;border-radius:13px}
+.muted{color:#61728a;font-size:14px}
+code{background:#eef4ff;padding:1px 6px;border-radius:6px}
+</style>
+</head>
+<body>
+<header><h1>👨‍👩‍👧 매일 영단어 보호자</h1><p>아이들의 시험 기록 · 오늘의 단어 · 제한 시간을 관리하는 화면</p></header>
+<main>
+  <div class="card">
+    <h2>보호자 앱으로 설치하기</h2>
+    <p class="muted">이 페이지에서 홈 화면에 추가하면 <b>‘영단어 보호자’</b>라는 별도 아이콘이 생기고, 열면 바로 아이들 관리 화면으로 시작해요. 아이용 앱과 저장 공간이 따로라 보호자 코드가 섞이지 않습니다.</p>
+    <ol>
+      <li><b>아이폰</b>: Safari에서 이 페이지를 연 채 공유(⬆) → <b>홈 화면에 추가</b>.</li>
+      <li><b>갤럭시·안드로이드</b>: Chrome 메뉴(⋮) → <b>홈 화면에 추가</b> 또는 <b>앱 설치</b>.</li>
+      <li>설치한 앱을 열고 <b>보호자 코드</b>(Worker 비밀값 <code>PARENT_PASSCODE</code>)를 넣으면 끝. 아이 추가 → 아이 코드·링크를 아이 기기로 보내세요.</li>
+    </ol>
+    <a class="btn" href="./?mode=parent">설치 없이 보호자 화면 열기 →</a>
+  </div>
+  <div class="card">
+    <h2>아이용 앱은 따로</h2>
+    <p class="muted">아이 기기에는 <a href="./">https://hongtaehwa.github.io/daily-vocab/</a> 를 설치하고, 보호자 폰에서 받은 아이 코드나 전용 링크로 연결하세요. 아이 기기에 보호자 코드를 넣지 마세요.</p>
+  </div>
+</main>
+</body>
+</html>
