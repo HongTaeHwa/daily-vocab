@@ -35,6 +35,7 @@ const { chromium } = require("playwright");
   await page.uncheck("#shuffle");
   await page.click("#start");
   assert(await page.isVisible("#quiz") && (await page.isHidden(".tabbar")), "quiz view hides tabs");
+  assert((await page.$eval("#promptWord", (el) => getComputedStyle(el).userSelect)) === "none", "quiz word is not selectable (no select → translate)");
   for (let i = 0; i < 2; i++) {
     await page.click("#unknown");
     await page.click("#next");

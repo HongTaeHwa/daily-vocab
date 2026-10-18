@@ -33,7 +33,7 @@
 - 세트 삭제·이름 바꾸기(`#renameSet #deleteSet #renameBox`)는 편집 화면의 `#manageBox`(기존 세트일 때만)에 있다. 아이가 쓰는 홈에는 두지 않는다. 미저장 초안(`draftDirty`)은 닫기·다른 세트 열기 전에 확인한다.
 - 사진 선택은 `selectedFiles` 배열: `#photos`는 바꿔치기, `#camera`는 누적(최대 10장), 썸네일 ✕로 제거. 가져오기 성공한 사진은 목록에서 빠진다.
 - 테스트가 참조하는 ID는 유지한다: `#start #review #reviewCount #range #shuffle #setSelect #createSet #editSet #renameSet #deleteSet #setStatus #resumeCard #resumeQuiz #discardSession #resumeEditor #unknown #next #check #answerInput #readInput #checkRead #parentConfirm #progressText #finalScore #missedList #againSame #newTest #historyList #historyFilter #historySummary #exportHistory #clearHistory #setName #photos #camera #pickPhotos #takePhoto #extractWords #cancelExtract #extractStatus #fillMeanings #wordTableBody #addRow #toggleDraftText #wordDraft #wordCount #confirmed #saveSet #closeEditor #editorTitle #manageBox #manageStatus #finishTitle #aiSettings #aiServer #aiPasscode #saveAi #testAi #clearAi #aiState #aiStatus #backupStatus #appStatus #refreshApp #checkApp #familySettings #familyState #joinBox #childCode #joinChild #linkedBox #childName(연결된 아이 이름 표시) #deviceLabelText #familySend #saveFamily #syncNow #unlinkChild #familyStatus #newChildName #addChild #addChildStatus #linkBox #childCodeText #childLinkText #copyLink #copyCode #regenCode #deviceList #renameChild #saveChildName #linkStatus #parentCode #saveParent #clearParent #parentStatus #parentState #tabFamily #refreshFamily #familyLoadStatus #childrenList #childDetail #childDetailTitle #childDetailSummary #childRecords #closeChildDetail #deleteChild #dailyCard #dailyTitle #dailyText #startDaily #planBox #planEnabled #planLevel #planLevelCustom #planCount #planHour #savePlan #makeDailyNow #planAnchor #planStatus #dailyPreview`.
-- 상태 문구도 테스트가 본다: "사진을 선택했습니다", "가져오지 못했습니다", "취소", "보호자 설정", "연결 성공", "중단", "AI 사전으로 채웠어요", "노란 칸", "못 찾은 단어", "먼저 영어 단어", "다시 배포", 가족 기록함의 "접속 코드를 저장", "연결했어요", "찾을 수 없어요", "6자리", "연결 안 됨", "아이 코드 N N", "아직 연결된 기기가 없어요", "연결 기기:", "마지막 전송", "못 보낸 기록 N개", "보낼 기록 N개", "꺼짐"/"켜짐", "보호자 코드가 맞지 않아요", "연결 성공", "방금 확인했어요", "오늘 ✅ N회", "최근 7일 N회", "아직 기록을 보낸 아이가 없어요", "시험 N회", 오늘의 단어의 "📬 오늘의 단어", "새 단어 N개", "복습 N개", "✅ 오늘의 단어 … 끝!", "N / N 맞았어요", "한 번 더 풀기", "오늘의 단어 ✅ N / N", "저장했어요", "준비됐어요", "만들지 않아요", "꺼져 있어요".
+- 상태 문구도 테스트가 본다: "사진을 선택했습니다", "가져오지 못했습니다", "취소", "보호자 설정", "연결 성공", "중단", "AI 사전으로 채웠어요", "노란 칸", "못 찾은 단어", "먼저 영어 단어", "다시 배포", 가족 기록함의 "화면 이탈"("⚠️ 문제 중 화면 이탈 N회", "⚠️ 오늘 화면 이탈 N회"), "접속 코드를 저장", "연결했어요", "찾을 수 없어요", "6자리", "연결 안 됨", "아이 코드 N N", "아직 연결된 기기가 없어요", "연결 기기:", "마지막 전송", "못 보낸 기록 N개", "보낼 기록 N개", "꺼짐"/"켜짐", "보호자 코드가 맞지 않아요", "연결 성공", "방금 확인했어요", "오늘 ✅ N회", "최근 7일 N회", "아직 기록을 보낸 아이가 없어요", "시험 N회", 오늘의 단어의 "📬 오늘의 단어", "새 단어 N개", "복습 N개", "✅ 오늘의 단어 … 끝!", "N / N 맞았어요", "한 번 더 풀기", "오늘의 단어 ✅ N / N", "저장했어요", "준비됐어요", "만들지 않아요", "꺼져 있어요".
 - 표의 뜻·발음 칸에 AI 사전이 채운 값은 `.ai-filled`(노란 칸) 클래스로 표시한다(`aiFilled` Map, 편집 중에만; 직접 고치면 사라지고 저장 데이터·초안 텍스트에는 남지 않는다).
 
 ## 핵심 데이터 구조
@@ -42,7 +42,7 @@
 - 초안(`#wordDraft`) 형식: 한 줄에 `번호\t영어\t뜻\t별칭|별칭\t발음`(발음은 선택). `parseDraft`가 읽고 `appendDraftRows`·`tableToDraft`가 쓴다. 표 편집기는 이 텍스트와 양방향 동기화되며 300단어를 넘으면 텍스트 모드로 자동 전환.
 - localStorage 키 (버전 접미사 유지, 깨뜨리면 사용자 기록 유실):
   - `daily_vocab_sets_v2` — 세트 배열 `[{id,name,words,updatedAt?}]`
-  - `daily_vocab_history_v2` — 시험 기록 `[{id,setId,setName,mode,range,startedAt,completedAt,activeMs?,results,partial?}]` (`activeMs`는 실제 푼 시간, 2026-10-18-2부터) (`partial`은 그만하기·쉬던 시험 포기로 끝난 중단 기록; `results[i].self`는 ‘소리 내어 읽었어요’로 직접 확인한 읽기). 기록 탭의 세트 필터는 그 세트 기록만, ‘전체 세트’는 삭제된 세트 기록까지 보여 준다.
+  - `daily_vocab_history_v2` — 시험 기록 `[{id,setId,setName,mode,range,startedAt,completedAt,activeMs?,daily?,awayCount?,awayMs?,results,partial?}]` (`activeMs`는 실제 푼 시간; `daily`는 오늘의 단어 날짜; `awayCount/awayMs`는 문제 중 화면 이탈 횟수·시간, `results[i].away/awayMs`는 문제별. 2026-10-18) (`partial`은 그만하기·쉬던 시험 포기로 끝난 중단 기록; `results[i].self`는 ‘소리 내어 읽었어요’로 직접 확인한 읽기). 기록 탭의 세트 필터는 그 세트 기록만, ‘전체 세트’는 삭제된 세트 기록까지 보여 준다.
   - `daily_vocab_missed_<setId>` — 세트별 오답 id 배열
   - `daily_vocab_session_v1` — 쉬는 중인 시험 `{meta, mode, queue, position, results, pausedAt}` (문제를 넘길 때마다·쉬기·화면 숨김 시 저장, 완료·그만하기 시 삭제). `meta.activeMs/resumedAt`로 실제 푼 시간을 누적한다. 쉬기 전에 채점이 끝난 문제는 결과로 넣고 넘긴다. 틀린 단어는 `meta.setId`의 키에 저장한다(선택 세트와 달라도).
   - `daily_vocab_prefs_v1` — `{mode, range, shuffle, setId}` 마지막 선택
@@ -71,6 +71,7 @@
 - 설계·결정 배경은 `docs/DESIGN.md` 10절. 아이들은 각자 기기(기기별 localStorage), 보호자는 자기 폰. 기록만 가족 Worker를 거쳐 공유되고 세트·단어는 기기에 남는다.
 - **코드 역할**: 가족 코드 `APP_PASSCODE`(AI + `/sync`), 보호자 코드 `PARENT_PASSCODE`(`/family…` 읽기·삭제, 가족 코드가 통하는 곳에도 통함). 아이 기기에는 가족 코드만 두므로 ‘아이들’ 탭이 생기지 않는다. 이 분리를 없애면 안 된다.
 - **아이 코드(2026-10-18, `docs/DESIGN.md` 12절)**: 아이 한 명이 아이폰·태블릿 여러 대를 쓰므로 아이 = 서버가 만든 항목, 기기 = `devices`. 보호자가 `POST /family/children {name}`으로 만들면 6자리 `joinCode`(`code:<코드>` 키). 아이 기기는 `POST /join {code, device}`로 `childId`를 받아 저장하고 이후 `/sync`에 `child.id`·`device`를 보낸다(서버 이름이 기준). 전용 링크 `…/?child=<코드>`는 `initFamily`에서 읽어 자동 연결하고 주소에서 지운다. iOS는 Safari와 홈 화면 앱의 저장 공간이 달라 설치한 앱에서 코드를 넣어야 한다(README에 안내). 기기별 identity(이름 입력)로 만들던 옛 흐름은 없앴다.
+- **부정행위 대응(2026-10-18, `docs/DESIGN.md` 13절)**: 시험 화면 `.word-box`는 `user-select:none`·`-webkit-touch-callout:none` + contextmenu/copy 차단(선택 → 번역 방지). 화면 이탈 기록은 quiz.js의 `awayStart/awayEnd`(visibilitychange·blur/focus, 1초 미만과 마이크 버튼 직후 2초는 제외, 채점 전 문제만) → `question.away/awayMs`, `sessionMeta.awayCount/awayMs` → 기록 → `compactRecord` → Worker → 보호자 기록에 `.away-flag`. OS의 서클 투 서치·Apple Intelligence는 웹앱이 막을 수 없다: 갤럭시는 `android/` 래퍼 앱(FLAG_SECURE, 준비 중)으로, 아이폰은 스크린 타임 안내로 대응한다.
 - **아이 기기**: `saveSession`(완료·중단) → `queueFamilySync(record)` → `compactRecord`(id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed[{en,ko,unknown?}] 최대 200) → `POST /sync {child:{id,name}, records(≤50), sets:[{name,count}]}`. 처음 켤 때 기존 기록 전체를 대기 목록에 넣는다. 기기에서 지운 기록은 보내지 않지만 서버 사본은 지우지 않는다. 단어별 전체 결과·세트 단어·사진은 보내지 않는다.
 - **Worker**: `FamilyStore`(SQLite 기반 DO, `idFromName("family")`)의 키-값 저장소. 키 `child:<id>`(이름·세트·lastTestAt·recordCount), `rec:<childId>:<completedAt ISO>:<recordId>`(압축 기록 + receivedAt, 같은 키는 덮어씀). `GET /family`는 아이별 최근 14일(20개 미만이면 최근 20개) 기록, `GET /family/<id>`는 전체, 아이당 5,000개 초과분은 오래된 것부터 삭제. 검증은 `parseSync`(하나라도 틀리면 전체 400). 모르는 아이는 404 `unknown_child`(옛 Worker 404 `not_found`와 앱이 구분해 ‘다시 배포’ 안내).
 - **보호자 폰**: 보호자 코드 저장 즉시 `GET /family`로 확인 → `#tabFamily` 표시. 오늘·최근 7일은 폰의 현지 날짜로 계산(`dayKey`). 마지막 응답은 `daily_vocab_family_cache_v1`에 캐시.
@@ -79,13 +80,13 @@
 - **오늘의 단어(2A, `docs/DESIGN.md` 11절)**: 보호자가 `POST /family/<id>/plan`으로 `{enabled, level, dailyCount 5~20, hour 0~23(KST)}`를 저장하면 크론(매시, `scheduled()` → DO `/cron`)이 계획 시각이 지난 아이의 `daily:<childId>:<YYYY-MM-DD>`를 만든다. 아이 기기는 `checkDaily`로 `GET /daily/<id>?date=` → 404 `no_daily`면 `POST /daily/<id>`(즉시 생성, 같은 날 중복 생성 없음), 409 `plan_disabled`면 카드 숨김. 구성은 복습 최대 3개(최근 14일 틀린 단어) + 새 단어(`DAILY_SYSTEM` + 수준 라벨 + 교재 앵커 `child.anchor`(아이 기기가 `/sync`마다 최근 세트 영어 60개) + 최근 200개 제외, 2배수 요청 후 `served:<childId>`·앵커·`WORD_PATTERN`으로 걸러 채움, 최대 2회). 홈 `#dailyCard` → `newSession(false, words, {setId:"daily:<date>", setName}, {rangeLabel:"오늘의 단어", daily:date})` → 기록 `daily` → `/sync` → `completed`(중단 기록 제외). 세트로 저장하지 않으며 `daily_vocab_missed_daily:*` 키도 만들지 않는다. 모델은 `DAILY_MODEL`(기본 sonnet).
 
 ## 버전·캐시 올리기 (앱 셸을 바꿀 때 반드시)
-릴리스 문자열 `20261018-4` 와 캐시 이름 `daily-vocab-shell-v13` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
+릴리스 문자열 `20261018-5` 와 캐시 이름 `daily-vocab-shell-v14` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
 1. `index.html` `#appStatus` 초기 텍스트의 버전
 2. `index.html` `var release = '...'`
 3. `index.html` 마지막 `<script src="./quiz.js?v=...">`, `./family.js?v=...`, `./sets.js?v=...` (셋 다)
-4. `sw.js` — `CACHE` 상수(`-v13` → `-v14`)와 `SHELL` 배열의 `./quiz.js?v=...`, `./family.js?v=...`, `./sets.js?v=...`
+4. `sw.js` — `CACHE` 상수(`-v14` → `-v15`)와 `SHELL` 배열의 `./quiz.js?v=...`, `./family.js?v=...`, `./sets.js?v=...`
 5. `tests/app-update.cjs` — 버전 문자열 검사
-확인: `grep -rn "20261018-4\|daily-vocab-shell-v" index.html sw.js tests/`
+확인: `grep -rn "20261018-5\|daily-vocab-shell-v" index.html sw.js tests/`
 
 ## 로컬 실행
 ```bash
@@ -104,14 +105,14 @@ node tests/worker.cjs                 # Worker 단위 테스트만 (서버·Play
 실행기가 NODE_PATH를 전역 모듈로 잡고, 8000 포트에 서버가 없으면 자동으로 띄운다.
 | 테스트 | 확인 내용 |
 |---|---|
-| `worker.cjs` | Worker: CORS/Origin, 접속 코드, 비밀값 누락, 요청 제한, 입력 검증, 결과 정리(`generated` 플래그), AI 사전 `/define`(검증·철자 매칭·중복 제거·빈 결과 422·거부), fallbacks 재시도, Anthropic 오류 변환, 북미 중계·폴백, diag, 키 형식 검사, 타임아웃, 가족 기록함(`/sync` 검증·덮어쓰기·14일 요약·5,000개 상한, 코드 역할, 미설정 안내, 삭제, DO 저장소 모의, 503), 오늘의 단어(계획 검증·권한, 앵커 정리, 생성: 복습+새 단어·앵커/이미 낸 단어 제외·2회 재요청·같은 날 중복 없음, 완료 표시(중단 제외), 거부 422, 크론 시각·중복·꺼진 아이, 삭제 정리), 아이 코드(아이 만들기 권한·검증, `/join` 코드 형식·모르는 코드·기기 등록·보호자 코드 허용, 두 기기 기록 병합·서버 이름 우선, 이름 바꾸기, 코드 재발급 후 옛 코드 무효, 목록의 코드·기기, 삭제 시 코드 삭제) |
+| `worker.cjs` | Worker: CORS/Origin, 접속 코드, 비밀값 누락, 요청 제한, 입력 검증, 결과 정리(`generated` 플래그), AI 사전 `/define`(검증·철자 매칭·중복 제거·빈 결과 422·거부), fallbacks 재시도, Anthropic 오류 변환, 북미 중계·폴백, diag, 키 형식 검사, 타임아웃, 가족 기록함(`/sync` 검증·덮어쓰기·14일 요약·5,000개 상한, 코드 역할, 미설정 안내, 삭제, DO 저장소 모의, 503), 오늘의 단어(계획 검증·권한, 앵커 정리, 생성: 복습+새 단어·앵커/이미 낸 단어 제외·2회 재요청·같은 날 중복 없음, 완료 표시(중단 제외), 거부 422, 크론 시각·중복·꺼진 아이, 삭제 정리), 아이 코드(아이 만들기 권한·검증, `/join` 코드 형식·모르는 코드·기기 등록·보호자 코드 허용, 두 기기 기록 병합·서버 이름 우선·화면 이탈 필드 보존, 이름 바꾸기, 코드 재발급 후 옛 코드 무효, 목록의 코드·기기, 삭제 시 코드 삭제) |
 | `browser.cjs` | 기본 세트 40단어, 3가지 모드 시험 흐름(그만하기 → 중단 기록), 세트 저장(텍스트 모드), 엄격 채점, 세트별 기록 격리, 삭제된 세트 기록 재시험, 구버전 이전, 백업 JSON 왕복, 저장 실패 안내 |
 | `pwa.cjs` | 서비스워커, 반응형 폭(768/1024/390) 오버플로 없음, 매니페스트 아이콘, 오프라인 셸, AI 서버 오류 안내·취소 |
 | `app-update.cjs` | 옛 `sets.js` 캐시 상황에서 버전 표시·초기화 실패 안내·자료 보존 |
 | `ten-photos.cjs` | 사진 10장 순차 전송·결과 보존, 11장 거부, 10단어 세트 시험 |
 | `ai-recognition.cjs` | v1 키 제거, 보호자 설정 검증·저장·삭제(설정 뷰), 연결 확인, 편집 복귀, 사진 2장 인식과 번호 병합·표 표시, `generated` 뜻 노란 칸 표시·수정 시 해제, 저장·시험, 빈 뜻·발음 AI 채우기(빈 칸만, 두 번째 호출 범위, 옛 Worker 404 안내), 401/503/연결 실패 안내, 취소 |
-| `session.cjs` | 탭 전환, 책 번호 기준 범위 라벨, 쉬기 → 새로고침 → 이어서 하기 → 완료(틀린 단어 목록·같은 범위 다시), 그만하기 중단 기록, 세트 이름 바꾸기(기록 반영·유지), 표 편집기 ↔ 텍스트 동기화·행 삭제·저장, 마지막 선택 기억, 편집 중 설정 다녀오기 |
-| `family.cjs` | 가족 기록함 + 아이 코드: 전용 링크(`?child=`)로 열면 접속 코드 대기·주소 정리 → AI 연결 저장 시 자동 연결(`/join` 기기 정보)·등록 전송(기기·세트·앵커), 시험 완료 → 압축 기록 내용, 연결 실패 → ‘못 보낸 기록 1개’ → 새로고침 후 재전송(재연결 없음), 끄기 후 미전송, 연결 해제 → 코드 길이·모르는 코드 안내 → 재연결·기록 재전송, 보호자 코드 길이·오류·옛 Worker 안내, 저장 → 연결 성공 → 아이들 탭·카드(오늘 2회·최근 7일·연결 기기)·상세(코드 ‘483 921’·링크·기기 목록·틀린 단어), 아이 추가(이름 검증·코드 ‘777 777’·상세 자동 열림·카드에 코드 표시)·이름 바꾸기·코드 새로 만들기(링크 갱신)·삭제, 코드 삭제 → 탭·캐시 제거 |
+| `session.cjs` | 탭 전환, 시험 글자 선택 차단(`user-select:none`), 책 번호 기준 범위 라벨, 쉬기 → 새로고침 → 이어서 하기 → 완료(틀린 단어 목록·같은 범위 다시), 그만하기 중단 기록, 세트 이름 바꾸기(기록 반영·유지), 표 편집기 ↔ 텍스트 동기화·행 삭제·저장, 마지막 선택 기억, 편집 중 설정 다녀오기 |
+| `family.cjs` | 가족 기록함 + 아이 코드: 전용 링크(`?child=`)로 열면 접속 코드 대기·주소 정리 → AI 연결 저장 시 자동 연결(`/join` 기기 정보)·등록 전송(기기·세트·앵커), 문제 중 화면 이탈(깜빡임 제외·1.2초 가림 1회 집계·기록·전송·보호자 카드/기록 ⚠️), 시험 완료 → 압축 기록 내용, 연결 실패 → ‘못 보낸 기록 1개’ → 새로고침 후 재전송(재연결 없음), 끄기 후 미전송, 연결 해제 → 코드 길이·모르는 코드 안내 → 재연결·기록 재전송, 보호자 코드 길이·오류·옛 Worker 안내, 저장 → 연결 성공 → 아이들 탭·카드(오늘 2회·최근 7일·연결 기기)·상세(코드 ‘483 921’·링크·기기 목록·틀린 단어), 아이 추가(이름 검증·코드 ‘777 777’·상세 자동 열림·카드에 코드 표시)·이름 바꾸기·코드 새로 만들기(링크 갱신)·삭제, 코드 삭제 → 탭·캐시 제거 |
 | `daily.cjs` | 오늘의 단어: 계획 꺼짐이면 GET만 하고 카드 없음·앵커 전송, 켠 뒤 새로고침 → GET(no_daily)→POST 생성 1회 → 카드 문구(새 단어 7 + 복습 3·수준) → 풀기(세션 범위·10문제) → 기록 `daily`·setId `daily:<date>`·missed 키 없음 → 전송 → ✅ 카드(한 번 더 풀기) → 새로고침 후 재생성 없음; 보호자 — 아이 카드 ‘오늘의 단어 ✅ 0 / 10’, 상세 계획 필드·앵커 안내·미리보기(복습 태그 3)·저장 본문·직접 입력 수준·지금 만들기(보호자 코드)·끄기 문구 |
 UI 요소를 바꾸면 위 ID 목록과 상태 문구를 테스트와 함께 맞춘다. 표 편집기 기본 화면에서는 `#wordDraft`가 숨겨져 있으므로 테스트에서 텍스트를 채우려면 먼저 `#toggleDraftText`를 누른다.
 

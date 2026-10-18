@@ -670,11 +670,12 @@ const { pathToFileURL } = require("url");
   assert.equal(data.child.devices[tablet.id].label, "Android 태블릿", "device label cleaned");
   assert.equal(data.child.joinCode, made.joinCode);
   // 같은 아이의 두 기기에서 온 기록은 한곳에 모이고, 기기가 보낸 이름은 서버 이름을 덮어쓰지 않는다
-  await familyCase("/sync", { body: { child: { id: made.id, name: "다른이름" }, device: phone, records: [rec("p1", hoursAgo(3))] } }, 200);
+  await familyCase("/sync", { body: { child: { id: made.id, name: "다른이름" }, device: phone, records: [rec("p1", hoursAgo(3), { awayCount: 2, awayMs: 5000 })] } }, 200);
   await familyCase("/sync", { body: { child: { id: made.id, name: "하늘" }, device: tablet, records: [rec("t1", hoursAgo(2))] } }, 200);
   data = await familyCase("/family/" + made.id, { method: "GET", ...PARENT }, 200);
   assert.equal(data.child.name, "하늘", "server name is authoritative");
   assert.deepEqual(data.records.map((r) => r.id), ["t1", "p1"], "records from both devices merged");
+  assert.deepEqual([data.records[1].awayCount, data.records[1].awayMs, data.records[0].awayCount], [2, 5000, undefined], "away fields kept only when present");
   assert(data.child.devices[phone.id].lastSeenAt >= data.child.devices[phone.id].joinedAt, "lastSeenAt updated on sync");
   // 이름 바꾸기·코드 새로 만들기(옛 코드는 무효)
   await familyCase("/family/" + made.id + "/name", { body: { name: "하늘이" } }, 401, "보호자 코드");

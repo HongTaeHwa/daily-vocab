@@ -509,6 +509,32 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", () => { stopRec(); if (sessionRunning) { accumulateActive(); saveSessionState(); } });
 
+// ---- 화면 이탈 기록: 문제를 푸는 동안 앱이 가려지거나 다른 앱으로 나간 횟수·시간. 기록에 남아 보호자 폰에 ⚠️로 표시된다. ----
+// 1초 미만(권한 창·알림 깜빡임)과 마이크 버튼 직후 2초 안에 시작된 가림(권한 요청 창)은 세지 않는다. 채점이 끝난 문제에서의 이탈도 세지 않는다.
+const AWAY_MIN_MS = 1000;
+const AWAY_MIC_GRACE_MS = 2000;
+let awaySince = 0, lastMicPressAt = 0;
+function awayStart() {
+  if (awaySince || !sessionRunning || !question.w || question.answerChecked || Date.now() - lastMicPressAt < AWAY_MIC_GRACE_MS) return;
+  awaySince = Date.now();
+}
+function awayEnd() {
+  if (!awaySince) return;
+  const ms = Date.now() - awaySince;
+  awaySince = 0;
+  if (ms < AWAY_MIN_MS || !sessionRunning || !sessionMeta || !question.w) return;
+  question.away = (question.away || 0) + 1;
+  question.awayMs = (question.awayMs || 0) + ms;
+  sessionMeta.awayCount = (sessionMeta.awayCount || 0) + 1;
+  sessionMeta.awayMs = (sessionMeta.awayMs || 0) + ms;
+  saveSessionState();
+}
+document.addEventListener("visibilitychange", () => (document.hidden ? awayStart() : awayEnd()));
+window.addEventListener("blur", awayStart);
+window.addEventListener("focus", awayEnd);
+// 시험 화면의 글자는 선택·복사·길게 누르기 메뉴(선택 → 번역)를 막는다. CSS의 user-select:none 과 함께 동작한다.
+for (const type of ["contextmenu", "copy", "cut", "dragstart"]) document.querySelector(".word-box").addEventListener(type, (e) => e.preventDefault());
+
 // ---- 문제 표시·채점 ----
 function displayQuestion() {
   $("sessionScope").textContent = sessionMeta.setName + " · " + sessionMeta.range;
@@ -581,6 +607,7 @@ function decodeSpelling(transcript) {
 }
 function listenSpelling() {
   if (!sessionRunning || mode !== "ko_en" || question.answerChecked) return;
+  lastMicPressAt = Date.now();
   const target = question;
   startRecognition("en-US", $("answerFeedback"), $("micSpelling"), (transcript) => {
     if (question !== target) return;
@@ -633,6 +660,7 @@ function stopRec() {
 }
 function listen(lang, kind) {
   if (!sessionRunning || !question.w || question.unknown || (question.answerChecked && kind === "ko")) return;
+  lastMicPressAt = Date.now();
   const targetQuestion = question;
   startRecognition(lang, kind === "en" ? $("readFeedback") : $("answerFeedback"), kind === "en" ? $("micEnglish") : $("micKorean"), (transcript) => {
     if (question !== targetQuestion) return;
@@ -655,7 +683,7 @@ function speak() {
 function recordCurrentResult() {
   const spokenCount = mode === "ko_en" ? !question.readChecked || question.readSkipped || question.readPass : question.readPass;
   const pass = question.answerPass && (mode !== "read_meaning" || spokenCount);
-  results.push({ id: question.w.id, word: structuredClone(question.w), pass: question.unknown ? false : pass, unknown: question.unknown, ...(question.readSelf ? { self: true } : {}) });
+  results.push({ id: question.w.id, word: structuredClone(question.w), pass: question.unknown ? false : pass, unknown: question.unknown, ...(question.readSelf ? { self: true } : {}), ...(question.away ? { away: question.away, awayMs: question.awayMs || 0 } : {}) });
   question = { ...question, answerChecked: false };
 }
 function advance() {
@@ -741,7 +769,7 @@ function persistHistory(next) {
 function saveSession(partial = false) {
   if (!sessionMeta || sessionMeta.saved) return;
   sessionMeta.saved = true;
-  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), ...(sessionMeta.daily ? { daily: sessionMeta.daily } : {}), results: results.map((x) => ({ ...x })) };
+  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), ...(sessionMeta.daily ? { daily: sessionMeta.daily } : {}), ...(sessionMeta.awayCount ? { awayCount: sessionMeta.awayCount, awayMs: sessionMeta.awayMs || 0 } : {}), results: results.map((x) => ({ ...x })) };
   if (partial) record.partial = true;
   const next = [record, ...historyRecords];
   if (!persistHistory(next)) { historyRecords = next; renderHistory(); }
@@ -786,7 +814,7 @@ function renderHistory() {
     meta.className = "history-meta";
     meta.textContent = new Date(record.completedAt).toLocaleString("ko-KR") + " · " + record.setName + " · " + modeLabels[record.mode] + " · " + record.range;
     const counts = document.createElement("p");
-    counts.textContent = "정답 " + correct + " · 오답 " + (total - correct) + " (모름 " + unknown + "개 포함)";
+    counts.textContent = "정답 " + correct + " · 오답 " + (total - correct) + " (모름 " + unknown + "개 포함)" + (record.awayCount ? " · ⚠️ 화면 이탈 " + record.awayCount + "회" : "");
     entry.append(head, meta, counts);
     const missed = record.results.filter((x) => !x.pass);
     if (missed.length) {

@@ -151,11 +151,27 @@ const { chromium } = require("playwright");
   await page.selectOption("#range", "0");
   await page.uncheck("#shuffle");
   await page.click("#start");
+  // 문제 중 화면 이탈: 1초 넘게 가려지면 1회로 세고, 짧은 깜빡임(권한 창 등)은 세지 않는다
+  const setHidden = (hidden) =>
+    page.evaluate((h) => {
+      Object.defineProperty(document, "hidden", { value: h, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }, hidden);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  assert(!(await page.evaluate(() => question.away)), "a blink is not counted");
+  await setHidden(true);
+  await new Promise((r) => setTimeout(r, 1200));
+  await setHidden(false);
+  assert((await page.evaluate(() => question.away)) === 1, "away episode counted on the question");
   for (let i = 0; i < 10; i++) {
     await page.click("#unknown");
     await page.click("#next");
   }
   assert(await page.isVisible("#finish"), "finished");
+  assert((await page.evaluate(() => [historyRecords[0].awayCount, historyRecords[0].results[0].away])).join() === "1,1", "away count stored on the record and the question");
   await waitFor(() => syncs().length === 2, "sync after finishing");
   const sent = syncs()[1].body;
   assert(sent.child.id === HANEUL && sent.records.length === 1, "one record sent");
@@ -163,6 +179,7 @@ const { chromium } = require("playwright");
   assert(rec.total === 10 && rec.correct === 0 && rec.mode === "en_ko" && rec.partial === false && rec.range.startsWith("121~130번"), "record summary: " + JSON.stringify(rec));
   assert(rec.missed.length === 10 && rec.missed[0].en === "authority" && rec.missed[0].ko.includes("권위") && rec.missed[0].unknown === true, "missed words with meanings");
   assert(Number.isInteger(rec.activeMs) && rec.activeMs >= 0 && Number.isFinite(Date.parse(rec.completedAt)) && typeof rec.id === "string", "activeMs/completedAt/id");
+  assert(rec.awayCount === 1 && rec.awayMs >= 1000, "away count sent: " + JSON.stringify([rec.awayCount, rec.awayMs]));
   assert(!JSON.stringify(sent).includes('"results"') && !JSON.stringify(sent).includes('"aliases"'), "full per-word results are not sent");
   await waitFor(() => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).pending.length === 0), "pending cleared after the response");
   assert((await page.evaluate(() => historyRecords[0].activeMs)) >= 0, "record stores activeMs locally");
@@ -250,6 +267,7 @@ const { chromium } = require("playwright");
   await waitFor(() => statusHas("familyLoadStatus", "방금 확인했어요"), "family loaded");
   const card = await page.textContent("#childrenList");
   assert(card.includes("하늘") && card.includes("오늘 ✅ 3회") && card.includes("최근 7일 3회") && card.includes("마지막 시험") && /연결 기기: .+ 1/.test(card), "child card: " + card);
+  assert(card.includes("⚠️ 오늘 화면 이탈 1회"), "card warns about today's away episodes");
   assert((await page.$$eval("#childrenList .day", (d) => d.length)) === 7, "seven day cells");
   assert((await page.$$eval("#childrenList .day.done", (d) => d.length)) === 1, "today marked done");
   await page.click("#childrenList button");
@@ -260,6 +278,7 @@ const { chromium } = require("playwright");
   assert((await page.textContent("#deviceList")).includes("연결된 기기: "), "device list shown");
   const detail = await page.textContent("#childDetail");
   assert(detail.includes("시험 3회") && detail.includes("중단") && detail.includes("0 / 10") && detail.includes("기본 예제 DAY04 40단어"), "detail summary: " + detail);
+  assert(detail.includes("⚠️ 문제 중 화면 이탈 1회"), "record shows the away flag: " + detail.slice(0, 200));
   await page.click("#childRecords .history-entry:nth-child(2) summary");
   assert((await page.textContent("#childRecords")).includes("authority — 권위"), "missed words shown");
 
