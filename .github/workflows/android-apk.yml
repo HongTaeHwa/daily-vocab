@@ -30,6 +30,9 @@ jobs:
           java-version: "17"
 
       - uses: android-actions/setup-android@v3
+        with:
+          # 기본값의 'tools' 패키지는 더 이상 SDK 저장소에 없어 sdkmanager가 실패한다. 필요한 것만 설치한다.
+          packages: platform-tools platforms;android-35 build-tools;35.0.0
 
       - uses: gradle/actions/setup-gradle@v4
         with:
