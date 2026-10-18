@@ -88,6 +88,7 @@ function applyParentMode() {
   const on = isParentMode();
   document.body.classList.toggle("parent-mode", on);
   $("tabHome").classList.toggle("hidden", on);
+  $("tabLookup").classList.toggle("hidden", on);
   $("tabHistory").classList.toggle("hidden", on);
   $("tabFamily").classList.toggle("hidden", !(on || family.parentCode));
   $("brandTagline").textContent = on ? "보호자 · 아이들 관리" : "사진으로 만드는 나만의 단어장";

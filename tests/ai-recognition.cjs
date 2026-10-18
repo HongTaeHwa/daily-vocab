@@ -41,6 +41,13 @@ const { chromium } = require("playwright");
     if (mode === "notfound") return reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
     if (mode === "slow") await new Promise((r) => setTimeout(r, 1500));
     if (url.pathname === "/ping") return reply(route, 200, { ok: true, model: "claude-opus-5-5" });
+    if (url.pathname === "/lookup") {
+      // 단어 찾기 가짜 응답: weight 만 안다. recieve 는 철자 제안.
+      const w = String(body.word || "").toLowerCase();
+      if (w === "weight")
+        return reply(route, 200, { found: true, en: "weight", suggestion: "", pos: "명사", ko: "무게 · 체중", ipa: "weɪt", aliases: ["무게", "체중"], examples: [{ en: "What is your weight?", ko: "네 몸무게는 얼마니?" }, { en: "The box has a heavy weight.", ko: "그 상자는 무겁다." }], similar: ["mass"], note: "", model: "claude-sonnet-5-5", usage: { input: 1, output: 1 } });
+      return reply(route, 200, { found: false, en: w, suggestion: w === "recieve" ? "receive" : "", pos: "", ko: "", ipa: "", aliases: [], examples: [], similar: [], note: "", model: "claude-sonnet-5-5", usage: {} });
+    }
     if (url.pathname === "/grade") {
       // 2차 채점 가짜 응답: ‘비슷한뜻’만 같은 뜻으로 인정한다
       const accept = body.answer === "비슷한뜻";
@@ -186,6 +193,33 @@ const { chromium } = require("playwright");
   // 오류 안내: 접속 코드 오류, 서버 혼잡, 연결 실패 → 취소 → 설정 삭제
   await page.goto(url);
   assert((await page.textContent("#aiState")).includes("연결 설정됨"), "config survives reload");
+
+  // 🔍 단어 찾기: AI 사전 결과 카드 → ‘찾아본 단어’ 세트 자동 저장 → 다시 찾으면 요청 없이 저장된 결과 → 못 찾는 단어는 철자 제안 → 이 단어들로 시험 보기
+  await page.click("#tabLookup");
+  assert((await page.isVisible("#lookup")) && (await page.textContent("#lookupRecent")).includes("아직 찾아본 단어가 없어요") && (await page.isDisabled("#lookupQuiz")), "lookup view empty state");
+  await page.fill("#lookupInput", " Weight ");
+  await page.click("#lookupGo");
+  await page.waitForFunction(() => !document.getElementById("lookupResult").classList.contains("hidden"));
+  const lookupsReq = () => requests.filter((r) => r.path === "/lookup");
+  assert(lookupsReq().length === 1 && lookupsReq()[0].body.word === "Weight" && lookupsReq()[0].headers["x-app-passcode"] === PASSCODE, "lookup request: " + JSON.stringify(lookupsReq().map((l) => l.body)));
+  assert((await page.textContent("#lookupWord")).includes("weight") && (await page.textContent("#lookupMeaning")) === "무게 · 체중" && (await page.textContent("#lookupIpa")).includes("weɪt") && (await page.$$eval("#lookupExamples li", (l) => l.length)) === 2 && (await page.textContent("#lookupSimilar")).includes("mass"), "lookup card contents");
+  assert((await page.textContent("#lookupSaved")).includes("찾아본 단어") && (await page.textContent("#lookupSaved")).includes("1번"), "saved to the lookup set: " + (await page.textContent("#lookupSaved")));
+  assert(await page.evaluate(() => { const s = sets.find((x) => x.id === "lookup"); return Boolean(s && s.name === "찾아본 단어" && s.words.length === 1 && s.words[0].en === "weight" && s.words[0].aliases.includes("체중") && typeof s.updatedAt === "string"); }), "lookup set created with the word");
+  assert((await page.textContent("#lookupCount")) === "1개" && (await page.textContent("#lookupRecent")).includes("weight") && (await page.textContent("#lookupRecent")).includes("1번") && !(await page.isDisabled("#lookupQuiz")), "recent list and quiz button");
+  await page.fill("#lookupInput", "weight");
+  await page.click("#lookupGo");
+  await page.waitForFunction(() => document.getElementById("lookupStatus").textContent.includes("전에 찾아본"));
+  assert(lookupsReq().length === 1 && (await page.textContent("#lookupRecent")).includes("2번") && (await page.evaluate(() => sets.find((x) => x.id === "lookup").words.length)) === 1, "cached lookup: no request, count 2, no duplicate word");
+  await page.fill("#lookupInput", "recieve");
+  await page.click("#lookupGo");
+  await page.waitForFunction(() => document.getElementById("lookupStatus").textContent.includes("찾지 못했어요"));
+  assert((await page.textContent("#lookupStatus")).includes("receive") && (await page.inputValue("#lookupInput")) === "receive" && (await page.isHidden("#lookupResult")) && (await page.evaluate(() => sets.find((x) => x.id === "lookup").words.length)) === 1, "unknown word: suggestion offered, nothing saved");
+  await page.fill("#lookupInput", "drop table;");
+  await page.click("#lookupGo");
+  assert((await page.textContent("#lookupStatus")).includes("영어 단어") && lookupsReq().length === 2, "invalid input rejected without a request");
+  await page.click("#lookupQuiz");
+  assert((await page.isVisible("#home")) && (await page.textContent("#setSelect option:checked")).startsWith("찾아본 단어"), "quiz button selects the lookup set");
+  assert((await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_lookups_v1")).length)) === 1, "lookups persisted on the device");
   await page.click("#createSet");
 
   // 영어만 적은 단어의 뜻·발음을 AI 사전으로 채우기: 빈 칸만 채우고 노란 칸으로 표시, 못 찾은 단어 안내
