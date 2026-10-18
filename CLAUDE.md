@@ -26,6 +26,7 @@
 | `docs/DESIGN.md` | 2026-10-12 전면 개편 설계서(전수 검사 결과, 화면 구조, 데이터 모델, 진행 상태). |
 | `.nojekyll` | GitHub Pages가 Jekyll 처리하지 않도록 함. 삭제 금지. |
 | `.claude/` | Claude Code 로컬 도구: `dev-server.cjs`, `run-tests.cjs`, `launch.json`. 앱 동작과 무관. |
+| `android/` | 갤럭시 태블릿용 네이티브 래퍼 앱(Kotlin, WebView). `MainActivity.kt`(FLAG_SECURE로 화면 캡처·서클 투 서치 차단, 사진 선택·촬영, 마이크 권한, 뒤로 가기, 아이 링크), `SpeechBridge.kt` + `assets/bridge.js`(WebView에 없는 Web Speech API를 안드로이드 음성 인식·TTS로 채움 — 웹앱 코드 수정 없음), `scripts/setup-signing.sh`(서명 키 생성 + GitHub Secrets 등록), `README.md`(설치·업데이트). 빌드는 `.github/workflows/android-apk.yml`(PR은 아티팩트, main·수동은 Release `android-vN`). 웹앱과 별개로 버전 관리(`app/build.gradle.kts` versionCode/versionName). |
 
 ## 화면 구조와 ID
 - 뷰: `#home`(세트 선택·시험 설정·최근 결과·이어서 하기 카드), `#quiz`, `#finish`(결과), `#editor`(세트 편집), `#history`, `#family`(보호자 폰 ‘아이들’ 기록), `#settings`. `showView(name)`이 `.view.active`를 바꾸고 `body.in-quiz`로 하단 탭을 숨긴다.
@@ -78,6 +79,12 @@
 - 배포 순서: Worker 먼저(`cd worker && npm run deploy`, 마이그레이션 v2 포함) → `npm run parent-code`로 보호자 코드 등록 → 앱 배포. 옛 Worker에 앱이 요청하면 404 → ‘다시 배포’ 문구.
 - 응답 형식을 바꾸면 `tests/worker.cjs`와 `tests/family.cjs`·`tests/daily.cjs`(가짜 Worker 라우트)를 함께 고친다. 3단계(세트 보내기)·2B 푸시·2C 수준 조절은 미구현.
 - **오늘의 단어(2A, `docs/DESIGN.md` 11절)**: 보호자가 `POST /family/<id>/plan`으로 `{enabled, level, dailyCount 5~20, hour 0~23(KST)}`를 저장하면 크론(매시, `scheduled()` → DO `/cron`)이 계획 시각이 지난 아이의 `daily:<childId>:<YYYY-MM-DD>`를 만든다. 아이 기기는 `checkDaily`로 `GET /daily/<id>?date=` → 404 `no_daily`면 `POST /daily/<id>`(즉시 생성, 같은 날 중복 생성 없음), 409 `plan_disabled`면 카드 숨김. 구성은 복습 최대 3개(최근 14일 틀린 단어) + 새 단어(`DAILY_SYSTEM` + 수준 라벨 + 교재 앵커 `child.anchor`(아이 기기가 `/sync`마다 최근 세트 영어 60개) + 최근 200개 제외, 2배수 요청 후 `served:<childId>`·앵커·`WORD_PATTERN`으로 걸러 채움, 최대 2회). 홈 `#dailyCard` → `newSession(false, words, {setId:"daily:<date>", setName}, {rangeLabel:"오늘의 단어", daily:date})` → 기록 `daily` → `/sync` → `completed`(중단 기록 제외). 세트로 저장하지 않으며 `daily_vocab_missed_daily:*` 키도 만들지 않는다. 모델은 `DAILY_MODEL`(기본 sonnet).
+
+## 갤럭시 앱 (`android/`)
+- 목적: 웹앱은 OS의 서클 투 서치·스크린샷을 막을 수 없으므로, 안드로이드 앱의 `FLAG_SECURE`로 **이 앱 화면에서만** 막는다. 아이폰은 해당 수단이 없다(스크린 타임 안내).
+- 웹앱과의 관계: 앱은 `https://hongtaehwa.github.io/daily-vocab/` 주소만 안다. `assets/bridge.js`가 페이지 스크립트보다 먼저 실행되어(`WebViewCompat.addDocumentStartJavaScript`) `window.SpeechRecognition`·`speechSynthesis`를 `AndroidSpeech` 브리지로 바꾸므로 quiz.js의 음성 코드는 그대로다. UA에 `DailyVocabApp/버전`이 붙는다(가족 기록함의 기기 종류 표시에 쓸 수 있음). WebView 저장 공간은 Chrome과 별개다.
+- 빌드·배포: 로컬에 JDK/Android SDK가 없어도 된다. `android/**`를 바꾼 PR은 GitHub Actions가 APK를 아티팩트로 만들고, `main`에 올라가거나 수동 실행하면 Release `android-vN`에 APK를 붙인다. 서명 키는 보호자가 `bash android/scripts/setup-signing.sh`로 한 번 만들어 Secrets(`ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`)에 넣는다. Secrets가 없으면 debug 키로 서명된다(업데이트 때 기존 앱 삭제 필요). 키 파일(`android/keystore/`, `*.p12`, `*.jks`)은 절대 커밋하지 않는다.
+- 테스트: 자동 테스트 없음(실기기·CI 빌드로 확인). 브리지 이벤트 형식(`{type:"start"|"result"|"error"|"end", text|code}`)을 바꾸면 `bridge.js`와 `SpeechBridge.kt`를 함께 고친다.
 
 ## 버전·캐시 올리기 (앱 셸을 바꿀 때 반드시)
 릴리스 문자열 `20261018-5` 와 캐시 이름 `daily-vocab-shell-v14` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**

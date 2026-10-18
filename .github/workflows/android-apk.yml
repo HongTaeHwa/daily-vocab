@@ -1,0 +1,75 @@
+# 갤럭시용 앱(android/) APK 빌드. PR에서는 아티팩트만, main 푸시·수동 실행에서는 Release(android-vN)에 APK를 붙인다.
+# 서명: Secrets(ANDROID_KEYSTORE_B64 등)가 있으면 정식 키로, 없으면 debug 키로 서명한다(android/README.md).
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths: ["android/**", ".github/workflows/android-apk.yml"]
+  pull_request:
+    paths: ["android/**", ".github/workflows/android-apk.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+        with:
+          # 기본값의 'tools' 패키지는 더 이상 SDK 저장소에 없어 sdkmanager가 실패한다. 필요한 것만 설치한다.
+          packages: platform-tools platforms;android-35 build-tools;35.0.0
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: 서명 키 준비 (Secrets가 있을 때만)
+        if: env.KEYSTORE_B64 != ''
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$GITHUB_WORKSPACE/android/keystore.p12"
+          echo "ANDROID_KEYSTORE_PATH=$GITHUB_WORKSPACE/android/keystore.p12" >> "$GITHUB_ENV"
+          echo "SIGNING=release" >> "$GITHUB_ENV"
+
+      - name: APK 빌드
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: APK 이름 붙이기
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "daily-vocab-app-v${{ github.run_number }}.apk"
+          ls -la daily-vocab-app-v*.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daily-vocab-app
+          path: android/daily-vocab-app-v*.apk
+          if-no-files-found: error
+
+      - name: Release에 APK 붙이기 (main 푸시·수동 실행)
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-v${{ github.run_number }}
+          name: 매일 영단어 갤럭시 앱 v${{ github.run_number }}
+          body: |
+            갤럭시 태블릿용 앱(웹앱 래퍼, 화면 캡처·서클 투 서치 차단). 설치 방법은 저장소의 android/README.md 를 보세요.
+            서명: ${{ env.SIGNING == 'release' && '정식 서명 키 (업데이트 시 덮어쓰기 설치 가능)' || 'debug 키 (업데이트 전에 기존 앱을 지워야 함)' }}
+          files: android/daily-vocab-app-v*.apk
