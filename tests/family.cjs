@@ -178,11 +178,11 @@ const { chromium } = require("playwright");
   children.get(HANEUL).setStore.set("haneul-day04", { id: "haneul-day04", name: "하늘 DAY04", words: exampleWords, updatedAt: "2026-10-01T00:00:00.000Z" });
   assert(!page.url().includes("mode="), "mode removed from the address: " + page.url());
   assert(await page.isVisible("#family") && (await page.isVisible("#parentSetup")) && (await page.isHidden("#familyMain")), "setup card only");
-  assert((await page.isHidden("#tabHome")) && (await page.isHidden("#tabHistory")) && (await page.isVisible("#tabFamily")), "parent tabs");
+  assert((await page.isHidden("#tabHome")) && (await page.isHidden("#tabLookup")) && (await page.isHidden("#tabHistory")) && (await page.isVisible("#tabFamily")), "parent tabs");
   assert((await page.textContent("#brandTagline")).includes("보호자"), "tagline for the parent mode");
   await page.goto(url + "?mode=child");
   await waitFor(() => page.evaluate(() => !document.body.classList.contains("parent-mode")), "back to the child mode");
-  assert(await page.isVisible("#tabHome"), "child tabs restored");
+  assert((await page.isVisible("#tabHome")) && (await page.isVisible("#tabLookup")), "child tabs restored");
 
   // 아이 기기: 전용 링크로 열었지만 접속 코드가 아직 없다 → 설정 화면에 코드가 채워지고 안내, 주소에서 코드는 지워진다
   await page.goto(url + "?child=" + HANEUL_CODE);

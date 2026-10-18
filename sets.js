@@ -955,6 +955,227 @@ if ("serviceWorker" in navigator)
     .catch(() => ($("backupStatus").textContent = "오프라인용 앱 저장은 이 브라우저에서 지원되지 않아요. 인터넷 연결 상태에서는 그대로 쓸 수 있어요."));
 renderAiSettings();
 renderHome();
+// ---- 단어 찾기 (🔍 찾기 탭): AI 사전으로 뜻·발음·예문을 보여 주고 ‘찾아본 단어’ 세트에 넣는다 ----
+// 저장 키 daily_vocab_lookups_v1 = [{en, ko, ipa, pos, aliases, examples:[{en,ko}], similar, note, firstAt, lastAt, count}] (최신순, 최대 500, 이 기기에만).
+// 찾아본 단어 세트: id "lookup", 이름 ‘찾아본 단어’. 보통 세트라 시험·틀린 단어 복습·세트 동기화·보호자 화면에 그대로 보인다.
+// 같은 단어를 다시 찾으면 AI를 부르지 않고 저장된 결과를 보여 주며 횟수만 올린다. 시험 중에는 탭이 숨어 쓸 수 없다.
+const LOOKUPS_KEY = "daily_vocab_lookups_v1";
+const LOOKUP_SET_ID = "lookup";
+const LOOKUP_SET_NAME = "찾아본 단어";
+const LOOKUP_LIMIT = 500;
+const LOOKUP_TIMEOUT_MS = 30000;
+const lookupKey = (en) => String(en || "").trim().toLowerCase();
+function readLookups() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LOOKUPS_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((x) => x && typeof x.en === "string" && typeof x.ko === "string").slice(0, LOOKUP_LIMIT) : [];
+  } catch {
+    return [];
+  }
+}
+let lookups = readLookups();
+let lookupBusy = false;
+let currentLookup = null;
+function writeLookups() {
+  try {
+    localStorage.setItem(LOOKUPS_KEY, JSON.stringify(lookups));
+  } catch {}
+}
+function rememberLookup(entry) {
+  const key = lookupKey(entry.en), now = new Date().toISOString();
+  const existing = lookups.find((x) => lookupKey(x.en) === key);
+  const next = existing
+    ? { ...existing, ...entry, firstAt: existing.firstAt || now, lastAt: now, count: (existing.count || 1) + 1 }
+    : { ...entry, firstAt: now, lastAt: now, count: 1 };
+  lookups = [next, ...lookups.filter((x) => lookupKey(x.en) !== key)].slice(0, LOOKUP_LIMIT);
+  writeLookups();
+  return next;
+}
+// 찾은 단어를 ‘찾아본 단어’ 세트에 넣는다(세트가 없으면 만들고, 이미 있는 단어면 그대로). 돌려주는 값: {number, added, failed?}.
+function addToLookupSet(entry) {
+  const existing = sets.find((s) => s.id === LOOKUP_SET_ID);
+  const words = existing ? existing.words : [];
+  const found = words.find((w) => lookupKey(w.en) === lookupKey(entry.en));
+  if (found) return { number: found.id, added: false };
+  const nextId = words.reduce((m, w) => Math.max(m, Number.isInteger(Number(w.id)) ? Number(w.id) : 0), 0) + 1;
+  const aliases = entry.aliases?.length ? entry.aliases : entry.ko.split(/[·,;|]/).map((s) => s.trim()).filter(Boolean);
+  const word = { id: nextId, en: entry.en, ko: entry.ko, ipa: entry.ipa || "", hangul: "", aliases };
+  const set = { id: LOOKUP_SET_ID, name: existing?.name || LOOKUP_SET_NAME, words: [...words, word], updatedAt: new Date().toISOString() };
+  if (!persistSets(existing ? sets.map((s) => (s.id === LOOKUP_SET_ID ? set : s)) : [...sets, set])) return { number: nextId, added: false, failed: true };
+  if (!activeSetId) selectSet(LOOKUP_SET_ID); // 세트가 하나도 없던 기기: 이 세트가 첫 세트가 된다
+  else {
+    if (activeSetId === LOOKUP_SET_ID) WORDS = set.words;
+    populateSets();
+  }
+  if (typeof queueSetsSync === "function") queueSetsSync(); // family.js: 연결된 아이의 다른 기기·보호자 폰에도
+  return { number: nextId, added: true };
+}
+function speakEnglish(text) {
+  if (!("speechSynthesis" in window)) {
+    setFeedback($("lookupStatus"), "bad", "이 브라우저에는 음성 읽기 기능이 없어요.");
+    return;
+  }
+  const synth = window.speechSynthesis;
+  synth.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-US";
+  u.rate = 0.85;
+  const v = synth.getVoices().find((x) => x.lang.toLowerCase().startsWith("en-us"));
+  if (v) u.voice = v;
+  synth.speak(u);
+}
+function lookupSetNumber(en) {
+  return sets.find((s) => s.id === LOOKUP_SET_ID)?.words.find((w) => lookupKey(w.en) === lookupKey(en))?.id ?? null;
+}
+function renderLookupResult(entry, saved) {
+  currentLookup = entry;
+  $("lookupResult").classList.remove("hidden");
+  $("lookupWord").textContent = entry.en + (entry.pos ? ` (${entry.pos})` : "");
+  $("lookupIpa").textContent = entry.ipa ? `발음 /${entry.ipa}/` : "";
+  $("lookupMeaning").textContent = entry.ko;
+  const ul = $("lookupExamples");
+  ul.textContent = "";
+  for (const ex of entry.examples || []) {
+    const li = document.createElement("li");
+    li.textContent = ex.en;
+    const ko = document.createElement("small");
+    ko.textContent = ex.ko;
+    li.append(ko);
+    ul.append(li);
+  }
+  $("lookupSimilar").textContent = entry.similar?.length ? "비슷한 말: " + entry.similar.join(", ") : "";
+  $("lookupNote").textContent = entry.note || "";
+  const saveText = saved.failed
+    ? `‘${LOOKUP_SET_NAME}’ 세트에 저장하지 못했어요. 저장 공간을 확인하세요.`
+    : saved.added
+      ? `‘${LOOKUP_SET_NAME}’ 세트에 ${saved.number}번으로 넣었어요. 홈에서 이 세트로 시험을 볼 수 있어요.`
+      : `‘${LOOKUP_SET_NAME}’ 세트 ${saved.number ?? "?"}번에 이미 있어요 · ${entry.count || 1}번째 찾기`;
+  setFeedback($("lookupSaved"), saved.failed ? "bad" : "good", saveText);
+}
+// 찾기 탭을 열 때와 목록이 바뀔 때. 최근 50개만 그린다.
+function renderLookup() {
+  $("lookupCount").textContent = lookups.length + "개";
+  $("lookupQuiz").disabled = sessionRunning || !sets.some((s) => s.id === LOOKUP_SET_ID && s.words.length);
+  const box = $("lookupRecent");
+  box.textContent = "";
+  if (!lookups.length) {
+    box.textContent = "아직 찾아본 단어가 없어요. 위에서 단어를 찾으면 여기에 쌓여요.";
+    return;
+  }
+  for (const x of lookups.slice(0, 50)) {
+    const row = document.createElement("div");
+    row.className = "lookup-row";
+    const main = document.createElement("div");
+    main.className = "row-main";
+    const en = document.createElement("strong");
+    en.textContent = x.en;
+    const ko = document.createElement("span");
+    ko.textContent = x.ko;
+    const meta = document.createElement("small");
+    meta.textContent = (x.ipa ? `/${x.ipa}/ · ` : "") + `${x.count || 1}번 · ${new Date(x.lastAt).toLocaleDateString("ko-KR")}`;
+    main.append(en, ko, meta);
+    main.addEventListener("click", () => {
+      $("lookupInput").value = x.en;
+      renderLookupResult(x, { number: lookupSetNumber(x.en), added: false });
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+    row.append(main);
+    if (x.examples?.length) {
+      const d = document.createElement("details"), s = document.createElement("summary");
+      s.textContent = "예문 보기";
+      d.append(s);
+      for (const ex of x.examples) {
+        const p = document.createElement("p");
+        p.textContent = ex.en;
+        const k = document.createElement("small");
+        k.textContent = " — " + ex.ko;
+        p.append(k);
+        d.append(p);
+      }
+      row.append(d);
+    }
+    box.append(row);
+  }
+}
+async function lookupWord(raw) {
+  if (lookupBusy) return;
+  const word = String(raw || "").trim().replace(/\s+/g, " ");
+  const out = $("lookupStatus");
+  if (!word) {
+    setFeedback(out, "bad", "찾을 영어 단어를 입력하거나 말해 주세요.");
+    return;
+  }
+  if (!WORD_PATTERN.test(word)) {
+    setFeedback(out, "bad", "영어 단어나 짧은 구만 찾을 수 있어요(영문자로 시작, 40자 이하).");
+    return;
+  }
+  const cached = lookups.find((x) => lookupKey(x.en) === lookupKey(word));
+  if (cached) {
+    const entry = rememberLookup(cached);
+    renderLookupResult(entry, addToLookupSet(entry));
+    setFeedback(out, "info", "전에 찾아본 단어라 바로 보여 줘요.");
+    renderLookup();
+    return;
+  }
+  const config = aiConfig();
+  if (!config) {
+    setFeedback(out, "bad", "AI 사전을 쓰려면 보호자가 설정 → ‘보호자 설정 · AI 연결’에서 접속 코드를 저장해야 해요.");
+    return;
+  }
+  lookupBusy = true;
+  $("lookupGo").disabled = true;
+  setFeedback(out, "info", `‘${word}’을(를) AI 사전에서 찾는 중…`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LOOKUP_TIMEOUT_MS);
+  try {
+    const r = await aiRequest(config, "/lookup", { word }, controller.signal);
+    const ko = typeof r?.ko === "string" ? clean(r.ko) : "";
+    if (!r?.found || !ko) {
+      const suggestion = typeof r?.suggestion === "string" ? clean(r.suggestion) : "";
+      $("lookupResult").classList.add("hidden");
+      if (suggestion && WORD_PATTERN.test(suggestion)) $("lookupInput").value = suggestion; // 철자 제안을 입력칸에 넣어 ‘찾기’만 누르면 되게
+      setFeedback(out, "bad", `‘${word}’의 뜻을 찾지 못했어요.` + (suggestion ? ` 혹시 ‘${suggestion}’인가요? 입력칸에 넣어 두었으니 ‘찾기’를 눌러 보세요.` : " 철자를 확인해 주세요.") + (r?.note ? " " + clean(r.note) : ""));
+      return;
+    }
+    const entry = rememberLookup({
+      en: clean(r.en) || word,
+      ko,
+      ipa: clean(r.ipa),
+      pos: clean(r.pos),
+      aliases: (Array.isArray(r.aliases) ? r.aliases : []).map(clean).filter(Boolean).slice(0, 10),
+      examples: (Array.isArray(r.examples) ? r.examples : []).filter((e) => e && typeof e.en === "string" && typeof e.ko === "string").map((e) => ({ en: clean(e.en), ko: clean(e.ko) })).filter((e) => e.en && e.ko).slice(0, 3),
+      similar: (Array.isArray(r.similar) ? r.similar : []).map(clean).filter(Boolean).slice(0, 4),
+      note: clean(r.note),
+    });
+    renderLookupResult(entry, addToLookupSet(entry));
+    setFeedback(out, "good", `‘${entry.en}’을(를) 찾았어요.`);
+    renderLookup();
+  } catch (e) {
+    setFeedback(out, "bad", "찾지 못했어요: " + (e?.message || e) + (e?.status === 404 ? " 보호자가 Worker를 새 버전으로 다시 배포해 주세요." : ""));
+  } finally {
+    clearTimeout(timer);
+    lookupBusy = false;
+    $("lookupGo").disabled = false;
+  }
+}
+$("lookupGo").onclick = () => lookupWord($("lookupInput").value);
+$("lookupInput").addEventListener("keydown", (e) => {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === "Enter") lookupWord($("lookupInput").value);
+});
+$("lookupMic").onclick = () =>
+  startRecognition("en-US", $("lookupStatus"), $("lookupMic"), (transcript) => {
+    $("lookupInput").value = transcript;
+    lookupWord(transcript);
+  });
+$("lookupHear").onclick = () => currentLookup && speakEnglish(currentLookup.en);
+$("lookupQuiz").onclick = () => {
+  if (sessionRunning || !sets.some((s) => s.id === LOOKUP_SET_ID)) return;
+  selectSet(LOOKUP_SET_ID);
+  showView("home");
+  status(`‘${LOOKUP_SET_NAME}’ 세트를 골랐어요. 방식과 범위를 고르고 ▶ 시작을 누르세요.`);
+};
+
 if (typeof initFamily === "function") initFamily(); // family.js: 가족 기록함(아이 이름·기록 보내기·아이들 탭)
 
 if (window.markVocabAppReady) window.markVocabAppReady();

@@ -120,13 +120,13 @@ function loadMissed() {
 loadMissed();
 
 // ---- 화면(뷰) 전환 ----
-const VIEWS = ["home", "quiz", "finish", "editor", "history", "settings", "family"];
+const VIEWS = ["home", "quiz", "finish", "editor", "lookup", "history", "settings", "family"];
 let currentView = "home";
 function showView(name, options = {}) {
   if (!VIEWS.includes(name)) name = "home";
   // 보호자 모드(family.js): 아이용 화면(홈·시험·결과·편집·기록) 대신 아이들 화면을 보여 준다.
   // 보호자가 아이에게 보낼 세트를 만들거나 고칠 때(family.js 의 editorForChild)만 편집 화면을 허용한다.
-  if (typeof isParentMode === "function" && isParentMode() && !sessionRunning && ["home", "quiz", "finish", "editor", "history"].includes(name) && !(name === "editor" && window.editorForChild))
+  if (typeof isParentMode === "function" && isParentMode() && !sessionRunning && ["home", "quiz", "finish", "editor", "lookup", "history"].includes(name) && !(name === "editor" && window.editorForChild))
     name = "family";
   if (sessionRunning && name !== "quiz") {
     pauseQuiz();
@@ -142,13 +142,14 @@ function showView(name, options = {}) {
   }
   for (const v of VIEWS) $(v).classList.toggle("active", v === name);
   document.body.classList.toggle("in-quiz", name === "quiz");
-  for (const [tab, view] of [["tabHome", "home"], ["tabHistory", "history"], ["tabFamily", "family"], ["tabSettings", "settings"]]) {
+  for (const [tab, view] of [["tabHome", "home"], ["tabLookup", "lookup"], ["tabHistory", "history"], ["tabFamily", "family"], ["tabSettings", "settings"]]) {
     const active = view === name || (view === "home" && (name === "finish" || name === "editor"));
     $(tab).classList.toggle("active", active);
     $(tab).setAttribute("aria-current", active ? "page" : "false");
   }
   if (name === "history") renderHistory();
   if (name === "home") renderHome();
+  if (name === "lookup" && typeof renderLookup === "function") renderLookup(); // sets.js (단어 찾기)
   if (name === "family" && typeof renderFamily === "function") renderFamily(); // family.js (보호자 폰)
   window.scrollTo({ top: 0, behavior: "auto" });
   try { $(name).focus({ preventScroll: true }); } catch {}
@@ -159,6 +160,7 @@ window.addEventListener("popstate", (e) => {
   showView(e.state?.view || "home", { fromHistory: true });
 });
 $("tabHome").addEventListener("click", () => showView("home"));
+$("tabLookup").addEventListener("click", () => showView("lookup"));
 $("tabHistory").addEventListener("click", () => showView("history"));
 $("tabFamily").addEventListener("click", () => showView("family"));
 $("tabSettings").addEventListener("click", () => showView("settings"));
