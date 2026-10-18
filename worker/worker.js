@@ -39,6 +39,7 @@ const DEFAULT_ORIGINS = ["https://hongtaehwa.github.io"];
 const MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_IMAGE_BASE64 = 8 * 1024 * 1024;
 const MAX_DEFINE_WORDS = 60;
+const LOOKUP_MODEL_DEFAULT = "claude-sonnet-5-5"; // 단어 찾기(뜻·발음·예문)는 한 단어씩이라 sonnet 이면 충분하다(`LOOKUP_MODEL`로 변경)
 const GRADE_MODEL_DEFAULT = "claude-haiku-5-5"; // 2차 채점(뜻 판정)은 짧고 잦아서 빠르고 싼 모델을 쓴다(`GRADE_MODEL`로 바꿀 수 있음)
 const MAX_GRADE_ANSWER = 100;
 // 사전에 물어볼 수 있는 항목: 영문자로 시작하는 단어·짧은 구(공백, 마침표, 하이픈, 아포스트로피 허용, 40자 이하)
@@ -179,6 +180,40 @@ const DEFINE_SCHEMA = {
   required: ["words", "note"],
   additionalProperties: false,
 };
+
+// 단어 찾기(/lookup): 아이가 공부하다 만난 모르는 단어 하나의 뜻·품사·발음·허용 답안·예문·비슷한 말. 못 찾으면 found:false + 철자 제안.
+const LOOKUP_SYSTEM = `You are a learner's English-Korean dictionary for Korean middle-school students. The user sends one English word or short phrase that the student met while studying. Output JSON:
+- found: true when the input is a real English word or phrase you can define; false when it is misspelled, not English, or unknown to you.
+- english: the word in its base dictionary form (lowercase unless it is a proper noun) when found; otherwise the input as given.
+- suggestion: when found is false and the input looks like a misspelling of an English word, the most likely intended word; otherwise an empty string.
+- pos: the main part of speech in the style of Korean workbooks (명사, 동사, 형용사, 부사, 전치사, 접속사, 숙어 등), or an empty string.
+- korean: its 1 to 3 most common meanings in the form Korean vocabulary workbooks print them (verbs ending in 다, nouns as bare nouns, adjectives such as "행복한"), joined with " · ", most common first.
+- ipa: the American English pronunciation in IPA without brackets.
+- aliases: 2 to 10 short Korean answers that should count as correct in a quiz: each meaning without its parenthetical context plus natural stem forms without 다/하다/시키다 endings. No duplicates, no English.
+- examples: 2 or 3 short, natural example sentences that a middle-school student can read (under 12 words each), the most common sense first, each with a natural Korean translation.
+- similar: up to 4 English synonyms or closely related words the student may also meet (an empty array if none).
+- note: one short Korean sentence about anything the student should know (a very different second meaning, an informal word, a common confusion), or an empty string.
+When found is false, leave pos, korean, ipa, aliases, examples and similar empty.`;
+const LOOKUP_SCHEMA = {
+  type: "object",
+  properties: {
+    found: { type: "boolean" },
+    english: { type: "string" },
+    suggestion: { type: "string" },
+    pos: { type: "string" },
+    korean: { type: "string" },
+    ipa: { type: "string" },
+    aliases: { type: "array", items: { type: "string" } },
+    examples: { type: "array", items: { type: "object", properties: { english: { type: "string" }, korean: { type: "string" } }, required: ["english", "korean"], additionalProperties: false } },
+    similar: { type: "array", items: { type: "string" } },
+    note: { type: "string" },
+  },
+  required: ["found", "english", "suggestion", "pos", "korean", "ipa", "aliases", "examples", "similar", "note"],
+  additionalProperties: false,
+};
+function pickLookupModel(env) {
+  return ALLOWED_MODELS.includes(env.LOOKUP_MODEL) ? env.LOOKUP_MODEL : LOOKUP_MODEL_DEFAULT;
+}
 
 // 2차 채점(/grade): 앱이 책의 뜻·허용 답안과 글자 그대로 맞지 않는 답만 보내면, ‘같은 뜻인가’를 판정한다.
 // 동의어·조사/어미 차이·합성어(몸무게↔무게)·한 글자 오타는 인정하고, 다른 뜻·교재에 없는 다른 의미·막연한 답·여러 뜻 나열은 거절한다.
@@ -1232,6 +1267,52 @@ async function define(request, env, model, cors) {
   return json(200, { words: found, note, model: message.model || model, usage: usageOf(message) }, cors);
 }
 
+// 단어 찾기: POST /lookup {word} → {found, en, suggestion, pos, ko, ipa, aliases, examples:[{en,ko}], similar, note, model, usage}.
+async function lookupWord(request, env, cors) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json(400, { error: "bad_request", message: "JSON 본문이 필요합니다." }, cors);
+  }
+  const word = clean(body?.word).replace(/\s+/g, " ");
+  if (!word) return json(400, { error: "bad_request", message: "word 필드에 찾을 영어 단어가 필요합니다." }, cors);
+  if (!WORD_PATTERN.test(word)) return json(400, { error: "bad_request", message: `영어 단어만 찾을 수 있습니다: ‘${word.slice(0, 40)}’` }, cors);
+  const model = pickLookupModel(env);
+  const outcome = await callAnthropic(env, model, {
+    model,
+    max_tokens: 2048,
+    system: LOOKUP_SYSTEM,
+    output_config: { effort: "low", format: { type: "json_schema", schema: LOOKUP_SCHEMA } },
+    messages: [{ role: "user", content: `단어: ${word}` }],
+  });
+  if (outcome.failure) return json(outcome.failure.status, outcome.failure.body, cors);
+  const read = readJsonMessage(outcome.message, cors, { refused: "AI가 이 단어의 처리를 거부했습니다.", truncated: "AI 응답이 잘렸습니다. 다시 시도해 주세요." });
+  if (read.response) return read.response;
+  const d = read.data || {};
+  const ko = clean(d.korean).slice(0, 200);
+  const found = d.found === true && Boolean(ko);
+  const strings = (list, max, limit) => [...new Set((Array.isArray(list) ? list : []).map((s) => clean(s).slice(0, limit)).filter(Boolean))].slice(0, max);
+  const examples = (Array.isArray(d.examples) ? d.examples : [])
+    .map((e) => ({ en: clean(e?.english).slice(0, 200), ko: clean(e?.korean).slice(0, 200) }))
+    .filter((e) => e.en && e.ko)
+    .slice(0, 3);
+  return json(200, {
+    found,
+    en: (clean(d.english).slice(0, 60) || word),
+    suggestion: found ? "" : clean(d.suggestion).slice(0, 60),
+    pos: found ? clean(d.pos).slice(0, 20) : "",
+    ko: found ? ko : "",
+    ipa: found ? clean(d.ipa).replace(/^\[|\]$/g, "").slice(0, 80) : "",
+    aliases: found ? strings(d.aliases, 10, 60) : [],
+    examples: found ? examples : [],
+    similar: found ? strings(d.similar, 4, 40).filter((s) => WORD_PATTERN.test(s)) : [],
+    note: clean(d.note).slice(0, 200),
+    model: outcome.message.model || model,
+    usage: usageOf(outcome.message),
+  }, cors);
+}
+
 // 2차 채점: POST /grade {en, ko, aliases?, answer} → {accept, reason, model, usage}. 앱은 기기 채점이 오답일 때만 부르고, 실패하면 오답으로 둔다.
 async function gradeAnswer(request, env, cors) {
   let body;
@@ -1317,7 +1398,7 @@ export default {
       (CHILD_SETS_PATH.test(path) && ["GET", "POST", "DELETE"].includes(request.method)) ||
       (DAILY_PATH.test(path) && ["GET", "POST"].includes(request.method)) ||
       (SETTINGS_PATH.test(path) && request.method === "GET");
-    const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define", "/grade"].includes(path);
+    const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define", "/grade", "/lookup"].includes(path);
     if (!familyRoute && !aiRoute)
       return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." }, cors);
     const origin = request.headers.get("Origin");
@@ -1344,6 +1425,7 @@ export default {
     if (path === "/ping") return ping(env, model, cors);
     if (path === "/define") return define(request, env, model, cors);
     if (path === "/grade") return gradeAnswer(request, env, cors);
+    if (path === "/lookup") return lookupWord(request, env, cors);
     return recognize(request, env, model, cors);
   },
 };

@@ -275,6 +275,50 @@ const { pathToFileURL } = require("url");
   assert.equal(res.status, 422, "refusal → 422");
   upstream = okResponse;
 
+  // lookup (단어 찾기): 검증, 라우팅, sonnet 기본(fallbacks 있음), 프롬프트, 결과 정리, 못 찾음·철자 제안, LOOKUP_MODEL
+  res = await worker.fetch(req("/lookup", { body: {} }), env);
+  assert.equal(res.status, 400, "lookup needs a word");
+  res = await worker.fetch(req("/lookup", { body: { word: "drop table;" } }), env);
+  assert.equal(res.status, 400, "lookup rejects non-words");
+  res = await worker.fetch(new Request("https://ai.example.workers.dev/lookup", { method: "GET" }), env);
+  assert.equal(res.status, 404, "lookup is POST only");
+  res = await worker.fetch(req("/lookup", { passcode: "nope", body: { word: "weight" } }), env);
+  assert.equal(res.status, 401);
+  calls.length = 0;
+  const lookupJson = (data) => (body) => ({
+    status: 200,
+    json: { id: "msg_l", model: body.model, stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify(data) }], usage: { input_tokens: 7, output_tokens: 9 } },
+  });
+  upstream = lookupJson({
+    found: true, english: " Weight ", suggestion: "", pos: "명사", korean: "무게 · 체중", ipa: "[weɪt]", aliases: ["무게", "체중", "무게", ""],
+    examples: [{ english: "What is your weight?", korean: "네 몸무게는 얼마니?" }, { english: "", korean: "x" }, { english: "The box has a heavy weight.", korean: "그 상자는 무겁다." }, { english: "Four.", korean: "넷." }],
+    similar: ["mass", "heaviness", "drop table;"], note: "",
+  });
+  res = await worker.fetch(req("/lookup", { body: { word: " weight " } }), env);
+  assert.equal(res.status, 200);
+  let looked = await res.json();
+  assert.deepEqual(
+    [looked.found, looked.en, looked.pos, looked.ko, looked.ipa, looked.aliases, looked.examples.length, looked.examples[1].en, looked.similar, looked.model, looked.usage.output],
+    [true, "Weight", "명사", "무게 · 체중", "weɪt", ["무게", "체중"], 3, "The box has a heavy weight.", ["mass", "heaviness"], "claude-sonnet-5-5", 9],
+    "lookup result cleaned: " + JSON.stringify(looked),
+  );
+  assert.equal(calls.length, 1, "one upstream call per lookup");
+  const lookupSent = calls[0].body;
+  assert.equal(lookupSent.model, "claude-sonnet-5-5", "lookup uses sonnet by default");
+  assert.equal(lookupSent.fallbacks, "default", "sonnet keeps fallbacks");
+  assert(lookupSent.system.includes("dictionary") && lookupSent.messages[0].content === "단어: weight", "lookup prompt: " + lookupSent.messages[0].content);
+  assert(lookupSent.output_config.format.schema.required.includes("examples") && lookupSent.output_config.effort === "low", "lookup schema/effort");
+  upstream = lookupJson({ found: false, english: "recieve", suggestion: "receive", pos: "", korean: "", ipa: "", aliases: [], examples: [], similar: [], note: "" });
+  looked = await (await worker.fetch(req("/lookup", { body: { word: "recieve" } }), env)).json();
+  assert.deepEqual([looked.found, looked.en, looked.suggestion, looked.ko, looked.aliases], [false, "recieve", "receive", "", []], "not found → suggestion");
+  upstream = lookupJson({ found: true, english: "zzz", suggestion: "", pos: "", korean: "  ", ipa: "", aliases: [], examples: [], similar: [], note: "모르는 단어" });
+  looked = await (await worker.fetch(req("/lookup", { body: { word: "zzz" } }), env)).json();
+  assert.deepEqual([looked.found, looked.note], [false, "모르는 단어"], "found without a meaning counts as not found");
+  await worker.fetch(req("/lookup", { body: { word: "apple" } }), { ...env, LOOKUP_MODEL: "claude-haiku-5-5" });
+  assert.equal(calls[calls.length - 1].body.model, "claude-haiku-5-5", "LOOKUP_MODEL overrides");
+  assert.equal(calls[calls.length - 1].body.fallbacks, undefined, "haiku lookup has no fallbacks");
+  upstream = okResponse;
+
   // fallbacks unsupported (400) → retried without
   calls.length = 0;
   upstream = (body) =>
@@ -855,7 +899,7 @@ const { pathToFileURL } = require("url");
   assert.equal([...(await familyObject.storage.list({ prefix: "set:" + sid + ":" })).keys()].length, 0, "set keys removed with the child");
 
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/fallback retry/upstream error mapping/family store/daily words/child codes/set sync",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/fallback retry/upstream error mapping/family store/daily words/child codes/set sync",
   );
 })().catch((e) => {
   console.error(e);

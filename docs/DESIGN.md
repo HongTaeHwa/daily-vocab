@@ -280,9 +280,18 @@
 - **기록**: `results[i].ai`, 기록 `aiPass`(개수) → 아이 기록 탭·보호자 기록에 ‘🤖 AI 인정 N개’. Worker `parseSync`가 보존.
 - 버전 `20261018-10`, 캐시 v19. Worker 재배포 필요(`/grade`).
 
-## 17. 전반 점검 보완 — 작은 결함 4건 (2026-10-18)
+## 17. 단어 찾기 — 모르는 단어를 찾고 시험으로 (2026-10-18)
 
-점검에서 나온 작은 결함 네 가지를 한 PR로 고쳤다. 버전 `20261018-11`, 캐시 v20, 갤럭시 앱 v1.3(versionCode 4). Worker 재배포 필요(`/sync`의 빈 앵커 삭제·지운 아이 묘비).
+배경: 공부하다 모르는 단어가 나오면 앱 밖(네이버 사전 등)으로 나가야 했고, 찾아본 단어가 어디에도 남지 않았다. 사용자 요청: 검색 → 뜻·예문·발음 → 자동 기록 → 시험 연결. 결정: 네이버 사전은 공식 API가 없고 외부 브라우저로 나가는 통로가 되므로 넣지 않고 **AI 사전만** 쓴다(사용자 확인).
+
+- **Worker `POST /lookup {word}`**: `WORD_PATTERN` 검증, `LOOKUP_MODEL`(기본 sonnet, effort low) + `LOOKUP_SYSTEM`/`LOOKUP_SCHEMA` → `{found, en, suggestion, pos, ko, ipa, aliases, examples(≤3), similar(≤4), note}`. 뜻이 비면 `found:false`. 괄호 IPA·중복 별칭·빈 예문·비단어 similar 정리.
+- **앱(sets.js, 🔍 찾기 탭 `#lookup`)**: 입력 또는 🎙 영어 인식(quiz.js `startRecognition` 재사용) → 저장된 결과(`daily_vocab_lookups_v1`, 최신순 500, 이 기기에만)가 있으면 AI를 부르지 않고 횟수만 올림 → 없으면 `/lookup`(30초) → 결과 카드(단어·품사·발음·🔊·뜻·예문·비슷한 말·메모) → `addToLookupSet`: 세트 id `lookup`(‘찾아본 단어’)에 번호 순으로 추가(허용 답안은 AI 결과, 없으면 뜻 분리), `persistSets` + `queueSetsSync`로 같은 아이의 다른 기기·보호자 폰에도. 세트가 하나도 없던 기기는 이 세트가 첫 세트가 된다. 못 찾으면 `suggestion`을 입력칸에 넣고 안내. ‘이 단어들로 시험 보기’ → `selectSet("lookup")` + 홈.
+- 보호자 모드에서는 `#tabLookup`이 숨고 `showView("lookup")`은 아이들 화면으로 간다. 시험 중에는 탭 바가 숨는다. 예문은 세트 단어 형식에 없으므로 찾기 기록에만 남는다(세트 편집기로 고쳐도 사라지지 않음).
+- 테스트: `tests/worker.cjs` lookup 절, `tests/ai-recognition.cjs` 찾기 흐름, `tests/family.cjs` 탭 숨김. 버전 `20261018-12`, 캐시 v21(11/v20은 같은 날 병행 작업용으로 비움). Worker 재배포 필요.
+
+## 18. 전반 점검 보완 — 작은 결함 4건 (2026-10-18)
+
+점검에서 나온 작은 결함 네 가지를 한 PR로 고쳤다. 버전 `20261018-13`, 캐시 v22(11/v20은 17절의 단어 찾기가 먼저 머지되어 건너뜀), 갤럭시 앱 v1.3(versionCode 4). Worker 재배포 필요(`/sync`의 빈 앵커 삭제·지운 아이 묘비).
 
 - **갤럭시 앱의 파일 선택기가 JSON을 막음**: `onShowFileChooser`가 늘 `image/*`로 열어 설정의 ‘JSON 가져오기’(`<input accept="application/json">`)에서 .json을 고를 수 없었다. `params.acceptTypes`를 MIME로 바꿔(`acceptedMimeTypes`, `.json` → `application/json`) 사진이면 전처럼 사진·카메라, 그 밖이면 요청한 종류를 기본으로 하되 `EXTRA_MIME_TYPES`에 `*/*`를 함께 넣어 파일 관리자가 .json을 `text/plain` 등으로 보고해도 고를 수 있게 했다(내용 검사는 웹앱 `importSets`가 한다). 선택기 제목 ‘파일 선택’. 앱에 `DownloadListener`가 없어 ‘전체 백업 JSON’ 내려받기는 앱 안에서 동작하지 않을 수 있다(실기기 미확인, 세트는 세트 동기화로 받으므로 급하지 않음).
 - **시험 중 생긴 세트 변경이 늦게 올라감**: `syncSets`는 시험 중 건너뛰므로 `learnAlias`(AI가 인정한 답을 허용 답안에 추가)의 `queueSetsSync`가 다음 화면 복귀(10분 간격)나 앱 재시작까지 미뤄졌다. 시험 중의 강제 동기화 요청은 `setsSyncDeferred`로 표시만 하고, quiz.js가 완료(`complete`)·그만하기(`stopQuiz`)·쉬기(`pauseQuiz`)에서 `sessionRunning`을 끈 뒤 `notifyQuizEnded` → family.js `onQuizEnded`가 한 번 `syncSets({force:true})`를 부른다.
