@@ -134,6 +134,7 @@ function compactRecord(r) {
     partial: r.partial === true,
     activeMs: Number.isInteger(r.activeMs) && r.activeMs >= 0 ? r.activeMs : null,
     ...(typeof r.daily === "string" ? { daily: r.daily } : {}),
+    ...(Number.isInteger(r.awayCount) && r.awayCount > 0 ? { awayCount: r.awayCount, awayMs: Number.isInteger(r.awayMs) ? r.awayMs : 0 } : {}),
     missed: r.results
       .filter((x) => !x.pass)
       .slice(0, FAMILY_MISSED_LIMIT)
@@ -682,6 +683,11 @@ function renderChildren() {
     const dailyLine = document.createElement("p");
     dailyLine.className = "muted daily-line";
     dailyLine.textContent = dailyStatusText(c);
+    const awayToday = info.todays.reduce((s, r) => s + (r.awayCount || 0), 0);
+    const awayLine = document.createElement("p");
+    awayLine.className = "away-flag";
+    awayLine.textContent = awayToday ? `⚠️ 오늘 화면 이탈 ${awayToday}회 (문제 중 앱이 가려짐)` : "";
+    awayLine.classList.toggle("hidden", !awayToday);
     const dots = document.createElement("div");
     dots.className = "week-dots";
     dots.setAttribute("aria-label", "최근 7일 시험");
@@ -707,7 +713,7 @@ function renderChildren() {
     detail.textContent = summary ? "기록 자세히 보기" : "연결 코드·설정 보기";
     detail.addEventListener("click", () => openChild(c));
     actions.append(detail);
-    card.append(head, last, devices, dailyLine, dots, week, actions);
+    card.append(head, last, devices, dailyLine, awayLine, dots, week, actions);
     list.append(card);
   }
 }
@@ -845,6 +851,12 @@ function renderChildRecords(note) {
     const duration = durationText(r.activeMs);
     meta.textContent = `${new Date(r.completedAt).toLocaleString("ko-KR")} · ${r.setName} · ${modeLabels[r.mode] || r.mode} · ${r.range}` + (duration ? ` · ${duration}` : "");
     entry.append(head, meta);
+    if (r.awayCount) {
+      const away = document.createElement("p");
+      away.className = "away-flag";
+      away.textContent = `⚠️ 문제 중 화면 이탈 ${r.awayCount}회 · 총 ${Math.round((r.awayMs || 0) / 1000)}초 (앱이 가려지거나 다른 앱으로 나감)`;
+      entry.append(away);
+    }
     const missed = Array.isArray(r.missed) ? r.missed : [];
     if (missed.length) {
       const details = document.createElement("details"), summary = document.createElement("summary"), words = document.createElement("p");
