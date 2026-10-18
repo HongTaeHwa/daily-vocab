@@ -279,3 +279,16 @@
 - **학습**: 인정된 답은 `learnAlias`가 그 세트 단어의 허용 답안에 넣는다(`updatedAt` 갱신 → 세트 동기화로 같은 아이의 다른 기기·보호자 폰에도 반영). 다음부터는 기기에서 바로 정답. 오늘의 단어·기록 복습 시험은 세트가 아니므로 학습하지 않는다.
 - **기록**: `results[i].ai`, 기록 `aiPass`(개수) → 아이 기록 탭·보호자 기록에 ‘🤖 AI 인정 N개’. Worker `parseSync`가 보존.
 - 버전 `20261018-10`, 캐시 v19. Worker 재배포 필요(`/grade`).
+
+## 17. 기록 복원 — 새 기기·재설치 뒤 기록 탭 채우기 (2026-10-18)
+
+배경: 2026-10-18 갤럭시 앱을 다시 설치하면서 기기 안 자료가 사라졌다. 세트는 아이 단위 동기화(15절)로 돌아오지만 시험 기록은 원본이 기기(`daily_vocab_history_v2`)에만 있고 서버에는 압축 사본(점수·틀린 단어)만 있어 기록 탭이 비었다. 사용자가 ‘서버 사본으로 기록 복원’을 요청.
+
+- **Worker** (`FamilyStore.records`): `GET /records/<childId>?since=<ISO>&limit=<n>`(가족 코드, kind `records`, 요청 제한 버킷 `/records`). `since`가 있으면 `rec:<childId>:<since>`부터(포함) 오름차순 `limit`개, 없으면 최신순 `limit`개(최대 500, `limit+1`개를 읽어 `more` 판단). 응답 `{records:[압축 기록 + receivedAt], more, serverTime}`. 보호자 전용 `/family`와 달리 아이 기기가 자기 기록만 읽는다. 잘못된 `since`는 400, 모르는 아이는 404 `unknown_child`.
+- **요약 기록 형식**(quiz.js `validRecord`): 압축 기록에는 단어별 결과가 없으므로 `results`에는 틀린 단어만 `{id, word, pass:false, unknown}`으로 두고(비어 있을 수 있음) 점수는 `total/correct` 필드에, `restored: true`·`restoredAt`을 붙인다. `recordScore`가 `restored`면 `total/correct`를 쓰므로 기록 탭·홈 최근 결과·세트 요약·CSV(‘비고: 서버에서 복원’)가 그대로 동작하고, 틀린 단어 목록·‘이 시험의 틀린 단어 다시 풀기’는 `results`로 그대로 된다. (가) results 없는 형식 대신 이 하이브리드를 고른 이유: 기록을 읽는 코드 대부분이 `results`를 틀린 단어 목록으로만 쓰고 점수 계산은 `recordScore` 한 곳이라 바꿀 곳이 적고, 옛 앱이 읽어도(틀린 단어가 있으면) 걸러내지 않는다.
+- **아이 기기** (`family.js` `restoreRecords`): 연결 직후 `Promise.all([flushFamilySync, syncSets])` 뒤(기록을 올리고 세트를 받은 뒤라 이름이 같은 세트에 `setId`를 연결하고 틀린 단어를 세트 단어로 보강할 수 있다), 앱 시작 때 `syncSets` 뒤 자동(기록이 비어 있고 `family.restoreCheckedAt`이 없을 때만 — 재설치·새 기기), 설정의 ‘☁️ 서버 기록 다시 가져오기’(force). `since`를 epoch에서 시작해 마지막 `completedAt`으로 넘기며 최대 10페이지(5,000개), 기기에 있는 id는 건너뛴다(앞 페이지와 겹치는 같은 시각 기록도 id로 걸러짐). 받은 것이 있으면 `persistHistory`(최신순 정렬)·기록 탭 상태 ‘기록 N개를 서버에서 가져왔어요’. 오늘의 단어 기록은 `setId: daily:<date>`, 세트를 못 찾으면 `restored:<세트 이름>`(‘전체 세트’에서만 보임). 세트별 오답 키(`daily_vocab_missed_*`)는 건드리지 않는다. 시험 중에는 건너뛴다.
+- **다시 보내지 않기**: `localRecordIds()`(`restored` 제외)를 `joinChild`·`saveFamily`의 pending 에 쓰고 `flushFamilySync`가 pending 을 `!r.restored`로 걸러 복원 기록이 `/sync`로 돌아가지 않는다.
+- **기록 전체 삭제와의 관계**: 기존 원칙(기기 기록만 지우고 서버 사본은 남음) 유지. 삭제 뒤 `noteHistoryCleared`가 `restoreCheckedAt`을 찍어 다음 실행 때 자동 복원으로 되살리지 않는다(확인 문구에 ‘서버 기록 다시 가져오기로 되살릴 수 있어요’ 안내). 연결 해제·아이 바꾸기 때 `restoreCheckedAt`·`restoreError` 초기화.
+- **백업 JSON**: 내보내기에 복원 기록도 들어간다. 가져오기(sets.js)는 보통 기록에 새 id를 주지만 복원 기록은 id를 그대로 두고 이미 있으면 건너뛰어, 가져온 뒤 다시 복원해도 같은 시험이 두 번 생기지 않는다.
+- **화면**: 기록 항목 메타 줄에 ‘☁️ 서버에서 복원’, 설정 → 가족 기록함 `#restoreText`(‘기록 N개 복원 (서버 사본: 점수·틀린 단어) · 마지막 확인 HH:MM’ / 가져오는 중 / 오류 / 삭제 뒤 안내)와 `#restoreRecords` 버튼. 기록 탭 안내문에 복원 설명 추가.
+- 테스트: `tests/worker.cjs` 기록 복원 절, `tests/family.cjs`(연결 직후 복원·기록 탭·다시 풀기·수동 복원 페이지 넘김·전체 삭제 뒤 자동 복원 없음), `tests/browser.cjs`(복원 기록 형식 유지·백업 왕복), `tests/daily.cjs` 가짜 Worker에 `/records`. 버전 `20261018-11`, 캐시 v20. Worker 재배포 필요(`/records`).

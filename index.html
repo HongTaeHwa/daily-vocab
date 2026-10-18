@@ -324,7 +324,7 @@ body.in-quiz main{padding-bottom:30px}
     <div class="actionbar"><button type="button" class="btn outline" id="exportHistory" disabled>CSV 내려받기</button></div>
     <div id="historyStatus" class="feedback info" role="status"></div>
     <div id="historyList"></div>
-    <p class="muted">기록은 이 기기의 브라우저에만 저장돼요. 브라우저 데이터를 지우면 기록도 사라지니 설정 → 백업을 이용하세요.</p>
+    <p class="muted">기록은 이 기기의 브라우저에 저장돼요. 브라우저 데이터를 지우면 기록도 사라지니 설정 → 백업을 이용하세요. 가족 기록함에 연결된 기기는 보호자에게 보낸 기록(점수·틀린 단어)을 서버에서 다시 가져올 수 있어요(‘☁️ 서버에서 복원’ 표시).</p>
   </div>
 </section>
 
@@ -416,8 +416,9 @@ body.in-quiz main{padding-bottom:30px}
       <div id="linkedBox" class="hidden">
         <p class="muted">연결됨: 🧒 <strong id="childName"></strong> <span id="deviceLabelText" class="pill"></span></p>
         <p id="setsSyncText" class="muted"></p>
+        <p id="restoreText" class="muted"></p>
         <div class="controls"><label class="check"><input type="checkbox" id="familySend"> 시험 기록을 보호자에게 보내기</label></div>
-        <div class="actionbar"><button type="button" class="btn primary" id="saveFamily">저장</button><button type="button" class="btn outline" id="syncNow" disabled>지금 보내기</button><button type="button" class="btn outline danger" id="unlinkChild">연결 해제</button></div>
+        <div class="actionbar"><button type="button" class="btn primary" id="saveFamily">저장</button><button type="button" class="btn outline" id="syncNow" disabled>지금 보내기</button><button type="button" class="btn outline" id="restoreRecords" disabled>☁️ 서버 기록 다시 가져오기</button><button type="button" class="btn outline danger" id="unlinkChild">연결 해제</button></div>
       </div>
       <div id="familyStatus" class="feedback info" role="status"></div>
       </div>
@@ -453,7 +454,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-10 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-11 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -468,7 +469,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-10';
+  var release = '20261018-11';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -504,8 +505,8 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./quiz.js?v=20261018-10" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-10" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-10" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-11" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-11" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-11" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

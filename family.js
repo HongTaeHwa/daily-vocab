@@ -4,8 +4,9 @@
 // 아이 기기(아이폰·태블릿)는 아이 코드나 전용 링크(?child=코드)로 연결되어 시험을 마칠 때마다 압축 기록을 보내고 매일 ‘오늘의 단어’를 받는다.
 // 같은 코드를 넣은 기기는 한 아이로 묶인다. quiz.js 다음, sets.js 앞에 불러오고 sets.js가 마지막에 initFamily()를 부른다.
 // 세트는 아이에게 속한다: 연결된 기기는 POST /sets/<childId>로 세트를 올리고 다른 기기·보호자가 바꾼 것을 받아 같은 아이의 기기가 항상 같은 세트를 본다(아래 ‘세트 동기화’).
+// 기록 복원: 새 기기나 다시 설치한 앱은 기록이 비어 있으므로 GET /records/<childId>로 서버 사본(압축 기록)을 내려받아 ‘요약 기록’(restored: true)으로 기록 탭에 넣는다(아래 ‘기록 복원’).
 // 저장 키 daily_vocab_family_v1 = {childId, childName, joinCode, pendingCode, deviceId, sendEnabled, lastSyncAt, lastError, pending:[기록 id], parentCode,
-//        setsAcked:{세트 id: 수정 시각}, setsDeleted:[{id, deletedAt}], setsSyncedAt, setsError}
+//        setsAcked:{세트 id: 수정 시각}, setsDeleted:[{id, deletedAt}], setsSyncedAt, setsError, restoreCheckedAt, restoreError}
 //        daily_vocab_daily_v1  = {childId, date, words, level, note, fetchedAt, result?, disabled?, lastCheckedAt, lastError?}
 // 보호자 코드·아이 코드·아이 이름은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다.
 const FAMILY_KEY = "daily_vocab_family_v1";
@@ -54,6 +55,9 @@ function readFamily() {
     setsDeleted: Array.isArray(f.setsDeleted) ? f.setsDeleted.filter((d) => d && typeof d.id === "string" && typeof d.deletedAt === "string").slice(-200) : [],
     setsSyncedAt: typeof f.setsSyncedAt === "string" ? f.setsSyncedAt : "",
     setsError: typeof f.setsError === "string" ? f.setsError : "",
+    // 기록 복원: 마지막으로 서버 기록을 확인한 시각(있으면 앱 시작 때 자동 복원을 다시 하지 않는다; 기록 전체 삭제 때도 찍는다), 마지막 오류
+    restoreCheckedAt: typeof f.restoreCheckedAt === "string" ? f.restoreCheckedAt : "",
+    restoreError: typeof f.restoreError === "string" ? f.restoreError : "",
     // 보호자가 정한 아이 설정(서버 plan에서 받아 둠). timeLimitSec 0 = 제한 없음
     settings: {
       timeLimitSec: Number.isInteger(f.settings?.timeLimitSec) && f.settings.timeLimitSec >= 0 ? f.settings.timeLimitSec : 0,
@@ -252,7 +256,7 @@ async function flushFamilySync(options = {}) {
     renderFamilySettings();
     return;
   }
-  family.pending = family.pending.filter((id) => historyRecords.some((r) => r.id === id)); // 기기에서 지운 기록은 보내지 않는다
+  family.pending = family.pending.filter((id) => historyRecords.some((r) => r.id === id && !r.restored)); // 기기에서 지운 기록과 서버에서 복원한 기록은 보내지 않는다
   let force = options.force === true; // 기록이 없어도 아이 이름·기기·세트 목록·앵커를 한 번 보낸다
   if (!family.pending.length && !force) {
     writeFamily();
@@ -450,20 +454,20 @@ async function joinChild(code) {
     family.pendingCode = "";
     family.sendEnabled = true;
     family.lastError = "";
-    family.pending = [...new Set([...historyRecords.map((r) => r.id), ...family.pending])]; // 연결하면 지금까지의 기록도 함께 보낸다
+    family.pending = [...new Set([...localRecordIds(), ...family.pending])]; // 연결하면 지금까지의 기록도 함께 보낸다(서버에서 복원한 기록은 제외)
     writeFamily();
     applySettings(data); // 연결 응답에 제한 시간 등 보호자 설정이 함께 온다
     if (switching || daily.childId !== family.childId) {
       daily = emptyDaily();
       writeDaily();
     }
-    if (switching) family = { ...family, setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "" }; // 새 아이의 세트와 처음부터 맞춘다
+    if (switching) family = { ...family, setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "", restoreCheckedAt: "", restoreError: "" }; // 새 아이의 세트와 처음부터 맞춘다
     $("childCode").value = "";
     $("familySend").checked = true;
     renderFamilySettings(`이 기기를 ‘${family.childName}’의 기기로 연결했어요. 기록을 보내는 중…`);
-    flushFamilySync({ force: true });
+    // 이 기기의 기록을 올리고 이 아이의 세트를 받은 뒤, 서버에 있는 이 아이의 기록(다른 기기·다시 설치하기 전 것)을 기록 탭에 가져온다
+    Promise.all([flushFamilySync({ force: true }), syncSets({ force: true })]).then(() => restoreRecords({ force: true }));
     checkDaily({ force: true });
-    syncSets({ force: true }); // 이 아이의 세트를 받고 이 기기의 세트를 올린다
     return true;
   } catch (e) {
     setFeedback(
@@ -481,7 +485,7 @@ async function handleLinkCode(code) {
     renderFamilySettings();
     fetchSettings({ force: true });
     checkDaily({ ignoreThrottle: true });
-    syncSets({ force: true });
+    syncSets({ force: true }).then(() => restoreRecords());
     return;
   }
   if (isLinked() && !confirm(`이 기기는 이미 ‘${family.childName}’의 기기로 연결되어 있어요. 링크의 아이로 바꿀까요? 지금까지의 기록은 각자에게 남고, 이 기기의 세트는 링크의 아이 세트와 합쳐져요.`)) return;
@@ -505,7 +509,7 @@ $("unlinkChild").onclick = () => {
   if (!confirm(`이 기기를 ‘${family.childName}’에서 연결 해제할까요? 이 기기의 세트와 기록은 그대로 남고, 서버에 보낸 기록도 지워지지 않아요.`)) return;
   family = {
     ...family, childId: "", childName: "", joinCode: "", pendingCode: "", sendEnabled: false, pending: [], lastError: "",
-    setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "", settings: { timeLimitSec: 0, fetchedAt: "" },
+    setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "", settings: { timeLimitSec: 0, fetchedAt: "" }, restoreCheckedAt: "", restoreError: "",
   };
   writeFamily();
   daily = emptyDaily();
@@ -514,6 +518,103 @@ $("unlinkChild").onclick = () => {
   renderFamilySettings("연결을 해제했어요. 다시 연결하려면 아이 코드를 넣으세요.");
   renderDailyCard();
 };
+
+// ---- 아이 기기: 기록 복원 ----
+// 기록의 원본은 기기(daily_vocab_history_v2)에 있고 서버에는 압축 사본(점수·틀린 단어)만 있다. 새 기기나 다시 설치한 앱은 기록이 비어 있으므로
+// GET /records/<childId>(가족 코드)로 서버 사본을 내려받아 ‘요약 기록’(restored: true, total/correct 점수, results 는 틀린 단어만)으로 기록 탭에 넣는다.
+// 연결 직후(기록을 올리고 세트를 받은 뒤)와 앱 시작 때 기록이 비어 있으면 한 번, 그 밖에는 설정의 ‘서버 기록 다시 가져오기’로. 기기에 이미 있는 id는 건너뛰고,
+// 복원한 기록은 다시 서버로 보내지 않으며(pending 제외) 세트별 오답(daily_vocab_missed_*)은 건드리지 않는다. 기록 전체 삭제 뒤에는 자동으로 되살리지 않는다.
+const RESTORE_PAGE = 500; // Worker 상한과 같음
+const RESTORE_MAX_PAGES = 10; // 아이당 보관 상한 5,000개
+const RESTORE_SINCE_START = "1970-01-01T00:00:00.000Z";
+let restoreInFlight = false;
+const localRecordIds = () => historyRecords.filter((r) => !r.restored).map((r) => r.id); // 이 기기에서 본 시험(서버에 보낼 것)
+function restoreReady() {
+  return isLinked() && Boolean(syncPasscode()) && storageAvailable;
+}
+const validServerRecord = (r) =>
+  Boolean(r && typeof r.id === "string" && Number.isFinite(Date.parse(r.completedAt)) && modeLabels[r.mode] && Number.isInteger(r.total) && r.total >= 1 && r.total <= 2000 && Number.isInteger(r.correct) && r.correct >= 0 && r.correct <= r.total);
+// 압축 기록 → 기기 기록 형식. 세트는 이름이 같은 이 기기의 세트에 연결하고(기록 탭 세트 필터·홈 요약), 틀린 단어는 그 세트에 있으면 번호·발음·허용 답안까지 채운다.
+function expandRecord(r) {
+  const setName = tidy(r.setName).slice(0, 120) || "(이름 없음)";
+  const dailyDate = typeof r.daily === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.daily) ? r.daily : "";
+  const set = dailyDate ? null : sets.find((s) => s.name === setName) || null;
+  const missed = (Array.isArray(r.missed) ? r.missed : []).filter((m) => m && typeof m.en === "string" && m.en.trim()).slice(0, Math.min(FAMILY_MISSED_LIMIT, r.total - r.correct));
+  const results = missed.map((m, i) => {
+    const known = set?.words.find((w) => w.en === m.en);
+    const word = known ? structuredClone(known) : { id: i + 1, en: tidy(m.en).slice(0, 80), ko: tidy(m.ko).slice(0, 200), ipa: "", hangul: "", aliases: [] };
+    return { id: word.id, word, pass: false, unknown: m.unknown === true };
+  });
+  return {
+    id: r.id,
+    setId: dailyDate ? "daily:" + dailyDate : set ? set.id : "restored:" + setName,
+    setName,
+    mode: r.mode,
+    range: tidy(r.range).slice(0, 60),
+    startedAt: typeof r.startedAt === "string" && Number.isFinite(Date.parse(r.startedAt)) ? r.startedAt : r.completedAt,
+    completedAt: r.completedAt,
+    activeMs: Number.isInteger(r.activeMs) && r.activeMs >= 0 ? r.activeMs : 0,
+    ...(r.partial === true ? { partial: true } : {}),
+    ...(dailyDate ? { daily: dailyDate } : {}),
+    ...(Number.isInteger(r.awayCount) && r.awayCount > 0 ? { awayCount: r.awayCount, awayMs: Number.isInteger(r.awayMs) && r.awayMs >= 0 ? r.awayMs : 0 } : {}),
+    ...(Number.isInteger(r.timeouts) && r.timeouts > 0 ? { timeouts: r.timeouts } : {}),
+    ...(Number.isInteger(r.aiPass) && r.aiPass > 0 ? { aiPass: r.aiPass } : {}),
+    restored: true,
+    restoredAt: new Date().toISOString(),
+    total: r.total,
+    correct: r.correct,
+    results,
+  };
+}
+// force: 연결 직후·‘서버 기록 다시 가져오기’. 자동(앱 시작)은 기록이 비어 있고 이 연결에서 아직 확인한 적이 없을 때만.
+async function restoreRecords(options = {}) {
+  if (restoreInFlight || !restoreReady() || sessionRunning) return;
+  if (!options.force && (historyRecords.length || family.restoreCheckedAt)) return;
+  restoreInFlight = true;
+  renderFamilySettings(options.manual ? "서버에 보낸 기록을 가져오는 중…" : undefined);
+  let added = 0;
+  try {
+    const known = new Set(historyRecords.map((r) => r.id));
+    const fresh = [];
+    let since = RESTORE_SINCE_START;
+    for (let page = 0; page < RESTORE_MAX_PAGES; page++) {
+      const data = await familyRequest(`/records/${encodeURIComponent(family.childId)}?since=${encodeURIComponent(since)}&limit=${RESTORE_PAGE}`, { method: "GET", passcode: syncPasscode() });
+      const list = (Array.isArray(data?.records) ? data.records : []).filter(validServerRecord);
+      for (const r of list) {
+        if (known.has(r.id)) continue; // 이 기기에 이미 있는 기록(또는 앞 페이지와 겹친 기록)
+        known.add(r.id);
+        fresh.push(expandRecord(r));
+      }
+      const last = list[list.length - 1];
+      if (!data?.more || !last || last.completedAt <= since) break;
+      since = last.completedAt;
+    }
+    if (fresh.length) {
+      const merged = [...fresh, ...historyRecords].sort((a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt));
+      if (!persistHistory(merged)) throw Error("기록을 저장하지 못했어요. 저장 공간을 확인하세요.");
+      added = fresh.length;
+      setFeedback($("historyStatus"), "good", `보호자에게 보냈던 기록 ${added}개를 서버에서 가져왔어요(점수·틀린 단어).`);
+      renderHome();
+    }
+    family.restoreCheckedAt = new Date().toISOString();
+    family.restoreError = "";
+    writeFamily();
+  } catch (e) {
+    family.restoreError = e?.message || String(e);
+    writeFamily();
+  } finally {
+    restoreInFlight = false;
+    renderFamilySettings(options.manual && !family.restoreError ? (added ? `서버에서 기록 ${added}개를 가져왔어요.` : "서버에 더 가져올 기록이 없어요. 이 기기에 모두 있어요.") : undefined);
+  }
+}
+// quiz.js 가 ‘시험 기록 전체 삭제’를 마친 뒤 부른다: 일부러 지운 기록을 다음 실행 때 자동으로 되살리지 않는다(버튼으로는 가져올 수 있다).
+function noteHistoryCleared() {
+  if (!isLinked()) return;
+  family.restoreCheckedAt = family.restoreCheckedAt || new Date().toISOString();
+  writeFamily();
+  renderFamilySettings();
+}
+$("restoreRecords").onclick = () => restoreRecords({ force: true, manual: true });
 
 // ---- 아이 기기: 오늘의 단어 ----
 function emptyDaily() {
@@ -655,6 +756,18 @@ function renderFamilySettings(progress) {
         : family.setsSyncedAt
           ? `세트 ${sets.length}개 · 보호자·다른 기기와 같은 세트 (마지막 확인 ${new Date(family.setsSyncedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })})`
           : "세트는 아직 맞추지 않았어요. 인터넷이 되면 자동으로 보호자·다른 기기와 같아져요.";
+    const restoredCount = historyRecords.filter((r) => r.restored).length;
+    const checkedAt = family.restoreCheckedAt ? new Date(family.restoreCheckedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }) : "";
+    $("restoreText").textContent = restoreInFlight
+      ? "서버에 보낸 기록을 가져오는 중…"
+      : family.restoreError
+        ? "서버 기록을 가져오지 못했어요: " + family.restoreError
+        : restoredCount
+          ? `기록 ${restoredCount}개 복원 (서버 사본: 점수·틀린 단어)` + (checkedAt ? ` · 마지막 확인 ${checkedAt}` : "")
+          : checkedAt
+            ? `보호자에게 보낸 기록은 ‘서버 기록 다시 가져오기’로 가져올 수 있어요 · 마지막 확인 ${checkedAt}`
+            : "새 기기나 다시 설치한 앱은 기록이 비어 있으면 보호자에게 보냈던 기록을 서버에서 자동으로 가져와요.";
+    $("restoreRecords").disabled = !restoreReady() || restoreInFlight;
   }
   const pill = $("familyState");
   pill.textContent = !linked ? "연결 안 됨" : !family.sendEnabled ? "꺼짐" : family.pending.length ? `보낼 기록 ${family.pending.length}개` : syncInFlight ? "보내는 중" : "기록 보내기 켜짐";
@@ -694,7 +807,7 @@ $("saveFamily").onclick = () => {
   const turningOn = enable && !family.sendEnabled;
   family.sendEnabled = enable;
   family.lastError = "";
-  if (turningOn) family.pending = [...new Set([...historyRecords.map((r) => r.id), ...family.pending])]; // 다시 켤 때는 그동안의 기록도 함께 보낸다
+  if (turningOn) family.pending = [...new Set([...localRecordIds(), ...family.pending])]; // 다시 켤 때는 그동안의 기록도 함께 보낸다(복원한 기록은 제외)
   if (!writeFamily()) {
     setFeedback($("familyStatus"), "bad", "저장 실패: 브라우저 저장 공간을 확인하세요.");
     return;
@@ -1472,7 +1585,7 @@ function initFamily() {
     if (family.pending.length) flushFamilySync();
     fetchSettings({ force: true }); // 보호자가 바꾼 제한 시간 등을 앱을 열 때 받아 둔다
     checkDaily({ ignoreThrottle: true }); // 앱을 새로 열 때는 10분 제한 없이 확인한다(보호자가 방금 켰을 수 있다)
-    syncSets({ force: true }); // 보호자·다른 기기가 바꾼 세트를 받고 이 기기의 변경을 올린다
+    syncSets({ force: true }).then(() => restoreRecords()); // 보호자·다른 기기가 바꾼 세트를 받고 이 기기의 변경을 올린 뒤, 기록이 비어 있으면(새 기기·재설치) 서버 사본을 가져온다
   }
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;

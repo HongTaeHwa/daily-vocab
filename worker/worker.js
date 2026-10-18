@@ -22,6 +22,8 @@
 //   POST /family/<childId>/name  보호자 코드, JSON {name} → 이름 바꾸기 { ok, child }
 //   POST /join                   가족·보호자 코드, JSON {code, device:{id,label}} → { ok, childId, name, timeLimitSec }   (아이 기기 연결)
 //   GET  /settings/<childId>     가족·보호자 코드 → { childId, name, timeLimitSec }   (아이 기기가 보호자 설정을 받아 감)
+//   GET  /records/<childId>?since=<ISO>&limit=<n>  가족·보호자 코드 → { records:[압축 기록…], more, serverTime }
+//                                아이 기기의 기록 복원(새 기기·재설치). since가 있으면 그 시각부터(포함) 오름차순, 없으면 최신순. 최대 500개
 //   (크론, 매시) scheduled() → FamilyStore /cron: 계획 시각이 지난 아이의 그날 단어를 만든다
 //
 // 비밀값: ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE(선택: 보호자 폰에서 아이들 기록 보기)   (wrangler secret put ...)
@@ -74,6 +76,8 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DAILY_MODEL_DEFAULT = "claude-sonnet-5-5";
 const DAILY_DEFAULTS = { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0 }; // hour는 한국 시각, timeLimitSec 0 = 제한 없음(모든 시험에 적용)
 const SETTINGS_PATH = /^\/settings\/([A-Za-z0-9-]{8,64})$/; // 아이 기기가 보호자 설정(제한 시간 등)을 받아 가는 경로
+const RECORDS_PATH = /^\/records\/([A-Za-z0-9-]{8,64})$/; // 아이 기기가 자기 기록의 서버 사본을 내려받는 경로(기록 복원, 가족 코드)
+const RECORDS_PAGE_MAX = 500; // GET /records 한 번에 돌려주는 기록 수 상한
 const TIME_LIMIT_MIN = 5;
 const TIME_LIMIT_MAX = 120;
 const DAILY_COUNT_MIN = 5;
@@ -361,6 +365,8 @@ export class FamilyStore {
     }
     const settings = SETTINGS_PATH.exec(url.pathname);
     if (settings && method === "GET") return this.settings(settings[1]);
+    const records = RECORDS_PATH.exec(url.pathname);
+    if (records && method === "GET") return this.records(records[1], url.searchParams);
     const setsSync = SETS_PATH.exec(url.pathname);
     if (setsSync && method === "POST") return this.syncSets(setsSync[1], await readBody());
     const childSets = CHILD_SETS_PATH.exec(url.pathname);
@@ -528,6 +534,22 @@ export class FamilyStore {
     const c = await this.storage.get("child:" + childId);
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
     return json(200, { childId, name: c.name, timeLimitSec: this.planOf(c).timeLimitSec });
+  }
+  // 기록 복원(아이 기기, 가족 코드): 서버에 있는 이 아이의 압축 기록을 돌려준다. 새 기기나 다시 설치한 앱이 기록 탭을 채우는 데 쓴다.
+  // since(ISO)가 있으면 그 시각부터(포함) 오름차순으로 limit개(앱은 마지막 completedAt을 다음 since로 넘기며 id로 겹침을 걸러낸다), 없으면 최신순 limit개.
+  async records(childId, params) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
+    const since = isoDate(params.get("since"));
+    if (since === undefined) return json(400, { error: "bad_request", message: "since는 ISO 시각이어야 합니다." });
+    const wanted = Number(params.get("limit"));
+    const limit = Number.isInteger(wanted) && wanted > 0 ? Math.min(wanted, RECORDS_PAGE_MAX) : RECORDS_PAGE_MAX;
+    const prefix = this.recordPrefix(childId);
+    const listed = since
+      ? await this.storage.list({ prefix, start: prefix + since, limit: limit + 1 })
+      : await this.storage.list({ prefix, reverse: true, limit: limit + 1 });
+    const all = [...listed.values()];
+    return json(200, { records: all.slice(0, limit), more: all.length > limit, serverTime: new Date().toISOString() });
   }
   // ---- 세트 동기화(아이 단위) ----
   setPrefix(childId) {
@@ -929,12 +951,12 @@ function parseSetUpload(body) {
 }
 
 // /sync, /join, /sets, /daily…, /family… 처리. 오늘의 단어 생성 외에는 Anthropic을 부르지 않는다.
-// kind: sync·join·daily(가족 또는 보호자 코드) / view(보호자 코드만: 기록 보기·삭제·아이 만들기·계획·코드·이름)
+// kind: sync·join·sets·daily·settings·records(가족 또는 보호자 코드) / view(보호자 코드만: 기록 보기·삭제·아이 만들기·계획·코드·이름·세트)
 async function family(request, env, path, cors) {
   if (!env.APP_PASSCODE)
     return json(500, { error: "misconfigured", message: "AI 서버에 비밀값(APP_PASSCODE)이 설정되지 않았습니다." }, cors);
   const kind =
-    path === "/sync" ? "sync" : path === "/join" ? "join" : SETS_PATH.test(path) ? "sets" : DAILY_PATH.test(path) ? "daily" : SETTINGS_PATH.test(path) ? "settings" : "view";
+    path === "/sync" ? "sync" : path === "/join" ? "join" : SETS_PATH.test(path) ? "sets" : DAILY_PATH.test(path) ? "daily" : SETTINGS_PATH.test(path) ? "settings" : RECORDS_PATH.test(path) ? "records" : "view";
   const setsRoute = kind === "sets" || (kind === "view" && CHILD_SETS_PATH.test(path)); // 세트 본문은 크다(2MB까지)
   if (kind === "view" && !env.PARENT_PASSCODE)
     return json(500, {
@@ -1308,7 +1330,8 @@ export default {
       (SETS_PATH.test(path) && request.method === "POST") ||
       (CHILD_SETS_PATH.test(path) && ["GET", "POST", "DELETE"].includes(request.method)) ||
       (DAILY_PATH.test(path) && ["GET", "POST"].includes(request.method)) ||
-      (SETTINGS_PATH.test(path) && request.method === "GET");
+      (SETTINGS_PATH.test(path) && request.method === "GET") ||
+      (RECORDS_PATH.test(path) && request.method === "GET");
     const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define", "/grade"].includes(path);
     if (!familyRoute && !aiRoute)
       return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." }, cors);
