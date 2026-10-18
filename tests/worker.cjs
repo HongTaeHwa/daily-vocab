@@ -319,6 +319,45 @@ const { pathToFileURL } = require("url");
   assert.equal(calls[calls.length - 1].body.fallbacks, undefined, "haiku lookup has no fallbacks");
   upstream = okResponse;
 
+  // tutor (문제 물어보기): 검증, 라우팅, sonnet 기본, 사진 + 도움 종류 프롬프트, 결과 정리, 모르는 종류 → explain, TUTOR_MODEL
+  res = await worker.fetch(req("/tutor", { body: {} }), env);
+  assert.equal(res.status, 400, "tutor needs an image");
+  res = await worker.fetch(req("/tutor", { body: { image: "!!!", kind: "explain" } }), env);
+  assert.equal(res.status, 400, "tutor rejects non-base64");
+  res = await worker.fetch(new Request("https://ai.example.workers.dev/tutor", { method: "GET" }), env);
+  assert.equal(res.status, 404, "tutor is POST only");
+  res = await worker.fetch(req("/tutor", { passcode: "nope", body: { image: "aGVsbG8=" } }), env);
+  assert.equal(res.status, 401);
+  calls.length = 0;
+  const tutorJson = (data) => (body) => ({
+    status: 200,
+    json: { id: "msg_t", model: body.model, stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify(data) }], usage: { input_tokens: 100, output_tokens: 50 } },
+  });
+  const tutorData = {
+    problem: " 1번 3) 요지 고르기 ", summary: "아기 마사지와 체중 증가 이야기예요.", translation: "첫 줄 해석\n둘째 줄 해석", steps: ["질문이 무엇을 묻는지 보세요.", "", "글 전체의 중심 생각을 찾아요."],
+    grammar: ["3인칭 단수 동사에 -s"], answer: "③ — 접촉이 아기 성장에 도움이 된다는 글이에요", checked: "✓한 ①은 지나친 일반화예요.",
+    words: [{ english: "gauge", korean: "측정하다" }, { english: "", korean: "x" }, { english: "absorption", korean: "흡수" }], note: "",
+  };
+  upstream = tutorJson(tutorData);
+  res = await worker.fetch(req("/tutor", { body: { image: "aGVsbG8=", mediaType: "image/png", kind: "check", question: " 3번이 왜 3번이에요? " } }), env);
+  assert.equal(res.status, 200);
+  const tutored = await res.json();
+  assert.deepEqual(
+    [tutored.kind, tutored.problem, tutored.steps, tutored.words, tutored.answer.startsWith("③"), tutored.translation, tutored.model, tutored.usage.input],
+    ["check", "1번 3) 요지 고르기", ["질문이 무엇을 묻는지 보세요.", "글 전체의 중심 생각을 찾아요."], [{ en: "gauge", ko: "측정하다" }, { en: "absorption", ko: "흡수" }], true, "첫 줄 해석\n둘째 줄 해석", "claude-sonnet-5-5", 100],
+    "tutor result cleaned: " + JSON.stringify(tutored),
+  );
+  const tutorSent = calls[0].body;
+  assert.equal(tutorSent.model, "claude-sonnet-5-5", "tutor uses sonnet by default");
+  assert(tutorSent.messages[0].content[0].type === "image" && tutorSent.messages[0].content[0].source.media_type === "image/png", "tutor sends the image");
+  assert(tutorSent.messages[0].content[1].text.includes("표시한 답") && tutorSent.messages[0].content[1].text.includes("3번이 왜 3번이에요?"), "tutor prompt: " + tutorSent.messages[0].content[1].text);
+  assert(tutorSent.system.includes("tutor") && tutorSent.output_config.format.schema.required.includes("answer") && tutorSent.output_config.effort === "medium", "tutor schema/effort");
+  await worker.fetch(req("/tutor", { body: { image: "aGVsbG8=", kind: "weird" } }), env);
+  assert(calls[1].body.messages[0].content[1].text.includes("단계별로 설명") && (await (await worker.fetch(req("/tutor", { body: { image: "aGVsbG8=", kind: "weird" } }), env)).json()).kind === "explain", "unknown kind falls back to explain");
+  await worker.fetch(req("/tutor", { body: { image: "aGVsbG8=", kind: "translate" } }), { ...env, TUTOR_MODEL: "claude-opus-5-5" });
+  assert.equal(calls[calls.length - 1].body.model, "claude-opus-5-5", "TUTOR_MODEL overrides");
+  upstream = okResponse;
+
   // fallbacks unsupported (400) → retried without
   calls.length = 0;
   upstream = (body) =>
@@ -593,6 +632,11 @@ const { pathToFileURL } = require("url");
   assert.equal(data.deleted, 5000);
   data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
   assert.deepEqual(data.children, []);
+  // 지운 아이 id로 온 기기의 /sync 는 404 unknown_child(되살리지 않음). 모르는 새 아이는 옛 앱 호환으로 그대로 만든다(아래 kid).
+  await familyCase("/sync", { body: { child, records: [rec("ghost", hoursAgo(1))] } }, 404, "unknown_child");
+  await familyCase("/settings/" + child.id, { method: "GET" }, 404, "unknown_child");
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(data.children, [], "a deleted child is not re-created by a device sync");
 
   // ---- 오늘의 단어: 계획(plan)·교재 앵커·생성(복습+새 단어, 제외 규칙, 재요청)·완료 표시·크론 ----
   const kid = { id: "22222222-3333-4444-8555-666666666666", name: "한결" };
@@ -631,6 +675,14 @@ const { pathToFileURL } = require("url");
   assert.deepEqual(data.child.plan, { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0 }, "default plan");
   assert.equal(data.today.exists, false);
   await familyCase("/sync", { body: { child: kid, anchor: { words: "nope" } } }, 400, "anchor");
+  // 빈 앵커(기기에 손대지 않은 예제 세트뿐)는 저장된 수준 기준을 지우고, 앵커를 아예 안 보내면 그대로 둔다
+  await familyCase("/sync", { body: { child: kid, anchor: { setName: "", words: [] } } }, 200);
+  data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.child.anchor, undefined, "empty anchor clears the stored anchor");
+  await familyCase("/sync", { body: { child: kid, anchor: { setName: "중등 DAY05", words: ["authority", "devote", "evident"] } } }, 200);
+  await familyCase("/sync", { body: { child: kid } }, 200);
+  data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(data.child.anchor.words, ["authority", "devote", "evident"], "anchor kept when a sync carries none");
   // 계획이 꺼져 있으면 409
   await familyCase("/daily/" + kid.id, { method: "GET" }, 409, "plan_disabled");
   await familyCase("/daily/" + kid.id, { body: {} }, 409, "plan_disabled");
@@ -880,10 +932,25 @@ const { pathToFileURL } = require("url");
   await familyCase("/sets/" + sid, { body: { sets: many(49) } }, 200);
   await familyCase("/sets/" + sid, { body: { sets: many(1, 60) } }, 400, "too_many_sets");
   await familyCase("/family/" + sid + "/sets", { ...PARENT, body: { set: { name: "x", words: [word(1, "a", "ㄱ")] } } }, 400, "too_many_sets");
-  // 아이를 지우면 세트 키도 지워진다
+  // 문제 물어보기 질문 요약: 연결된 아이 id 를 보내면 사진 없이 요약만 남아 보호자 상세의 questions 로 보인다
+  const savedFetch = globalThis.fetch; // 이 구간의 fetch 는 오늘의 단어 모의라 tutor 응답으로 잠시 바꾼다
+  globalThis.fetch = async (url, init) => {
+    const r = tutorJson(tutorData)(JSON.parse(init.body));
+    return new Response(JSON.stringify(r.json), { status: r.status, headers: { "content-type": "application/json" } });
+  };
+  await familyCase("/tutor", { body: { image: "aGVsbG8=", kind: "grammar", question: "왜 aids 인가요?", child: { id: sid } } }, 200);
+  await familyCase("/tutor", { body: { image: "aGVsbG8=", kind: "explain", child: { id: "99999999-aaaa-4bbb-8ccc-dddddddddddd" } } }, 200); // 모르는 아이여도 답은 준다
+  await familyCase("/tutor", { body: { image: "aGVsbG8=", kind: "explain" } }, 200); // 연결 안 된 기기: 저장 없음
+  data = await familyCase("/family/" + sid, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.questions.length, 1, "one question logged for the linked child");
+  assert.deepEqual([data.questions[0].kind, data.questions[0].question, data.questions[0].problem, data.child.questionCount], ["grammar", "왜 aids 인가요?", "1번 3) 요지 고르기", 1], "question summary: " + JSON.stringify(data.questions[0]));
+  assert(!JSON.stringify(data.questions[0]).includes("aGVsbG8=") && typeof data.questions[0].askedAt === "string", "no image stored");
+  globalThis.fetch = savedFetch;
+  // 아이를 지우면 세트·질문 키도 지워진다
   await familyCase("/family/" + sid, { method: "DELETE", ...PARENT }, 200);
   await familyCase("/sets/" + sid, { body: {} }, 404, "unknown_child");
   assert.equal([...(await familyObject.storage.list({ prefix: "set:" + sid + ":" })).keys()].length, 0, "set keys removed with the child");
+  assert.equal([...(await familyObject.storage.list({ prefix: "q:" + sid + ":" })).keys()].length, 0, "question keys removed with the child");
 
   // ---- 기록 복원: 아이 기기가 GET /records/<childId>(가족 코드)로 서버 사본을 내려받는다(since 이후 오름차순 또는 최신순, 최대 500개) ----
   const rid = (await familyCase("/family/children", { ...PARENT, body: { name: "복원아이" } }, 200)).child.id;
@@ -926,7 +993,7 @@ const { pathToFileURL } = require("url");
   await familyCase("/records/" + rid, { method: "GET" }, 404, "unknown_child");
 
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/fallback retry/upstream error mapping/family store/daily words/child codes/set sync/record restore",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/tutor help/fallback retry/upstream error mapping/family store/daily words/child codes/set sync/record restore",
   );
 })().catch((e) => {
   console.error(e);

@@ -42,6 +42,11 @@ const MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_IMAGE_BASE64 = 8 * 1024 * 1024;
 const MAX_DEFINE_WORDS = 60;
 const LOOKUP_MODEL_DEFAULT = "claude-sonnet-5-5"; // 단어 찾기(뜻·발음·예문)는 한 단어씩이라 sonnet 이면 충분하다(`LOOKUP_MODEL`로 변경)
+const TUTOR_MODEL_DEFAULT = "claude-sonnet-5-5"; // 문제 물어보기(문제지 사진 읽기 + 풀이 설명). 더 정확하게 하려면 TUTOR_MODEL=claude-opus-5-5
+const TUTOR_KINDS = ["explain", "translate", "grammar", "check", "ask"];
+const MAX_TUTOR_QUESTION = 300;
+const MAX_CHILD_QUESTIONS = 300; // 아이당 보관하는 질문 요약 수(사진은 저장하지 않는다)
+const QUESTIONS_IN_DETAIL = 100;
 const GRADE_MODEL_DEFAULT = "claude-haiku-5-5"; // 2차 채점(뜻 판정)은 짧고 잦아서 빠르고 싼 모델을 쓴다(`GRADE_MODEL`로 바꿀 수 있음)
 const MAX_GRADE_ANSWER = 100;
 // 사전에 물어볼 수 있는 항목: 영문자로 시작하는 단어·짧은 구(공백, 마침표, 하이픈, 아포스트로피 허용, 40자 이하)
@@ -217,6 +222,46 @@ const LOOKUP_SCHEMA = {
 };
 function pickLookupModel(env) {
   return ALLOWED_MODELS.includes(env.LOOKUP_MODEL) ? env.LOOKUP_MODEL : LOOKUP_MODEL_DEFAULT;
+}
+
+// 문제 물어보기(/tutor): 문제지 사진 + 도움 종류(풀이·해석·어법·내 답 확인·직접 질문) → 쉬운 한국어 풀이. 답을 먼저 주지 않고 단계별로, 정답은 앱이 접어 둔다.
+const TUTOR_SYSTEM = `You are a patient English tutor for a Korean middle-school student. The user sends a photo of an English worksheet or test page (reading passages, grammar, vocabulary, ordering words, multiple choice) and asks for one kind of help. The student may have written answers or check marks on the page.
+Always answer in easy, friendly Korean (부드러운 존댓말 "~해요"), in short sentences; quote English words or sentences only when needed. Help the student understand and reason; never just hand over the answer.
+Output JSON:
+- problem: one line naming the problem you focus on (for example "1번 3) 요지 고르기"). If the request names a question number, focus on it; otherwise focus on the question the student marked or asked about; otherwise the whole page.
+- summary: one or two sentences saying what the passage or exercise is about.
+- translation: for kind "translate", a natural Korean translation of the passage or the sentence the student asked about (keep paragraph breaks); for other kinds, the Korean translation of only the key sentence(s) needed to solve the problem, or an empty string.
+- steps: 3 to 6 short steps that walk the student through solving the problem (what the question asks, where to look in the passage, how to rule out wrong choices, how to arrange the words). For kind "grammar", explain the grammar point step by step. For kind "ask", answer the student's question step by step.
+- grammar: 0 to 4 short grammar or vocabulary points worth remembering from this problem (for example "주어가 3인칭 단수이면 동사에 -s: Massage relaxes ... and aids ...").
+- answer: the correct answer with a one-line reason (for example "③ — 글 전체가 '접촉이 아기 성장에 도움이 된다'는 내용이에요"). For ordering problems give the full sentence. If you are not sure, say so.
+- checked: if the student's own answer or marks are visible, say in one or two sentences whether they are right and why (for example "✓한 ①은 지나친 일반화라 요지가 아니에요. 정답은 ③"); otherwise an empty string.
+- words: 5 to 8 words or phrases from the passage that a Korean middle-school student may not know, each with a short Korean meaning in workbook style, most useful first.
+- note: one short sentence if the photo is unclear or the request could not be fully answered, otherwise an empty string.`;
+const TUTOR_SCHEMA = {
+  type: "object",
+  properties: {
+    problem: { type: "string" },
+    summary: { type: "string" },
+    translation: { type: "string" },
+    steps: { type: "array", items: { type: "string" } },
+    grammar: { type: "array", items: { type: "string" } },
+    answer: { type: "string" },
+    checked: { type: "string" },
+    words: { type: "array", items: { type: "object", properties: { english: { type: "string" }, korean: { type: "string" } }, required: ["english", "korean"], additionalProperties: false } },
+    note: { type: "string" },
+  },
+  required: ["problem", "summary", "translation", "steps", "grammar", "answer", "checked", "words", "note"],
+  additionalProperties: false,
+};
+const TUTOR_REQUESTS = {
+  explain: "이 문제를 어떻게 푸는지 단계별로 설명해 주세요.",
+  translate: "이 사진의 지문(학생이 가리킨 문장이 있으면 그 문장)을 자연스러운 한국어로 해석해 주세요.",
+  grammar: "이 문제의 어법 포인트를 단계별로 설명해 주세요.",
+  check: "학생이 사진에 표시한 답이 맞는지 확인하고 이유를 설명해 주세요.",
+  ask: "학생의 질문에 단계별로 답해 주세요.",
+};
+function pickTutorModel(env) {
+  return ALLOWED_MODELS.includes(env.TUTOR_MODEL) ? env.TUTOR_MODEL : TUTOR_MODEL_DEFAULT;
 }
 
 // 2차 채점(/grade): 앱이 책의 뜻·허용 답안과 글자 그대로 맞지 않는 답만 보내면, ‘같은 뜻인가’를 판정한다.
@@ -404,6 +449,7 @@ export class FamilyStore {
     if (records && method === "GET") return this.records(records[1], url.searchParams);
     const setsSync = SETS_PATH.exec(url.pathname);
     if (setsSync && method === "POST") return this.syncSets(setsSync[1], await readBody());
+    if (url.pathname === "/question" && method === "POST") return this.addQuestion(await readBody());
     const childSets = CHILD_SETS_PATH.exec(url.pathname);
     if (childSets && !childSets[2] && method === "GET") return this.listSets(childSets[1]);
     if (childSets && !childSets[2] && method === "POST") return this.putSet(childSets[1], await readBody());
@@ -437,7 +483,13 @@ export class FamilyStore {
   async sync({ child, records, sets, anchor, device }) {
     const now = new Date().toISOString();
     const key = "child:" + child.id;
-    const current = (await this.storage.get(key)) || { id: child.id, createdAt: now, createdBy: "device", sets: [], recordCount: 0, devices: {} };
+    let current = await this.storage.get(key);
+    if (!current) {
+      // 보호자가 지운 아이(gone:<id> 묘비)는 연결돼 있던 기기가 기록을 보내도 되살리지 않는다. 그 밖의 모르는 아이는 옛 앱 호환으로 만든다.
+      if (await this.storage.get("gone:" + child.id))
+        return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 보호자 폰에서 아이를 다시 만들어 주세요." });
+      current = { id: child.id, createdAt: now, createdBy: "device", sets: [], recordCount: 0, devices: {} };
+    }
     const entries = {};
     let lastTestAt = current.lastTestAt || null;
     for (const r of records) {
@@ -450,12 +502,13 @@ export class FamilyStore {
       devices: registerDevice(current.devices, device, now),
       // 세트 동기화(/sets)를 시작한 아이는 서버가 계산한 요약이 기준이다(옛 앱이 보낸 이름·개수 목록으로 덮어쓰지 않는다).
       sets: current.setsSyncedAt ? current.sets || [] : sets === undefined ? current.sets || [] : sets,
-      ...(anchor ? { anchor: { ...anchor, updatedAt: now } } : {}),
+      ...(anchor?.words.length ? { anchor: { ...anchor, updatedAt: now } } : {}),
       updatedAt: now,
       lastTestAt,
       // 다시 보낸 기록도 세므로 대략값이다. 상한을 넘었을 때만 실제로 세어 정리한다.
       recordCount: (current.recordCount || 0) + records.length,
     };
+    if (anchor && !anchor.words.length) delete next.anchor; // 빈 앵커 = 기기에 수준 기준으로 쓸 세트가 없다(예제뿐): 옛 수준 기준을 지운다
     await this.putMany({ ...entries, [key]: next });
     for (const r of records) if (r.daily && !r.partial) await this.markDaily(child.id, r); // 오늘의 단어로 본 시험(중단 제외)이면 그날 것에 완료 표시
     let trimmed = 0;
@@ -498,11 +551,13 @@ export class FamilyStore {
     const c = await this.storage.get("child:" + childId);
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
     const records = [...(await this.storage.list({ prefix: this.recordPrefix(childId), reverse: true })).values()];
+    const questions = [...(await this.storage.list({ prefix: this.questionPrefix(childId), reverse: true, limit: QUESTIONS_IN_DETAIL })).values()];
     const { date: today } = kstNow();
     const daily = await this.storage.get(this.dailyKey(childId, today));
     return json(200, {
       child: { ...c, plan: this.planOf(c) },
       records,
+      questions,
       today: { date: today, exists: Boolean(daily), words: daily?.words || [], note: daily?.note || "", completed: daily?.completed || null },
     });
   }
@@ -512,7 +567,9 @@ export class FamilyStore {
     const keys = [...(await this.storage.list({ prefix: this.recordPrefix(childId) })).keys()];
     const dailies = [...(await this.storage.list({ prefix: "daily:" + childId + ":" })).keys()];
     const setKeys = [...(await this.storage.list({ prefix: this.setPrefix(childId) })).keys()];
-    await this.deleteMany([...keys, ...dailies, ...setKeys, "served:" + childId, "child:" + childId, ...(c.joinCode ? ["code:" + c.joinCode] : [])]);
+    const questionKeys = [...(await this.storage.list({ prefix: this.questionPrefix(childId) })).keys()];
+    await this.deleteMany([...keys, ...dailies, ...setKeys, ...questionKeys, "served:" + childId, "child:" + childId, ...(c.joinCode ? ["code:" + c.joinCode] : [])]);
+    await this.storage.put("gone:" + childId, { deletedAt: new Date().toISOString() }); // 연결돼 있던 기기의 /sync 가 아이를 되살리지 못하게 묘비를 남긴다
     return json(200, { ok: true, deleted: keys.length });
   }
   // ---- 아이 만들기·아이 코드·기기 연결 ----
@@ -585,6 +642,24 @@ export class FamilyStore {
       : await this.storage.list({ prefix, reverse: true, limit: limit + 1 });
     const all = [...listed.values()];
     return json(200, { records: all.slice(0, limit), more: all.length > limit, serverTime: new Date().toISOString() });
+  }
+  // ---- 문제 물어보기 질문 요약(보호자용) ----
+  // /tutor 가 연결된 아이 id 를 받으면 사진 없이 요약만 남긴다: q:<childId>:<askedAt>:<id>. 아이당 300개, 넘으면 오래된 것부터 지운다.
+  questionPrefix(childId) {
+    return "q:" + childId + ":";
+  }
+  async addQuestion({ childId, entry }) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
+    const now = new Date().toISOString();
+    const q = { ...entry, askedAt: entry.askedAt || now };
+    await this.storage.put({
+      [this.questionPrefix(childId) + q.askedAt + ":" + q.id]: q,
+      ["child:" + childId]: { ...c, questionCount: (c.questionCount || 0) + 1, lastQuestionAt: q.askedAt, updatedAt: now },
+    });
+    const all = await this.storage.list({ prefix: this.questionPrefix(childId) });
+    if (all.size > MAX_CHILD_QUESTIONS) await this.deleteMany([...all.keys()].slice(0, all.size - MAX_CHILD_QUESTIONS));
+    return json(200, { ok: true });
   }
   // ---- 세트 동기화(아이 단위) ----
   setPrefix(childId) {
@@ -902,7 +977,7 @@ function parseSync(body) {
       .map((s) => ({ name: clean(s?.name).slice(0, 120), count: Number.isInteger(s?.count) && s.count >= 0 ? Math.min(s.count, 5000) : 0 }))
       .filter((s) => s.name);
   }
-  let anchor;
+  let anchor; // 교재 앵커(수준 기준). words가 비어 있으면 ‘보낼 세트가 없다’는 뜻이라 저장된 앵커를 지운다. 아예 없으면 그대로 둔다.
   if (body.anchor !== undefined) {
     if (!body.anchor || typeof body.anchor !== "object" || !Array.isArray(body.anchor.words)) return { error: "anchor 형식이 올바르지 않습니다." };
     const words = [...new Set(body.anchor.words.map((w) => clean(w)).filter((w) => WORD_PATTERN.test(w)))].slice(0, MAX_ANCHOR_WORDS);
@@ -1281,6 +1356,78 @@ async function define(request, env, model, cors) {
   return json(200, { words: found, note, model: message.model || model, usage: usageOf(message) }, cors);
 }
 
+// 문제 물어보기: POST /tutor {image, mediaType, kind, question?, child?:{id}} → {kind, problem, summary, translation, steps, grammar, answer, checked, words:[{en,ko}], note, model, usage}.
+// 연결된 아이 id 가 오면 질문 요약(사진 없음)을 FamilyStore 에 남겨 보호자 상세에 보인다. 저장 실패는 답변에 영향을 주지 않는다.
+async function tutorHelp(request, env, cors) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json(400, { error: "bad_request", message: "JSON 본문이 필요합니다." }, cors);
+  }
+  const image = typeof body?.image === "string" ? body.image : "";
+  const mediaType = MEDIA_TYPES.includes(body?.mediaType) ? body.mediaType : "image/jpeg";
+  if (!image || !/^[A-Za-z0-9+/]+={0,2}$/.test(image))
+    return json(400, { error: "bad_request", message: "image 필드에 base64 사진이 필요합니다." }, cors);
+  if (image.length > MAX_IMAGE_BASE64)
+    return json(413, { error: "too_large", message: "사진이 너무 큽니다. 문제 부분만 나오도록 다시 찍어 주세요." }, cors);
+  const kind = TUTOR_KINDS.includes(body?.kind) ? body.kind : "explain";
+  const question = clean(body?.question).slice(0, MAX_TUTOR_QUESTION);
+  const childId = typeof body?.child?.id === "string" && CHILD_ID_PATTERN.test(body.child.id) ? body.child.id : "";
+  const model = pickTutorModel(env);
+  const outcome = await callAnthropic(env, model, {
+    model,
+    max_tokens: 4096,
+    system: TUTOR_SYSTEM,
+    output_config: { effort: "medium", format: { type: "json_schema", schema: TUTOR_SCHEMA } },
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: mediaType, data: image } },
+          { type: "text", text: `도움 종류: ${kind}\n${TUTOR_REQUESTS[kind]}` + (question ? `\n학생의 질문/요청: ${question}` : "") },
+        ],
+      },
+    ],
+  });
+  if (outcome.failure) return json(outcome.failure.status, outcome.failure.body, cors);
+  const read = readJsonMessage(outcome.message, cors, {
+    refused: "AI가 이 사진의 처리를 거부했습니다. 문제 부분만 나오도록 다시 찍어 주세요.",
+    truncated: "설명이 너무 길어 잘렸습니다. 문제 하나만 나오도록 찍어 주세요.",
+  });
+  if (read.response) return read.response;
+  const d = read.data || {};
+  const lines = (list, max, limit) => (Array.isArray(list) ? list : []).map((s) => clean(s).slice(0, limit)).filter(Boolean).slice(0, max);
+  const result = {
+    kind,
+    problem: clean(d.problem).slice(0, 120),
+    summary: clean(d.summary).slice(0, 400),
+    translation: String(d.translation ?? "").replace(/\r/g, "").trim().slice(0, 3000),
+    steps: lines(d.steps, 8, 400),
+    grammar: lines(d.grammar, 6, 300),
+    answer: clean(d.answer).slice(0, 400),
+    checked: clean(d.checked).slice(0, 400),
+    words: (Array.isArray(d.words) ? d.words : [])
+      .map((w) => ({ en: clean(w?.english).slice(0, 60), ko: clean(w?.korean).slice(0, 100) }))
+      .filter((w) => w.en && w.ko)
+      .slice(0, 10),
+    note: clean(d.note).slice(0, 200),
+  };
+  if (childId && env.FAMILY) {
+    try {
+      const stub = env.FAMILY.get(env.FAMILY.idFromName("family"));
+      await stub.fetch("https://family.internal/question", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ childId, entry: { id: crypto.randomUUID(), kind, question, problem: result.problem, summary: result.summary, askedAt: new Date().toISOString() } }),
+      });
+    } catch (e) {
+      console.error("tutor_log_failed", e?.name || "", e?.message || "");
+    }
+  }
+  return json(200, { ...result, model: outcome.message.model || model, usage: usageOf(outcome.message) }, cors);
+}
+
 // 단어 찾기: POST /lookup {word} → {found, en, suggestion, pos, ko, ipa, aliases, examples:[{en,ko}], similar, note, model, usage}.
 async function lookupWord(request, env, cors) {
   let body;
@@ -1413,7 +1560,7 @@ export default {
       (DAILY_PATH.test(path) && ["GET", "POST"].includes(request.method)) ||
       (SETTINGS_PATH.test(path) && request.method === "GET") ||
       (RECORDS_PATH.test(path) && request.method === "GET");
-    const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define", "/grade", "/lookup"].includes(path);
+    const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define", "/grade", "/lookup", "/tutor"].includes(path);
     if (!familyRoute && !aiRoute)
       return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." }, cors);
     const origin = request.headers.get("Origin");
@@ -1441,6 +1588,7 @@ export default {
     if (path === "/define") return define(request, env, model, cors);
     if (path === "/grade") return gradeAnswer(request, env, cors);
     if (path === "/lookup") return lookupWord(request, env, cors);
+    if (path === "/tutor") return tutorHelp(request, env, cors);
     return recognize(request, env, model, cors);
   },
 };

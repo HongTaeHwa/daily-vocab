@@ -2,6 +2,9 @@
 // (접속 코드가 없으면 대기 → 저장 뒤 자동 연결, 완료 전송, 연결 실패 → 재시작 후 재전송, 끄기, 연결 해제 → 재연결),
 // 보호자 폰은 보호자 코드로 ‘아이들’ 탭에서 아이를 만들고(코드·링크·이름·기기 표시) 아이별 기록을 본다(상세·틀린 단어·삭제·코드 삭제).
 // 세트 동기화: 연결하면 예제 세트 대신 아이의 세트를 받고, 보호자가 편집기로 만들어 보낸 세트가 아이 기기에 들어오며, 기기에서 지우면 서버에도 지워진다(마지막 세트 삭제 → 빈 상태).
+// 시험 중 AI가 인정한 답을 허용 답안에 학습하면 시험 중에는 /sets 를 보내지 않고 시험이 끝난 직후 한 번 올린다.
+// 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보내고, 동기화된 세트가 있으면 그 단어가 앵커가 되어 보호자 계획 상자에 보인다.
+// 보호자가 서버에서 아이를 지우면(404 unknown_child) 기기는 안내·연결 해제 강조 뒤 요청을 멈추고, 연결 해제 → 새 코드로 다시 연결한다.
 // 기록 복원: 연결하면 서버에 있던 이 아이의 기록이 요약 기록으로 기록 탭에 들어오고(다시 보내지 않음, 틀린 단어 다시 풀기), ‘서버 기록 다시 가져오기’는 겹치지 않게 여러 페이지를 받으며, 기록 전체 삭제 뒤에는 자동 복원하지 않는다.
 // Worker는 라우트로 가짜 응답을 준다.
 const { chromium } = require("playwright");
@@ -31,10 +34,11 @@ const { chromium } = require("playwright");
   const requests = [];
   const children = new Map(); // 가짜 가족 기록함(Worker의 FamilyStore 역할)
   const codes = new Map(); // 아이 코드 → childId
+  const gone = new Set(); // 보호자가 지운 아이 id(Worker의 gone:<id> 묘비): 그 id의 /sync 는 404 unknown_child
   let nextCode = 777777;
   const now = () => new Date().toISOString();
   const seedChild = (id, name, code) => {
-    children.set(id, { id, name, joinCode: code, devices: {}, sets: [], setStore: new Map(), records: new Map(), lastTestAt: null, createdBy: "parent" });
+    children.set(id, { id, name, joinCode: code, devices: {}, sets: [], setStore: new Map(), records: new Map(), questions: [], lastTestAt: null, createdBy: "parent" });
     codes.set(code, id);
     return children.get(id);
   };
@@ -42,12 +46,14 @@ const { chromium } = require("playwright");
   const liveSets = (c) => [...c.setStore.values()].filter((s) => !s.deletedAt);
   const setSummary = (c) => liveSets(c).map((s) => ({ id: s.id, name: s.name, count: s.words.length, updatedAt: s.updatedAt })).sort((a, b) => a.name.localeCompare(b.name, "ko"));
   seedChild(HANEUL, "하늘", HANEUL_CODE); // 보호자가 미리 만들어 둔 아이
+  children.get(HANEUL).questions.push({ id: "q1", kind: "grammar", question: "왜 aids 인가요?", problem: "UNT 02 2) 어법", summary: "주어가 3인칭 단수라 aids 가 맞아요.", askedAt: new Date(Date.now() - 3600000).toISOString() });
   const touchDevice = (c, device) => {
     if (device && device.id) c.devices[device.id] = { label: device.label || "기기", joinedAt: c.devices[device.id]?.joinedAt || now(), lastSeenAt: now() };
   };
   let mode = "ok";
   const summaryOf = (c) => ({
     id: c.id, name: c.name, joinCode: c.joinCode, devices: c.devices, sets: c.setStore ? setSummary(c) : c.sets, anchor: c.anchor, updatedAt: c.updatedAt, lastTestAt: c.lastTestAt,
+    questionCount: (c.questions || []).length, lastQuestionAt: (c.questions || [])[0]?.askedAt || null,
     plan: { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0 }, today: { date: "", exists: false, count: 0, completed: null },
     records: [...c.records.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt)),
   });
@@ -87,9 +93,13 @@ const { chromium } = require("playwright");
     }
     if (url.pathname === "/sync" && req.method() === "POST") {
       if (!familyOk) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
+      if (gone.has(body.child.id)) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 보호자 폰에서 아이를 다시 만들어 주세요." });
       const c = children.get(body.child.id) || { id: body.child.id, name: body.child.name, devices: {}, sets: [], records: new Map(), lastTestAt: null };
       if (body.sets) c.sets = body.sets;
-      if (body.anchor) c.anchor = body.anchor;
+      if (body.anchor) {
+        if (body.anchor.words.length) c.anchor = body.anchor;
+        else delete c.anchor; // 빈 앵커 = 수준 기준 삭제(Worker와 같은 규칙)
+      }
       touchDevice(c, body.device);
       c.updatedAt = now();
       for (const r of body.records) {
@@ -122,6 +132,12 @@ const { chromium } = require("playwright");
       return reply(route, 200, { ok: true, sets: pull, deleted: removed, summary: setSummary(c), syncedAt: c.updatedAt });
     }
     if (url.pathname.startsWith("/daily/")) return reply(route, 409, { error: "plan_disabled", message: "보호자가 아직 오늘의 단어를 켜지 않았어요." });
+    if (url.pathname === "/grade" && req.method() === "POST") {
+      // AI 2차 채점 가짜 응답: ‘비슷한뜻’만 같은 뜻으로 인정한다(시험 중 허용 답안 학습 → 시험 뒤 세트 동기화 확인용)
+      if (!familyOk) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
+      const accept = body.answer === "비슷한뜻";
+      return reply(route, 200, { accept, reason: accept ? "같은 뜻으로 인정" : "다른 뜻이에요", model: "claude-haiku-5-5", usage: {} });
+    }
     const cm = /^\/family\/children$/.test(url.pathname) && req.method() === "POST";
     const am = /^\/family\/([A-Za-z0-9-]+)\/(plan|code|name)$/.exec(url.pathname);
     const m = /^\/family(?:\/([A-Za-z0-9-]+))?$/.exec(url.pathname);
@@ -168,10 +184,11 @@ const { chromium } = require("playwright");
     if (req.method() === "DELETE") {
       children.delete(m[1]);
       codes.delete(c.joinCode);
+      gone.add(m[1]);
       return reply(route, 200, { ok: true, deleted: c.records.size });
     }
     const s = summaryOf(c);
-    return reply(route, 200, { child: { ...s, records: undefined, today: undefined }, records: s.records, today: s.today });
+    return reply(route, 200, { child: { ...s, records: undefined, today: undefined }, records: s.records, today: s.today, questions: c.questions || [] });
   });
   const syncs = () => requests.filter((r) => r.path === "/sync");
   const joins = () => requests.filter((r) => r.path === "/join");
@@ -229,7 +246,7 @@ const { chromium } = require("playwright");
   const first = syncs()[0];
   assert(first.body.child.id === HANEUL && first.body.child.name === "하늘" && first.body.device.id === device.id, "registration carries the joined child and device");
   assert(first.body.records.length === 0 && first.body.sets.length === 1 && first.body.sets[0].count === 40, "registration carries sets, no records");
-  assert(first.body.anchor && first.body.anchor.words.length === 40, "anchor words sent");
+  assert(first.body.anchor && first.body.anchor.setName === "" && first.body.anchor.words.length === 0, "untouched example set is not sent as the level anchor (empty anchor): " + JSON.stringify(first.body.anchor));
   const local = await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")));
   assert(local.childId === HANEUL && local.joinCode === HANEUL_CODE && !local.pendingCode && local.sendEnabled === true && local.deviceId === device.id, "family state stored: " + JSON.stringify(local));
   // 세트 동기화: 손대지 않은 예제 세트는 올리지도 알리지도 않고, 서버의 세트를 받으면 예제 대신 그 세트만 남는다
@@ -332,6 +349,7 @@ const { chromium } = require("playwright");
   assert(Number.isInteger(rec.activeMs) && rec.activeMs >= 0 && Number.isFinite(Date.parse(rec.completedAt)) && typeof rec.id === "string", "activeMs/completedAt/id");
   assert(rec.awayCount === 1 && rec.awayMs >= 1000, "away count sent: " + JSON.stringify([rec.awayCount, rec.awayMs]));
   assert(!JSON.stringify(sent).includes('"results"') && !JSON.stringify(sent).includes('"aliases"'), "full per-word results are not sent");
+  assert(sent.anchor && sent.anchor.setName === "하늘 DAY04" && sent.anchor.words.length === 40 && sent.anchor.words.includes("authority"), "level anchor from the child's synced set: " + JSON.stringify(sent.anchor).slice(0, 80));
   await waitFor(() => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).pending.length === 0), "pending cleared after the response");
   assert((await page.evaluate(() => historyRecords[0].activeMs)) >= 0, "record stores activeMs locally");
 
@@ -392,6 +410,32 @@ const { chromium } = require("playwright");
   assert((await page.textContent("#childName")) === "하늘", "linked again as the same child");
   assert(syncs().slice(4).some((r) => r.body.records.length >= 1), "history resent after re-joining");
 
+  // 시험 중에 AI 2차 채점이 인정한 답을 허용 답안에 학습하면 세트가 바뀌지만, 시험 중에는 /sets 를 보내지 않고 시험이 끝난 직후 한 번 올린다
+  await waitFor(() => page.evaluate(() => !setsSyncInFlight && Boolean(JSON.parse(localStorage.getItem("daily_vocab_family_v1")).setsSyncedAt)), "set sync settled after re-joining");
+  const setSyncsBefore = requests.filter((r) => r.path === "/sets/" + HANEUL).length;
+  await page.click("#tabHome");
+  await page.click('[data-mode="en_ko"]');
+  await page.selectOption("#range", "0");
+  await page.uncheck("#shuffle");
+  await page.click("#start");
+  const learnedEn = await page.evaluate(() => question.w.en);
+  await page.fill("#answerInput", "비슷한뜻");
+  await page.click("#check");
+  await waitFor(() => page.evaluate(() => question.aiPass === true), "AI accepted the answer");
+  assert(await page.evaluate((en) => sets[0].words.find((w) => w.en === en).aliases.includes("비슷한뜻"), learnedEn), "accepted answer learned into the set during the quiz");
+  await new Promise((r) => setTimeout(r, 400));
+  assert(requests.filter((r) => r.path === "/sets/" + HANEUL).length === setSyncsBefore, "no set sync while the quiz is running");
+  await page.click("#next");
+  for (let i = 0; i < 9; i++) {
+    await page.click("#unknown");
+    await page.click("#next");
+  }
+  assert(await page.isVisible("#finish"), "quiz with the learned alias finished");
+  await waitFor(() => requests.filter((r) => r.path === "/sets/" + HANEUL).length === setSyncsBefore + 1, "set sync sent right after the quiz ends");
+  const learnedSync = requests.filter((r) => r.path === "/sets/" + HANEUL).slice(-1)[0].body;
+  assert(learnedSync.sets.length === 1 && learnedSync.sets[0].id === "haneul-day04" && learnedSync.sets[0].words.find((w) => w.en === learnedEn).aliases.includes("비슷한뜻"), "learned alias uploaded with the set: " + JSON.stringify(learnedSync.sets.map((s) => s.id)));
+  await waitFor(() => syncs().some((r) => r.body.records.some((x) => x.aiPass === 1 && x.correct === 1 && x.total === 10)), "record with the AI-accepted answer synced");
+
   // 아이 기기에는 보호자 코드 칸이 보이지 않는다. 보호자 화면(?mode=parent)으로 열어야 나타난다.
   assert(await page.isHidden("#parentBox"), "no parent-code box on a child device");
   await page.goto(url + "?mode=parent");
@@ -424,20 +468,21 @@ const { chromium } = require("playwright");
   assert((await page.isHidden("#tabHome")) && (await page.isHidden("#tabHistory")), "child tabs hidden");
   assert(await page.isVisible("#familyMain") && (await page.isHidden("#parentSetup")), "overview shown once the code exists");
 
-  // 아이들 화면: 카드(오늘 3회 = 완료 1 + 중단 2, 재연결 때 보내기가 꺼져 있던 기록도 올라감; 연결 기기), 상세(코드·링크·기기·기록·틀린 단어)
+  // 아이들 화면: 카드(오늘 4회 = 완료 2 + 중단 2, 재연결 때 보내기가 꺼져 있던 기록도 올라감; 연결 기기), 상세(코드·링크·기기·기록·틀린 단어·수준 기준)
   await page.click("#tabFamily");
   assert(await page.isVisible("#family") && (await page.isHidden("#settings")), "family view");
   await waitFor(() => statusHas("familyLoadStatus", "방금 확인했어요"), "family loaded");
   const overview = await page.textContent("#familyOverview");
-  assert(overview.includes("🧒 하늘") && overview.includes("오늘 시험 ✅ 3회") && overview.includes("이번 주 3회") && overview.includes("⚠️ 화면 이탈 1회"), "overview row: " + overview);
+  assert(overview.includes("🧒 하늘") && overview.includes("오늘 시험 ✅ 4회") && overview.includes("이번 주 4회") && overview.includes("⚠️ 화면 이탈 1회"), "overview row: " + overview);
   const card = await page.textContent("#childrenList");
-  assert(card.includes("하늘") && card.includes("오늘 ✅ 3회") && card.includes("최근 7일 3회") && card.includes("마지막 시험") && /연결 기기: .+ 1/.test(card), "child card: " + card);
+  assert(card.includes("하늘") && card.includes("오늘 ✅ 4회") && card.includes("최근 7일 4회") && card.includes("마지막 시험") && /연결 기기: .+ 1/.test(card), "child card: " + card);
   assert(card.includes("⚠️ 오늘 화면 이탈 1회"), "card warns about today's away episodes");
+  assert(card.includes("📷 물어본 문제 1개"), "card shows the tutor question count");
   assert((await page.$$eval("#childrenList .day", (d) => d.length)) === 7, "seven day cells");
   assert((await page.$$eval("#childrenList .day.done", (d) => d.length)) === 1, "today marked done");
   await page.click("#childrenList button");
   await waitFor(() => requests.some((r) => r.path === "/family/" + HANEUL && r.method === "GET"), "detail requested");
-  await waitFor(() => page.evaluate(() => document.querySelectorAll("#childRecords .history-entry").length === 6), "six records in detail (three from this device, three older ones)");
+  await waitFor(() => page.evaluate(() => document.querySelectorAll("#childRecords .history-entry").length === 7), "seven records in detail (four from this device, three restored from the server)");
   assert((await page.textContent("#childCodeText")) === "483 921", "code shown in the detail");
   assert((await page.textContent("#childLinkText")) === url + "?child=" + HANEUL_CODE, "child link shown: " + (await page.textContent("#childLinkText")));
   assert((await page.textContent("#deviceList")).includes("연결된 기기: "), "device list shown");
@@ -445,13 +490,17 @@ const { chromium } = require("playwright");
   assert(missedTop.includes("authority") && missedTop.includes("3회") && missedTop.includes("권위"), "most-missed words: " + missedTop);
   assert((await page.$$eval("#missedTop .chip", (c) => c.length)) === 10, "top ten chips");
   const detail = await page.textContent("#childDetail");
-  assert(detail.includes("시험 6회") && detail.includes("중단") && detail.includes("0 / 10") && detail.includes("세트 1개"), "detail summary: " + detail);
+  assert(detail.includes("시험 7회") && detail.includes("중단") && detail.includes("0 / 10") && detail.includes("세트 1개"), "detail summary: " + detail);
   assert(detail.includes("⚠️ 문제 중 화면 이탈 1회"), "record shows the away flag: " + detail.slice(0, 200));
+  assert((await page.textContent("#planAnchor")).includes("하늘 DAY04") && (await page.textContent("#planAnchor")).includes("40단어"), "level anchor shown from the child's synced set: " + (await page.textContent("#planAnchor")));
   await page.click("#childRecords .history-entry:nth-child(2) summary");
   assert((await page.textContent("#childRecords")).includes("authority — 권위"), "missed words shown");
 
   // 세트 상자: 아이 세트 목록 → ‘세트 만들어 보내기’는 보호자 모드에서도 편집 화면을 연다 → 저장하면 기기가 아니라 아이의 세트로 서버에 보내고 상세로 돌아온다
   assert((await page.textContent("#childSets")).includes("하늘 DAY04 · 40단어"), "child sets listed: " + (await page.textContent("#childSets")));
+  await waitFor(() => page.evaluate(() => document.getElementById("childQuestions").textContent.includes("UNT 02 2) 어법")), "tutor questions listed in the detail");
+  const questionsText = await page.textContent("#childQuestions");
+  assert(questionsText.includes("어법 설명") && questionsText.includes("왜 aids 인가요?") && questionsText.includes("3인칭 단수") && (await page.textContent("#childQuestionCount")) === "1개", "question row: " + questionsText);
   await page.click("#sendNewSet");
   await waitFor(() => page.isVisible("#editor"), "editor opens in the parent mode for the child's set");
   assert((await page.textContent("#editorTitle")).includes("하늘에게 보내기") && (await page.isHidden("#manageBox")), "editor titled for the child without the rename/delete box");
@@ -563,8 +612,47 @@ const { chromium } = require("playwright");
   await page.click("#tabHistory");
   assert((await page.evaluate(() => document.getElementById("historyFilter").value)) === "all", "history filter falls back to all sets");
 
+  // 보호자가 (다른 폰에서) 서버에서 아이를 지우면: 기기는 404 unknown_child 를 받아 안내하고 연결 해제를 강조하며 같은 요청을 반복하지 않는다 → 연결 해제 → 새 아이 코드로 다시 연결
+  children.delete(HANEUL);
+  codes.delete(HANEUL_CODE);
+  gone.add(HANEUL);
+  await page.reload();
+  await waitFor(() => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).childGone === true), "child marked gone after 404 unknown_child");
+  await page.click("#tabSettings");
+  await openFamilySettings();
+  const goneText = await page.textContent("#familyStatus");
+  assert(goneText.includes("서버에서 지웠어요") && goneText.includes("새로 만든 아이 코드로 다시 연결"), "gone message: " + goneText);
+  assert((await page.textContent("#familyState")).includes("서버에서 지워짐"), "pill shows the gone state");
+  assert(await page.$eval("#unlinkChild", (b) => b.classList.contains("attention")), "unlink button highlighted");
+  assert(await page.isDisabled("#syncNow"), "send-now disabled while the child is gone");
+  assert((await page.textContent("#setsSyncText")).includes("서버에서 지워서"), "sets line explains: " + (await page.textContent("#setsSyncText")));
+  const goneCount = requests.length;
+  await page.evaluate(() => {
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("online"));
+    flushFamilySync({ force: true });
+    syncSets({ force: true });
+    checkDaily({ force: true });
+    fetchSettings({ force: true });
+    queueSetsSync();
+  });
+  await new Promise((r) => setTimeout(r, 600));
+  assert(requests.length === goneCount, "no further requests while the child is gone: " + JSON.stringify(requests.slice(goneCount).map((r) => r.method + " " + r.path)));
+  page.once("dialog", (d) => d.accept());
+  await page.click("#unlinkChild");
+  assert((await page.isVisible("#joinBox")) && !(await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).childGone)), "unlinked and the gone flag cleared");
+  assert(!(await page.$eval("#unlinkChild", (b) => b.classList.contains("attention"))), "highlight removed after unlinking");
+  const HANEUL2 = "66666666-7777-4888-8999-000000000000";
+  seedChild(HANEUL2, "하늘", "222333"); // 보호자가 아이를 새로 만들었다
+  await page.fill("#childCode", "222333");
+  await page.click("#joinChild");
+  await waitFor(() => statusHas("familyStatus", "마지막 전송"), "re-joined with the new code and synced");
+  assert((await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).childId)) === HANEUL2, "linked to the new child");
+  assert((await page.textContent("#familyState")).includes("켜짐"), "state pill back on");
+  assert(syncs().slice(-1)[0].body.child.id === HANEUL2 && syncs().slice(-1)[0].body.records.length >= 1 || syncs().some((r) => r.body.child.id === HANEUL2 && r.body.records.length >= 1), "history resent to the new child");
+
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, no auto-restore after clearing) + set sync (pull on join, parent send/edit/delete, device delete, empty state) + parent dashboard (add child, code/link, rename, regen, cards/detail/delete)");
+  console.log("PASS: child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, no auto-restore after clearing) + set sync (pull on join, parent send/edit/delete, device delete, empty state) + parent dashboard (add child, code/link, rename, regen, cards/detail/delete) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin");
   await browser.close();
 })().catch((e) => {
   console.error(e);

@@ -1062,6 +1062,7 @@ function renderLookup() {
   $("lookupQuiz").disabled = sessionRunning || !sets.some((s) => s.id === LOOKUP_SET_ID && s.words.length);
   const box = $("lookupRecent");
   box.textContent = "";
+  renderTutorHistory();
   if (!lookups.length) {
     box.textContent = "아직 찾아본 단어가 없어요. 위에서 단어를 찾으면 여기에 쌓여요.";
     return;
@@ -1179,6 +1180,210 @@ $("lookupQuiz").onclick = () => {
   showView("home");
   status(`‘${LOOKUP_SET_NAME}’ 세트를 골랐어요. 방식과 범위를 고르고 ▶ 시작을 누르세요.`);
 };
+
+// ---- 문제 물어보기 (🔍 찾기 탭): 문제지 사진 + 도움 종류 → Worker /tutor → 요약·해석·풀이·어법·정답(접힘)·단어 후보 ----
+// 저장 키 daily_vocab_tutor_v1 = [{id, kind, question, problem, summary, translation, steps, grammar, answer, checked, words, note, askedAt}] (최신순, 최대 100, 이 기기에만).
+// 사진은 읽는 동안만 전송하고 저장하지 않는다. 연결된 아이 기기는 요청에 child.id 를 넣어 Worker가 질문 요약(사진 없음)을 보호자용으로 남긴다.
+const TUTOR_KEY = "daily_vocab_tutor_v1";
+const TUTOR_LIMIT = 100;
+const TUTOR_TIMEOUT_MS = 120000;
+const TUTOR_KIND_LABELS = { explain: "풀이 설명", translate: "해석", grammar: "어법 설명", check: "내 답 확인", ask: "직접 질문" };
+function readTutorHistory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(TUTOR_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((x) => x && typeof x.id === "string" && typeof x.askedAt === "string").slice(0, TUTOR_LIMIT) : [];
+  } catch {
+    return [];
+  }
+}
+let tutorHistory = readTutorHistory();
+let tutorFile = null, tutorKind = "explain", tutorAbort = null, tutorPreviewUrl = "";
+function writeTutorHistory() {
+  try {
+    localStorage.setItem(TUTOR_KEY, JSON.stringify(tutorHistory));
+  } catch {}
+}
+function setTutorFile(file) {
+  tutorFile = file || null;
+  if (tutorPreviewUrl) {
+    URL.revokeObjectURL(tutorPreviewUrl);
+    tutorPreviewUrl = "";
+  }
+  const box = $("tutorPreview");
+  box.textContent = "";
+  if (!tutorFile) return;
+  tutorPreviewUrl = URL.createObjectURL(tutorFile);
+  const img = document.createElement("img");
+  img.className = "thumb";
+  img.src = tutorPreviewUrl;
+  img.alt = "문제 사진";
+  box.append(img);
+  setFeedback($("tutorStatus"), "info", "사진을 선택했어요. 도움 종류를 고르고 ‘물어보기’를 누르세요.");
+}
+$("tutorPick").onclick = () => $("tutorPhoto").click();
+$("tutorShoot").onclick = () => $("tutorCamera").click();
+$("tutorPhoto").onchange = () => {
+  setTutorFile($("tutorPhoto").files[0]);
+  $("tutorPhoto").value = "";
+};
+$("tutorCamera").onchange = () => {
+  setTutorFile($("tutorCamera").files[0]);
+  $("tutorCamera").value = "";
+};
+document.querySelectorAll(".tutor-kinds .kind").forEach((b) =>
+  b.addEventListener("click", () => {
+    tutorKind = b.dataset.kind;
+    document.querySelectorAll(".tutor-kinds .kind").forEach((x) => {
+      const on = x === b;
+      x.classList.toggle("active", on);
+      x.setAttribute("aria-pressed", String(on));
+    });
+  }),
+);
+function renderTutorAnswer(a) {
+  $("tutorAnswer").classList.remove("hidden");
+  $("tutorProblem").textContent = [a.problem, TUTOR_KIND_LABELS[a.kind] || a.kind, a.question ? `질문: ${a.question}` : ""].filter(Boolean).join(" · ");
+  $("tutorSummary").textContent = a.summary || "";
+  $("tutorTranslationBox").classList.toggle("hidden", !a.translation);
+  $("tutorTranslation").textContent = a.translation || "";
+  const ol = $("tutorSteps");
+  ol.textContent = "";
+  for (const s of a.steps || []) {
+    const li = document.createElement("li");
+    li.textContent = s;
+    ol.append(li);
+  }
+  $("tutorGrammarBox").classList.toggle("hidden", !(a.grammar || []).length);
+  const ul = $("tutorGrammar");
+  ul.textContent = "";
+  for (const g of a.grammar || []) {
+    const li = document.createElement("li");
+    li.textContent = g;
+    ul.append(li);
+  }
+  $("tutorChecked").classList.toggle("hidden", !a.checked);
+  $("tutorChecked").textContent = a.checked || "";
+  $("tutorAnswerBox").open = false; // 정답은 접어 둔다: 먼저 생각하고 연다
+  $("tutorAnswerText").textContent = a.answer || "";
+  const chips = $("tutorWords");
+  chips.textContent = "";
+  for (const w of a.words || []) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    const inSet = lookupSetNumber(w.en) !== null;
+    chip.textContent = `${w.en} — ${w.ko}${inSet ? " ✓" : ""}`;
+    chip.disabled = inSet;
+    chip.addEventListener("click", () => {
+      const entry = rememberLookup({ en: w.en, ko: w.ko, ipa: "", pos: "", aliases: [], examples: [], similar: [], note: "" });
+      const saved = addToLookupSet(entry);
+      chip.textContent = `${w.en} — ${w.ko} ✓`;
+      chip.disabled = true;
+      renderLookup();
+      setFeedback($("tutorStatus"), "good", `‘${w.en}’을(를) ‘${LOOKUP_SET_NAME}’ 세트 ${saved.number}번에 넣었어요.`);
+    });
+    chips.append(chip);
+  }
+  if (!(a.words || []).length) chips.textContent = "어려운 단어 후보가 없어요.";
+  $("tutorNote").textContent = a.note || "";
+}
+function renderTutorHistory() {
+  $("tutorCount").textContent = tutorHistory.length + "개";
+  const box = $("tutorHistory");
+  box.textContent = "";
+  if (!tutorHistory.length) {
+    box.textContent = "아직 물어본 문제가 없어요.";
+    return;
+  }
+  for (const h of tutorHistory.slice(0, 30)) {
+    const row = document.createElement("div");
+    row.className = "lookup-row";
+    const main = document.createElement("div");
+    main.className = "row-main";
+    const title = document.createElement("strong");
+    title.textContent = h.problem || "(문제)";
+    const kind = document.createElement("span");
+    kind.textContent = (TUTOR_KIND_LABELS[h.kind] || h.kind) + (h.question ? ` · ${h.question}` : "");
+    const meta = document.createElement("small");
+    meta.textContent = new Date(h.askedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    main.append(title, kind, meta);
+    main.addEventListener("click", () => {
+      renderTutorAnswer(h);
+      $("tutorAnswer").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    row.append(main);
+    box.append(row);
+  }
+}
+async function askTutor() {
+  if (tutorAbort) return;
+  const out = $("tutorStatus");
+  if (!tutorFile) {
+    setFeedback(out, "bad", "먼저 문제 사진을 고르거나 찍어 주세요.");
+    return;
+  }
+  const config = aiConfig();
+  if (!config) {
+    setFeedback(out, "bad", "AI 선생님을 쓰려면 보호자가 설정 → ‘보호자 설정 · AI 연결’에서 접속 코드를 저장해야 해요.");
+    return;
+  }
+  const question = $("tutorQuestion").value.trim().slice(0, 300);
+  const kind = question && tutorKind === "explain" ? "ask" : tutorKind;
+  const controller = new AbortController();
+  let timedOut = false;
+  tutorAbort = () => controller.abort();
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, TUTOR_TIMEOUT_MS);
+  $("tutorAsk").disabled = true;
+  $("tutorCancel").disabled = false;
+  setFeedback(out, "info", "사진을 읽고 설명을 만드는 중… (10~30초 걸려요)");
+  try {
+    const image = await canvasToBase64Jpeg(await preparePhoto(tutorFile));
+    if (controller.signal.aborted) throw Error("취소");
+    const linked = typeof isLinked === "function" && isLinked() && typeof family === "object" && family?.childId;
+    const r = await aiRequest(config, "/tutor", { image, mediaType: "image/jpeg", kind, question, ...(linked ? { child: { id: family.childId } } : {}) }, controller.signal);
+    const entry = {
+      id: crypto.randomUUID(),
+      kind: typeof r.kind === "string" ? r.kind : kind,
+      question,
+      problem: clean(r.problem),
+      summary: clean(r.summary),
+      translation: typeof r.translation === "string" ? r.translation.trim() : "",
+      steps: (Array.isArray(r.steps) ? r.steps : []).map(clean).filter(Boolean),
+      grammar: (Array.isArray(r.grammar) ? r.grammar : []).map(clean).filter(Boolean),
+      answer: clean(r.answer),
+      checked: clean(r.checked),
+      words: (Array.isArray(r.words) ? r.words : []).filter((w) => w && typeof w.en === "string" && typeof w.ko === "string").map((w) => ({ en: clean(w.en), ko: clean(w.ko) })).filter((w) => w.en && w.ko),
+      note: clean(r.note),
+      askedAt: new Date().toISOString(),
+    };
+    tutorHistory = [entry, ...tutorHistory].slice(0, TUTOR_LIMIT);
+    writeTutorHistory();
+    renderTutorAnswer(entry);
+    renderTutorHistory();
+    setFeedback(out, "good", "설명을 준비했어요. 먼저 풀이를 읽고 답을 정한 뒤 ‘정답 보기’를 열어 보세요.");
+    $("tutorAnswer").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    setFeedback(
+      out,
+      "bad",
+      timedOut
+        ? "시간이 너무 오래 걸려 멈췄어요. 문제 하나만 나오게 찍어 다시 시도해 주세요."
+        : controller.signal.aborted
+          ? "취소했어요."
+          : "설명을 만들지 못했어요: " + (e?.message || e) + (e?.status === 404 ? " 보호자가 Worker를 새 버전으로 다시 배포해 주세요." : ""),
+    );
+  } finally {
+    clearTimeout(timer);
+    tutorAbort = null;
+    $("tutorAsk").disabled = false;
+    $("tutorCancel").disabled = true;
+  }
+}
+$("tutorAsk").onclick = askTutor;
+$("tutorCancel").onclick = () => tutorAbort?.();
 
 if (typeof initFamily === "function") initFamily(); // family.js: 가족 기록함(아이 이름·기록 보내기·아이들 탭)
 

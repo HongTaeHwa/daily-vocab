@@ -1,10 +1,10 @@
-const CACHE = "daily-vocab-shell-v22";
+const CACHE = "daily-vocab-shell-v26";
 const SHELL = [
   "./",
   "./index.html",
-  "./quiz.js?v=20261018-13",
-  "./family.js?v=20261018-13",
-  "./sets.js?v=20261018-13",
+  "./quiz.js?v=20261018-17",
+  "./family.js?v=20261018-17",
+  "./sets.js?v=20261018-17",
   "./manifest.webmanifest",
   "./parent.html",
   "./manifest-parent.webmanifest",

@@ -289,7 +289,27 @@
 - 보호자 모드에서는 `#tabLookup`이 숨고 `showView("lookup")`은 아이들 화면으로 간다. 시험 중에는 탭 바가 숨는다. 예문은 세트 단어 형식에 없으므로 찾기 기록에만 남는다(세트 편집기로 고쳐도 사라지지 않음).
 - 테스트: `tests/worker.cjs` lookup 절, `tests/ai-recognition.cjs` 찾기 흐름, `tests/family.cjs` 탭 숨김. 버전 `20261018-12`, 캐시 v21(11/v20은 같은 날 병행 작업용으로 비움). Worker 재배포 필요.
 
-## 18. 기록 복원 — 새 기기·재설치 뒤 기록 탭 채우기 (2026-10-18)
+## 18. 문제 물어보기 — 문제지 사진으로 AI 선생님에게 묻기 (2026-10-18)
+
+배경: EBS 독해·어법 복습 테스트처럼 지문·어법·요지 문제를 풀다 막히면 앱 밖에서 답을 찾아야 했다. 사용자 요청: 사진으로 묻고 AI가 도와주기. 결정(사용자 확인): **정답은 접어 두고 풀이 먼저**, **질문 요약은 보호자에게도** 보이게.
+
+- **Worker `POST /tutor`**: `{image, mediaType, kind(explain|translate|grammar|check|ask), question?, child?:{id}}` → `TUTOR_SYSTEM`(인내심 있는 중학생 영어 선생님, 쉬운 존댓말, 답을 바로 주지 않고 단계별로) + `TUTOR_REQUESTS[kind]` + 학생 질문 → `TUTOR_SCHEMA` `{problem, summary, translation, steps, grammar, answer, checked, words, note}`. 모델 `TUTOR_MODEL`(기본 sonnet, effort medium, max_tokens 4096), 사진 8MB 상한(recognize 와 같음). 결과는 길이 제한으로 정리하고 `translation`만 줄바꿈을 보존한다.
+- **질문 요약 저장**: `child.id`가 오고 FAMILY 가 있으면 Worker 가 DO `/question`에 `{id, kind, question, problem, summary, askedAt}`을 남긴다(키 `q:<childId>:<askedAt>:<id>`, 아이당 300개, 아이 항목에 `questionCount/lastQuestionAt`). 저장 실패는 답변에 영향 없음. 사진은 저장하지 않는다. `GET /family/<id>`가 `questions`(최신 100)를 돌려주고 아이 삭제 시 함께 지운다.
+- **앱(sets.js, 찾기 탭 📷 카드)**: 사진 고르기/촬영(한 장, `preparePhoto`·`canvasToBase64Jpeg` 재사용) → 도움 종류 버튼(`.tutor-kinds .kind`, quiz 의 `.mode`와 분리) + 직접 질문(있고 종류가 explain 이면 `ask`) → `askTutor`(120초, 취소) → `renderTutorAnswer`: 요약·해석(있을 때)·풀이 단계·기억할 포인트·내 답 확인(있을 때)·**정답 `<details>` 접힘**·단어 후보 칩(누르면 `addToLookupSet` → ‘찾아본 단어’ 세트, 이미 있으면 ✓ 비활성)·메모. 기록은 `daily_vocab_tutor_v1`(최근 100, 기기만)에 남고 📒 물어본 문제에서 다시 볼 수 있다. 연결된 기기는 `child.id`를 보낸다.
+- **보호자(family.js)**: 아이 카드에 ‘📷 물어본 문제 N개 · 마지막 …’, 상세에 📷 물어본 문제 목록(문제·종류·질문·시각·요약). 어떤 유형을 자주 묻는지 보는 용도.
+- 시험 중에는 찾기 탭이 숨어 쓸 수 없다. 보호자가 끄는 스위치는 다음 단계. 테스트: `tests/worker.cjs` tutor 절(+ 질문 요약 저장·삭제), `tests/ai-recognition.cjs` 물어보기 흐름, `tests/family.cjs` 보호자 목록. 버전 `20261018-15`, 캐시 v24(13·14/v22·v23은 병행 PR #28·#29용). Worker 재배포 필요.
+
+## 19. 전반 점검 보완 — 작은 결함 4건 (2026-10-18)
+
+점검에서 나온 작은 결함 네 가지를 한 PR로 고쳤다. 버전 `20261018-13`, 캐시 v22(11/v20은 17절의 단어 찾기가 먼저 머지되어 건너뜀), 갤럭시 앱 v1.3(versionCode 4). Worker 재배포 필요(`/sync`의 빈 앵커 삭제·지운 아이 묘비).
+
+- **갤럭시 앱의 파일 선택기가 JSON을 막음**: `onShowFileChooser`가 늘 `image/*`로 열어 설정의 ‘JSON 가져오기’(`<input accept="application/json">`)에서 .json을 고를 수 없었다. `params.acceptTypes`를 MIME로 바꿔(`acceptedMimeTypes`, `.json` → `application/json`) 사진이면 전처럼 사진·카메라, 그 밖이면 요청한 종류를 기본으로 하되 `EXTRA_MIME_TYPES`에 `*/*`를 함께 넣어 파일 관리자가 .json을 `text/plain` 등으로 보고해도 고를 수 있게 했다(내용 검사는 웹앱 `importSets`가 한다). 선택기 제목 ‘파일 선택’. 앱에 `DownloadListener`가 없어 ‘전체 백업 JSON’ 내려받기는 앱 안에서 동작하지 않을 수 있다(실기기 미확인, 세트는 세트 동기화로 받으므로 급하지 않음).
+- **시험 중 생긴 세트 변경이 늦게 올라감**: `syncSets`는 시험 중 건너뛰므로 `learnAlias`(AI가 인정한 답을 허용 답안에 추가)의 `queueSetsSync`가 다음 화면 복귀(10분 간격)나 앱 재시작까지 미뤄졌다. 시험 중의 강제 동기화 요청은 `setsSyncDeferred`로 표시만 하고, quiz.js가 완료(`complete`)·그만하기(`stopQuiz`)·쉬기(`pauseQuiz`)에서 `sessionRunning`을 끈 뒤 `notifyQuizEnded` → family.js `onQuizEnded`가 한 번 `syncSets({force:true})`를 부른다.
+- **세트가 없는 아이의 수준 기준이 예제로 남음**: `anchorPayload`가 손대지 않은 기본 예제(`isUntouchedExample`)를 후보에서 빼고, 보낼 세트가 없으면 `{setName:"", words:[]}`를 보낸다. Worker `sync()`는 `words`가 빈 앵커를 받으면 저장된 `anchor`를 지우고(앵커를 아예 안 보내면 그대로), 보호자 계획 상자는 ‘수준 기준 세트가 아직 없어요’를 보인다. 옛 Worker는 빈 앵커를 빈 목록으로 저장하므로 결과는 같다(`words.length` 0).
+- **서버에서 지운 아이의 기기 안내**: 기기가 `/sync`·`/sets`·`/settings`·`/daily`에서 404 `unknown_child`를 받으면 `noteChildGone`이 `family.childGone`을 켜고, 설정의 가족 기록함에 ‘보호자가 이 아이를 서버에서 지웠어요. … 새로 만든 아이 코드로 다시 연결하세요’(상태 칩 ‘서버에서 지워짐’, 연결 해제 버튼 강조 `.btn.attention`, 세트 줄 안내)를 보이며 그 뒤 기록·세트·설정·오늘의 단어 요청을 모두 멈춘다(`syncReady`·`setsSyncReady`·`fetchSettings`·`checkDaily`). 연결 해제나 재연결(`joinChild`)이 풀어 주고 그동안의 기록은 재연결 때 올라간다. `checkDaily`의 옛 ‘다시 등록’(`flushFamilySync` 재시도)은 없앴다 — 아이 코드 체계에서는 코드 없는 유령 아이만 만들었다. Worker는 `/sync`가 모르는 id를 만들던 옛 앱 호환 때문에 지운 아이가 되살아날 수 있었으므로, 아이를 지울 때 `gone:<childId>` 묘비를 남겨 그 id의 `/sync`만 404 `unknown_child`로 거절한다(모르는 새 id는 계속 만든다).
+- 테스트: `tests/worker.cjs`(빈 앵커 삭제·앵커 없으면 유지, 지운 아이 `/sync`·`/settings` 404), `tests/family.cjs`(예제뿐이면 빈 앵커·동기화된 세트의 앵커와 보호자 표시, 시험 중 `/grade` 인정 → 시험 중 `/sets` 없음 → 완료 직후 전송, 지운 아이 안내·요청 중단·연결 해제·새 코드로 재연결), `tests/daily.cjs`(예제뿐이면 빈 앵커·‘아직 없어요’). 갤럭시 앱은 Actions ‘Android APK’ 빌드로 확인(실기기에서 .json 선택 확인 필요).
+
+## 20. 기록 복원 — 새 기기·재설치 뒤 기록 탭 채우기 (2026-10-18)
 
 배경: 2026-10-18 갤럭시 앱을 다시 설치하면서 기기 안 자료가 사라졌다. 세트는 아이 단위 동기화(15절)로 돌아오지만 시험 기록은 원본이 기기(`daily_vocab_history_v2`)에만 있고 서버에는 압축 사본(점수·틀린 단어)만 있어 기록 탭이 비었다. 사용자가 ‘서버 사본으로 기록 복원’을 요청.
 
