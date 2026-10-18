@@ -85,6 +85,20 @@ const MAX_ANCHOR_WORDS = 60; // 교재 앵커: 아이 기기가 보내는 현재
 const MAX_PLAN_BODY = 16 * 1024;
 const KST_OFFSET_MS = 9 * 3600000;
 
+// ---- 세트 동기화(아이 단위) 규칙 ----
+// 세트는 아이 항목에 속한다(set:<childId>:<setId>). 아이 기기는 POST /sets/<childId>(가족 코드)로 자기 세트를 올리고
+// 다른 기기·보호자가 바꾼 것을 받는다: 세트별 updatedAt이 나중인 쪽이 이기고 삭제는 묘비(deletedAt)로 남겨 다른 기기에서도 지운다.
+// 보호자는 /family/<childId>/sets 로 목록을 보고 세트를 만들어 보내거나(사진 → 편집기) 고치고 지운다. 아이 항목의 sets 요약은 서버가 다시 계산한다.
+const SETS_PATH = /^\/sets\/([A-Za-z0-9-]{8,64})$/;
+const CHILD_SETS_PATH = /^\/family\/([A-Za-z0-9-]{8,64})\/sets(?:\/([A-Za-z0-9_-]{1,64}))?$/;
+const SET_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_SETS_BODY = 2 * 1024 * 1024;
+const MAX_CHILD_SETS = 50; // 아이당 세트 수
+const MAX_SET_WORDS = 2000; // 앱의 세트 저장 상한과 같다
+const MAX_SET_NAME = 120;
+const MAX_WORD_ALIASES = 30;
+const MAX_SET_TOMBSTONES = 200;
+
 // 실제 교재(예: 0161 amend [əménd] 동 (법 등을) 수정하다, 개정하다 ⊜ alter, revise / 예문 / ⊕ amendment …) 레이아웃 기준.
 // 영어 단어만 있는 사진(단어 목록·시험지·손글씨)은 뜻이 없으므로 AI가 학습자 사전처럼 채우고 generated 로 표시한다.
 const SYSTEM = `You read photos of pages from Korean English-vocabulary workbooks (영단어장) and extract every headword entry on the page as JSON.
@@ -328,6 +342,13 @@ export class FamilyStore {
     }
     const settings = SETTINGS_PATH.exec(url.pathname);
     if (settings && method === "GET") return this.settings(settings[1]);
+    const setsSync = SETS_PATH.exec(url.pathname);
+    if (setsSync && method === "POST") return this.syncSets(setsSync[1], await readBody());
+    const childSets = CHILD_SETS_PATH.exec(url.pathname);
+    if (childSets && !childSets[2] && method === "GET") return this.listSets(childSets[1]);
+    if (childSets && !childSets[2] && method === "POST") return this.putSet(childSets[1], await readBody());
+    if (childSets && childSets[2] && method === "GET") return this.getSet(childSets[1], childSets[2]);
+    if (childSets && childSets[2] && method === "DELETE") return this.deleteSet(childSets[1], childSets[2]);
     const daily = DAILY_PATH.exec(url.pathname);
     if (daily && method === "GET") return this.getDaily(daily[1], url.searchParams.get("date"));
     if (daily && method === "POST") return this.generateDaily(daily[1], (await readBody())?.date);
@@ -367,7 +388,8 @@ export class FamilyStore {
       ...current,
       name: current.name || child.name, // 보호자가 만든 아이의 이름은 서버가 기준이다(기기가 보낸 이름으로 덮어쓰지 않는다)
       devices: registerDevice(current.devices, device, now),
-      sets: sets === undefined ? current.sets || [] : sets,
+      // 세트 동기화(/sets)를 시작한 아이는 서버가 계산한 요약이 기준이다(옛 앱이 보낸 이름·개수 목록으로 덮어쓰지 않는다).
+      sets: current.setsSyncedAt ? current.sets || [] : sets === undefined ? current.sets || [] : sets,
       ...(anchor ? { anchor: { ...anchor, updatedAt: now } } : {}),
       updatedAt: now,
       lastTestAt,
@@ -429,7 +451,8 @@ export class FamilyStore {
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
     const keys = [...(await this.storage.list({ prefix: this.recordPrefix(childId) })).keys()];
     const dailies = [...(await this.storage.list({ prefix: "daily:" + childId + ":" })).keys()];
-    await this.deleteMany([...keys, ...dailies, "served:" + childId, "child:" + childId, ...(c.joinCode ? ["code:" + c.joinCode] : [])]);
+    const setKeys = [...(await this.storage.list({ prefix: this.setPrefix(childId) })).keys()];
+    await this.deleteMany([...keys, ...dailies, ...setKeys, "served:" + childId, "child:" + childId, ...(c.joinCode ? ["code:" + c.joinCode] : [])]);
     return json(200, { ok: true, deleted: keys.length });
   }
   // ---- 아이 만들기·아이 코드·기기 연결 ----
@@ -486,6 +509,93 @@ export class FamilyStore {
     const c = await this.storage.get("child:" + childId);
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
     return json(200, { childId, name: c.name, timeLimitSec: this.planOf(c).timeLimitSec });
+  }
+  // ---- 세트 동기화(아이 단위) ----
+  setPrefix(childId) {
+    return "set:" + childId + ":";
+  }
+  async storedSets(childId) {
+    return [...(await this.storage.list({ prefix: this.setPrefix(childId) })).values()];
+  }
+  // 보호자 목록·아이 항목에 두는 요약(살아 있는 세트만, 이름순).
+  setSummary(stored) {
+    return stored
+      .filter((s) => !s.deletedAt)
+      .map((s) => ({ id: s.id, name: s.name, count: s.words.length, updatedAt: s.updatedAt }))
+      .sort((a, b) => a.name.localeCompare(b.name, "ko") || a.id.localeCompare(b.id));
+  }
+  unknownSet() {
+    return json(404, { error: "unknown_set", message: "그 세트가 없어요. 목록을 새로고침해 주세요." });
+  }
+  // 아이 기기: known(기기에 있는 세트 id·수정 시각 전부) + sets(새로 만들거나 고친 세트 전체) + deleted(지운 세트 묘비).
+  // 응답: sets(기기에 없거나 더 새 버전이 있는 세트 전체), deleted(기기가 아는데 서버에서 지워진 id), summary(살아 있는 세트 전부).
+  async syncSets(childId, { known, sets, deleted, device }) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 보호자 폰에서 아이를 다시 만들어 주세요." });
+    const now = new Date().toISOString();
+    const byId = new Map((await this.storedSets(childId)).map((s) => [s.id, s]));
+    const changes = {};
+    for (const d of deleted) {
+      const cur = byId.get(d.id);
+      if (cur && cur.updatedAt >= d.deletedAt) continue; // 지운 뒤 다른 기기가 고쳤으면 고친 쪽이 남는다
+      const tomb = { id: d.id, name: cur?.name || "", words: [], updatedAt: d.deletedAt, deletedAt: d.deletedAt };
+      byId.set(d.id, tomb);
+      changes[this.setPrefix(childId) + d.id] = tomb;
+    }
+    for (const s of sets) {
+      const cur = byId.get(s.id);
+      if (cur && cur.updatedAt >= s.updatedAt) continue; // 더 오래된 버전은 무시
+      byId.set(s.id, s);
+      changes[this.setPrefix(childId) + s.id] = s;
+    }
+    const live = [...byId.values()].filter((s) => !s.deletedAt);
+    if (live.length > MAX_CHILD_SETS)
+      return json(400, { error: "too_many_sets", message: `세트는 아이당 ${MAX_CHILD_SETS}개까지 둘 수 있어요. 안 쓰는 세트를 지워 주세요.` });
+    const knownMap = new Map(known.map((k) => [k.id, k.updatedAt]));
+    const pull = live.filter((s) => !knownMap.has(s.id) || knownMap.get(s.id) < s.updatedAt);
+    const removed = [...byId.values()].filter((s) => s.deletedAt && knownMap.has(s.id)).map((s) => s.id);
+    const summary = this.setSummary(live);
+    await this.putMany({
+      ...changes,
+      ["child:" + childId]: { ...c, devices: registerDevice(c.devices, device, now), sets: summary, setsSyncedAt: now, updatedAt: now },
+    });
+    return json(200, { ok: true, sets: pull, deleted: removed, summary, syncedAt: now });
+  }
+  // 보호자: 목록·세트 하나(단어 포함)·만들어 보내기(또는 고치기)·삭제
+  async listSets(childId) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    return json(200, { sets: this.setSummary(await this.storedSets(childId)) });
+  }
+  async getSet(childId, setId) {
+    const s = await this.storage.get(this.setPrefix(childId) + setId);
+    if (!s || s.deletedAt) return this.unknownSet();
+    return json(200, { set: s });
+  }
+  async putSet(childId, { set }) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    const now = new Date().toISOString();
+    const stored = { ...set, updatedAt: now };
+    const others = (await this.storedSets(childId)).filter((s) => s.id !== set.id);
+    const live = [...others.filter((s) => !s.deletedAt), stored];
+    if (live.length > MAX_CHILD_SETS)
+      return json(400, { error: "too_many_sets", message: `세트는 아이당 ${MAX_CHILD_SETS}개까지 둘 수 있어요. 안 쓰는 세트를 지워 주세요.` });
+    const summary = this.setSummary(live);
+    await this.putMany({ [this.setPrefix(childId) + set.id]: stored, ["child:" + childId]: { ...c, sets: summary, setsSyncedAt: now, updatedAt: now } });
+    return json(200, { ok: true, set: { id: stored.id, name: stored.name, count: stored.words.length, updatedAt: now }, summary });
+  }
+  async deleteSet(childId, setId) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    const cur = await this.storage.get(this.setPrefix(childId) + setId);
+    if (!cur || cur.deletedAt) return this.unknownSet();
+    const now = new Date().toISOString();
+    const tomb = { id: setId, name: cur.name, words: [], updatedAt: now, deletedAt: now };
+    const live = (await this.storedSets(childId)).filter((s) => !s.deletedAt && s.id !== setId);
+    const summary = this.setSummary(live);
+    await this.putMany({ [this.setPrefix(childId) + setId]: tomb, ["child:" + childId]: { ...c, sets: summary, setsSyncedAt: now, updatedAt: now } });
+    return json(200, { ok: true, summary });
   }
   // ---- 오늘의 단어 ----
   async savePlan(childId, body) {
@@ -724,12 +834,88 @@ function parseSync(body) {
   return { child: { id, name }, records, sets, anchor, device: parseDevice(body.device) };
 }
 
-// /sync, /join, /daily…, /family… 처리. 오늘의 단어 생성 외에는 Anthropic을 부르지 않는다.
+// 세트의 단어 하나. 번호·영어·뜻이 없으면 null.
+function parseSetWord(w) {
+  if (!w || typeof w !== "object") return null;
+  const id = Number.isInteger(w.id) ? w.id : typeof w.id === "string" ? clean(w.id).slice(0, 32) : "";
+  if (id === "") return null;
+  const en = clean(w.en).slice(0, 80);
+  const ko = clean(w.ko).slice(0, 200);
+  if (!en || !ko) return null;
+  const aliases = [...new Set((Array.isArray(w.aliases) ? w.aliases : []).map((a) => clean(a).slice(0, 60)).filter(Boolean))].slice(0, MAX_WORD_ALIASES);
+  return { id, en, ko, ipa: clean(w.ipa).slice(0, 80), hangul: clean(w.hangul).slice(0, 80), aliases };
+}
+// 세트 하나(앱의 저장 형식과 같다). 아이 기기가 올릴 때는 updatedAt이 필수, 보호자가 보낼 때는 서버가 붙인다.
+function parseSet(raw, { requireUpdatedAt }) {
+  if (!raw || typeof raw !== "object") return { error: "세트 형식이 올바르지 않습니다." };
+  const id = typeof raw.id === "string" ? raw.id : "";
+  if (!SET_ID_PATTERN.test(id)) return { error: "세트 id가 올바르지 않습니다." };
+  const name = clean(raw.name).slice(0, MAX_SET_NAME);
+  if (!name) return { error: "세트 이름이 비어 있습니다." };
+  if (!Array.isArray(raw.words) || !raw.words.length || raw.words.length > MAX_SET_WORDS)
+    return { error: `세트 ‘${name}’의 단어는 1~${MAX_SET_WORDS}개여야 합니다.` };
+  const words = [];
+  const ids = new Set();
+  for (const w of raw.words) {
+    const p = parseSetWord(w);
+    if (!p) return { error: `세트 ‘${name}’에 번호·영어·뜻이 빈 단어가 있습니다.` };
+    if (ids.has(String(p.id))) return { error: `세트 ‘${name}’에 번호가 겹치는 단어가 있습니다.` };
+    ids.add(String(p.id));
+    words.push(p);
+  }
+  let updatedAt;
+  if (requireUpdatedAt) {
+    updatedAt = isoDate(raw.updatedAt);
+    if (!updatedAt) return { error: `세트 ‘${name}’의 수정 시각이 올바르지 않습니다.` };
+  }
+  return { set: { id, name, words, ...(updatedAt ? { updatedAt } : {}) } };
+}
+// 아이 기기의 세트 동기화 요청(POST /sets/<childId>). 하나라도 틀리면 전체 거절.
+function parseSetsSync(body) {
+  if (!body || typeof body !== "object") return { error: "JSON 본문이 필요합니다." };
+  const rawKnown = body.known === undefined ? [] : body.known;
+  const rawSets = body.sets === undefined ? [] : body.sets;
+  const rawDeleted = body.deleted === undefined ? [] : body.deleted;
+  if (!Array.isArray(rawKnown) || rawKnown.length > MAX_CHILD_SETS * 2) return { error: "known은 세트 목록 배열이어야 합니다." };
+  if (!Array.isArray(rawSets) || rawSets.length > MAX_CHILD_SETS) return { error: `세트는 한 번에 ${MAX_CHILD_SETS}개까지 보낼 수 있습니다.` };
+  if (!Array.isArray(rawDeleted) || rawDeleted.length > MAX_SET_TOMBSTONES) return { error: "deleted 형식이 올바르지 않습니다." };
+  const known = [];
+  for (const k of rawKnown) {
+    if (!k || !SET_ID_PATTERN.test(String(k.id || ""))) return { error: "known의 세트 id가 올바르지 않습니다." };
+    known.push({ id: k.id, updatedAt: isoDate(k.updatedAt) || "" });
+  }
+  const sets = [];
+  for (const raw of rawSets) {
+    const p = parseSet(raw, { requireUpdatedAt: true });
+    if (p.error) return p;
+    sets.push(p.set);
+  }
+  const deleted = [];
+  for (const d of rawDeleted) {
+    if (!d || !SET_ID_PATTERN.test(String(d.id || ""))) return { error: "deleted의 세트 id가 올바르지 않습니다." };
+    const t = isoDate(d.deletedAt);
+    if (!t) return { error: "deleted의 시각이 올바르지 않습니다." };
+    deleted.push({ id: d.id, deletedAt: t });
+  }
+  return { known, sets, deleted, device: parseDevice(body.device) };
+}
+// 보호자가 보내는 세트(POST /family/<childId>/sets). id가 없으면 새로 만든다.
+function parseSetUpload(body) {
+  const raw = body?.set;
+  if (!raw || typeof raw !== "object") return { error: "set이 필요합니다." };
+  const p = parseSet({ ...raw, id: typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID() }, { requireUpdatedAt: false });
+  if (p.error) return p;
+  return { set: p.set };
+}
+
+// /sync, /join, /sets, /daily…, /family… 처리. 오늘의 단어 생성 외에는 Anthropic을 부르지 않는다.
 // kind: sync·join·daily(가족 또는 보호자 코드) / view(보호자 코드만: 기록 보기·삭제·아이 만들기·계획·코드·이름)
 async function family(request, env, path, cors) {
   if (!env.APP_PASSCODE)
     return json(500, { error: "misconfigured", message: "AI 서버에 비밀값(APP_PASSCODE)이 설정되지 않았습니다." }, cors);
-  const kind = path === "/sync" ? "sync" : path === "/join" ? "join" : DAILY_PATH.test(path) ? "daily" : SETTINGS_PATH.test(path) ? "settings" : "view";
+  const kind =
+    path === "/sync" ? "sync" : path === "/join" ? "join" : SETS_PATH.test(path) ? "sets" : DAILY_PATH.test(path) ? "daily" : SETTINGS_PATH.test(path) ? "settings" : "view";
+  const setsRoute = kind === "sets" || (kind === "view" && CHILD_SETS_PATH.test(path)); // 세트 본문은 크다(2MB까지)
   if (kind === "view" && !env.PARENT_PASSCODE)
     return json(500, {
       error: "misconfigured",
@@ -745,18 +931,18 @@ async function family(request, env, path, cors) {
   let payload;
   if (request.method === "POST") {
     const text = await request.text();
-    if (text.length > (kind === "sync" ? MAX_SYNC_BODY : MAX_PLAN_BODY))
+    if (text.length > (setsRoute ? MAX_SETS_BODY : kind === "sync" ? MAX_SYNC_BODY : MAX_PLAN_BODY))
       return json(413, { error: "too_large", message: "보내는 내용이 너무 큽니다. 앱을 새 버전으로 불러온 뒤 다시 시도해 주세요." }, cors);
     let body = {};
-    if (text || kind === "sync") {
+    if (text || kind === "sync" || setsRoute) {
       try {
         body = JSON.parse(text);
       } catch {
         return json(400, { error: "bad_request", message: "JSON 본문이 필요합니다." }, cors);
       }
     }
-    if (kind === "sync") {
-      const parsed = parseSync(body);
+    if (kind === "sync" || setsRoute) {
+      const parsed = kind === "sync" ? parseSync(body) : kind === "sets" ? parseSetsSync(body) : parseSetUpload(body);
       if (parsed.error) return json(400, { error: "bad_request", message: parsed.error }, cors);
       payload = parsed;
     } else payload = body && typeof body === "object" ? body : {};
@@ -1062,6 +1248,8 @@ export default {
       (CHILDREN_PATH.test(path) && request.method === "POST") ||
       (CHILD_ACTION_PATH.test(path) && request.method === "POST") ||
       (path === "/join" && request.method === "POST") ||
+      (SETS_PATH.test(path) && request.method === "POST") ||
+      (CHILD_SETS_PATH.test(path) && ["GET", "POST", "DELETE"].includes(request.method)) ||
       (DAILY_PATH.test(path) && ["GET", "POST"].includes(request.method)) ||
       (SETTINGS_PATH.test(path) && request.method === "GET");
     const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define"].includes(path);

@@ -714,8 +714,89 @@ const { pathToFileURL } = require("url");
   await familyCase("/family/" + made.id, { method: "DELETE", ...PARENT }, 200);
   await familyCase("/join", { body: { code: newCode } }, 404, "unknown_code");
 
+  // ---- 세트 동기화: 아이 기기 POST /sets/<childId>(가족 코드), 보호자 /family/<childId>/sets ----
+  const sid = (await familyCase("/family/children", { ...PARENT, body: { name: "세트아이" } }, 200)).child.id;
+  const word = (id, en, ko) => ({ id, en, ko, ipa: "", hangul: "", aliases: [ko] });
+  const setA = { id: "aaaaaaaa-0000-4000-8000-000000000001", name: "DAY 05", words: [word(161, "amend", "수정하다"), word(162, "alter", "바꾸다")], updatedAt: hoursAgo(5) };
+  await familyCase("/sets/" + sid, { method: "GET" }, 404, "not_found");
+  await familyCase("/sets/99999999-aaaa-4bbb-8ccc-dddddddddddd", { body: { sets: [] } }, 404, "unknown_child");
+  await familyCase("/sets/" + sid, { body: { sets: [setA] }, passcode: "nope" }, 401);
+  await familyCase("/sets/" + sid, { body: { sets: "x" } }, 400, "세트");
+  await familyCase("/sets/" + sid, { body: { sets: [{ ...setA, name: " " }] } }, 400, "이름");
+  await familyCase("/sets/" + sid, { body: { sets: [{ ...setA, words: [] }] } }, 400, "단어");
+  await familyCase("/sets/" + sid, { body: { sets: [{ ...setA, words: [word(1, "a", "ㄱ"), word(1, "b", "ㄴ")] }] } }, 400, "겹치는");
+  await familyCase("/sets/" + sid, { body: { sets: [{ ...setA, words: [word(1, "", "ㄱ")] }] } }, 400, "빈 단어");
+  await familyCase("/sets/" + sid, { body: { sets: [{ ...setA, updatedAt: "nope" }] } }, 400, "시각");
+  await familyCase("/sets/" + sid, { body: { known: [{ id: "bad id" }] } }, 400, "known");
+  await familyCase("/sets/" + sid, { body: { deleted: [{ id: setA.id }] } }, 400, "deleted");
+  // 기기 A 첫 동기화: 올리기 → 요약만 돌아온다
+  let sr = await familyCase("/sets/" + sid, { body: { device: tablet, known: [{ id: setA.id, updatedAt: setA.updatedAt }], sets: [{ ...setA, name: " DAY 05 " }] } }, 200);
+  assert.deepEqual(sr.summary.map((s) => [s.id, s.name, s.count, s.updatedAt]), [[setA.id, "DAY 05", 2, setA.updatedAt]], "summary after the first upload");
+  assert.deepEqual([sr.sets, sr.deleted], [[], []], "uploader has nothing to pull");
+  data = await familyCase("/family/" + sid, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(data.child.sets, sr.summary, "child summary carries the set list");
+  assert(data.child.devices[tablet.id], "device registered by the sets sync");
+  // 기기 B(아무것도 모름): 세트 전체를 내려받는다
+  sr = await familyCase("/sets/" + sid, { body: { device: phone, known: [], sets: [] } }, 200);
+  assert.equal(sr.sets.length, 1, "new device pulls the set");
+  assert.deepEqual([sr.sets[0].words[0].en, sr.sets[0].words[0].aliases, sr.sets[0].updatedAt], ["amend", ["수정하다"], setA.updatedAt], "pulled set keeps words and time");
+  // 기기 B가 더 새 버전을 올리면 A가 받고, 오래된 버전을 올리면 무시하고 새 것을 돌려준다
+  const newer = { ...setA, name: "DAY 05 (수정)", words: [...setA.words, word(163, "assess", "평가하다")], updatedAt: hoursAgo(1) };
+  sr = await familyCase("/sets/" + sid, { body: { known: [{ id: setA.id, updatedAt: newer.updatedAt }], sets: [newer] } }, 200);
+  assert.equal(sr.summary[0].count, 3, "newer version stored");
+  sr = await familyCase("/sets/" + sid, { body: { known: [{ id: setA.id, updatedAt: setA.updatedAt }], sets: [{ ...setA, name: "옛날" }] } }, 200);
+  assert.deepEqual([sr.sets.length, sr.sets[0].name, sr.summary[0].name], [1, "DAY 05 (수정)", "DAY 05 (수정)"], "older upload ignored, newer pulled");
+  // 보호자: 목록(보호자 코드만)·보내기·보기·삭제
+  await familyCase("/family/" + sid + "/sets", { method: "GET" }, 401, "보호자 코드");
+  sr = await familyCase("/family/" + sid + "/sets", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(sr.sets.map((s) => s.name), ["DAY 05 (수정)"], "parent list");
+  await familyCase("/family/" + sid + "/sets", { ...PARENT, body: {} }, 400, "set");
+  await familyCase("/family/" + sid + "/sets", { ...PARENT, body: { set: { name: "x", words: [] } } }, 400, "단어");
+  sr = await familyCase("/family/" + sid + "/sets", { ...PARENT, body: { set: { name: " 보호자 세트 ", words: [word(1, " apple ", "사과"), word(2, "banana", "바나나")] } } }, 200);
+  assert(/^[0-9a-f-]{36}$/.test(sr.set.id) && sr.set.name === "보호자 세트" && sr.set.count === 2 && sr.summary.length === 2, "parent upload: " + JSON.stringify(sr));
+  const parentSetId = sr.set.id;
+  sr = await familyCase("/family/" + sid + "/sets/" + parentSetId, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([sr.set.words[0].en, sr.set.words[1].en, typeof sr.set.updatedAt], ["apple", "banana", "string"], "parent reads the set with words");
+  await familyCase("/family/" + sid + "/sets/nope-id", { method: "GET", ...PARENT }, 404, "unknown_set");
+  await familyCase("/family/99999999-aaaa-4bbb-8ccc-dddddddddddd/sets", { ...PARENT, body: { set: { name: "x", words: [word(1, "a", "ㄱ")] } } }, 404, "unknown_child");
+  // 보호자가 같은 id로 다시 보내면 고쳐진다(수정 시각 갱신)
+  const before = sr.set.updatedAt;
+  await new Promise((r) => setTimeout(r, 5));
+  sr = await familyCase("/family/" + sid + "/sets", { ...PARENT, body: { set: { id: parentSetId, name: "보호자 세트 2", words: [word(1, "apple", "사과")] } } }, 200);
+  assert(sr.set.count === 1 && sr.set.updatedAt > before && sr.summary.length === 2, "parent edit replaces the set");
+  // 아이 기기가 보호자 세트를 받고, 기기에서 지운 세트는 묘비로 남아 다른 기기에서도 지워진다
+  sr = await familyCase("/sets/" + sid, { body: { known: [{ id: setA.id, updatedAt: newer.updatedAt }], sets: [] } }, 200);
+  assert.deepEqual(sr.sets.map((s) => s.id), [parentSetId], "device pulls the parent set only");
+  const pulledAt = sr.sets[0].updatedAt;
+  sr = await familyCase("/sets/" + sid, { body: { known: [{ id: parentSetId, updatedAt: pulledAt }], sets: [], deleted: [{ id: setA.id, deletedAt: new Date().toISOString() }] } }, 200);
+  assert.deepEqual([sr.summary.map((s) => s.id), sr.deleted, sr.sets], [[parentSetId], [], []], "deleting device: summary without the set");
+  sr = await familyCase("/sets/" + sid, { body: { known: [{ id: setA.id, updatedAt: newer.updatedAt }, { id: parentSetId, updatedAt: "2000-01-01T00:00:00.000Z" }], sets: [] } }, 200);
+  assert.deepEqual([sr.deleted, sr.sets.map((s) => s.id)], [[setA.id], [parentSetId]], "other device told to delete and given the newer parent set");
+  // 지운 뒤에 다른 기기가 고친 세트는 살아난다(나중 시각 우선)
+  sr = await familyCase("/sets/" + sid, { body: { known: [], sets: [{ ...newer, name: "되살림", updatedAt: new Date(Date.now() + 1000).toISOString() }] } }, 200);
+  assert.deepEqual(sr.summary.map((s) => s.name).sort(), ["되살림", "보호자 세트 2"], "edit after delete wins");
+  // 보호자 삭제 → 기기에서도 지워짐; 옛 앱의 /sync 세트 요약은 서버 요약을 덮어쓰지 못한다
+  sr = await familyCase("/family/" + sid + "/sets/" + parentSetId, { method: "DELETE", ...PARENT }, 200);
+  assert.deepEqual(sr.summary.map((s) => s.name), ["되살림"], "parent delete");
+  await familyCase("/family/" + sid + "/sets/" + parentSetId, { method: "DELETE", ...PARENT }, 404, "unknown_set");
+  sr = await familyCase("/sets/" + sid, { body: { known: [{ id: parentSetId, updatedAt: pulledAt }] } }, 200);
+  assert.deepEqual(sr.deleted, [parentSetId], "device learns about the parent delete");
+  await familyCase("/sync", { body: { child: { id: sid, name: "세트아이" }, sets: [{ name: "옛 앱", count: 40 }] } }, 200);
+  data = await familyCase("/family/" + sid, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(data.child.sets.map((s) => s.name), ["되살림"], "legacy /sync summary ignored once sets are synced");
+  // 상한: 한 번에 50개 초과, 아이당 50개 초과
+  const many = (n, from = 0) => Array.from({ length: n }, (_, i) => ({ id: "many-" + (from + i), name: "s" + (from + i), words: [word(1, "a", "ㄱ")], updatedAt: hoursAgo(1) }));
+  await familyCase("/sets/" + sid, { body: { sets: many(51) } }, 400, "50");
+  await familyCase("/sets/" + sid, { body: { sets: many(49) } }, 200);
+  await familyCase("/sets/" + sid, { body: { sets: many(1, 60) } }, 400, "too_many_sets");
+  await familyCase("/family/" + sid + "/sets", { ...PARENT, body: { set: { name: "x", words: [word(1, "a", "ㄱ")] } } }, 400, "too_many_sets");
+  // 아이를 지우면 세트 키도 지워진다
+  await familyCase("/family/" + sid, { method: "DELETE", ...PARENT }, 200);
+  await familyCase("/sets/" + sid, { body: {} }, 404, "unknown_child");
+  assert.equal([...(await familyObject.storage.list({ prefix: "set:" + sid + ":" })).keys()].length, 0, "set keys removed with the child");
+
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/fallback retry/upstream error mapping/family store/daily words/child codes",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/fallback retry/upstream error mapping/family store/daily words/child codes/set sync",
   );
 })().catch((e) => {
   console.error(e);

@@ -151,6 +151,8 @@ const { chromium } = require("playwright");
   assert(await page.isHidden("#dailyCard"), "no daily card while the plan is off");
   const anchor = paths("/sync")[0].body.anchor;
   assert(anchor && anchor.setName === "기본 예제 DAY04" && anchor.words.length === 40 && anchor.words.includes("authority"), "anchor words sent from the current set: " + JSON.stringify(anchor).slice(0, 80));
+  await waitFor(() => paths("/sets/" + childId, "POST").length >= 1, "set sync attempted");
+  assert((await page.evaluate(() => sets.length)) === 1 && (await page.evaluate(() => sets[0].id)) === "day04", "old Worker (404 /sets): example set kept");
 
   // 시험 한 번 → 틀린 단어가 생긴다(복습 후보)
   await page.click("#tabHome");

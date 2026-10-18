@@ -1,6 +1,6 @@
 # AI 사진 인식·사전 프록시 (Cloudflare Worker)
 
-앱(GitHub Pages)은 Anthropic API를 직접 부르지 않고 이 Worker만 호출합니다. 사진 인식(`/recognize`), 영어 단어 목록의 뜻·발음을 찾는 AI 사전(`/define`), 아이 기기가 보낸 시험 기록을 저장해 보호자 폰에 보여 주는 가족 기록함(`/sync`, `/family`), 그리고 매일 아이 수준에 맞는 ‘오늘의 단어’를 만드는 생성기(`/daily`, 크론)를 처리합니다. Anthropic API 키는 Worker의 비밀값에만 있고, 앱·저장소·태블릿 어디에도 들어가지 않습니다. 가족용 **접속 코드**가 맞는 요청만 처리합니다.
+앱(GitHub Pages)은 Anthropic API를 직접 부르지 않고 이 Worker만 호출합니다. 사진 인식(`/recognize`), 영어 단어 목록의 뜻·발음을 찾는 AI 사전(`/define`), 아이 기기가 보낸 시험 기록을 저장해 보호자 폰에 보여 주는 가족 기록함(`/sync`, `/family`), 아이 단위 세트 저장소(`/sets`, `/family/<childId>/sets`), 그리고 매일 아이 수준에 맞는 ‘오늘의 단어’를 만드는 생성기(`/daily`, 크론)를 처리합니다. Anthropic API 키는 Worker의 비밀값에만 있고, 앱·저장소·태블릿 어디에도 들어가지 않습니다. 가족용 **접속 코드**가 맞는 요청만 처리합니다.
 
 ```
 태블릿 앱 ──(사진 + 접속 코드)──▶ Worker ──(API 키)──▶ Anthropic
@@ -54,6 +54,7 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 - 보호자 코드 등록·변경: `npm run parent-code`(= `npx wrangler secret put PARENT_PASSCODE`, 4자 이상). 등록하지 않으면 `/family…`가 500으로 “보호자 코드(PARENT_PASSCODE)가 아직 설정되지 않았습니다”를 돌려줍니다.
 - 보관: 아이(기기)마다 최근 5,000개까지, 넘으면 오래된 것부터 지웁니다. 같은 기록을 다시 보내면 덮어씁니다. 아이 항목과 기록은 보호자 폰의 ‘아이들’ 탭에서 삭제(`DELETE /family/<childId>`)할 수 있고, 아이 기기에서 기록을 지워도 서버 사본은 남습니다. 기기를 바꾸면 새 `childId`로 새 아이처럼 보입니다.
 - 한도: 본문 256KB, 기록 100개/회, 틀린 단어 200개/기록, 이름 20자. 요청 제한은 `/sync`, `/family` 버킷으로 IP당 분당 30회(공통 설정).
+- **세트 동기화(아이 단위)**: 세트는 `set:<childId>:<setId>` 키로 아이에게 속합니다. 아이 기기는 `POST /sets/<childId>`(가족 코드)에 기기의 세트 목록(`known`: id·수정 시각), 새로 만들거나 고친 세트 전체(`sets`), 지운 세트 묘비(`deleted`)를 보내고, 서버에 없거나 더 새 버전인 세트 전체와 지워진 id, 전체 요약을 받습니다. 세트마다 `updatedAt`이 나중인 쪽이 이기고 삭제는 `deletedAt` 묘비로 남아 다른 기기에서도 지워집니다(지운 뒤 다른 기기가 고치면 되살아남). 보호자 폰은 `GET /family/<childId>/sets`로 목록을 보고 `POST`로 세트를 만들어 보내거나 고치며(`updatedAt`은 서버가 붙임) `DELETE …/sets/<setId>`로 지웁니다. 아이 항목의 `sets` 요약은 서버가 계산하고, 동기화를 시작한 아이는 옛 앱이 `/sync`로 보낸 세트 목록으로 덮어쓰지 않습니다. 한도: 아이당 50세트, 세트당 2,000단어, 본문 2MB. 아이를 지우면 세트도 지워집니다.
 - 2026-10-18 이전에 배포한 Worker에는 이 기능이 없어 앱이 “다시 배포” 안내를 띄웁니다. `npm run deploy` 뒤 `npm run parent-code`를 실행하세요.
 
 ## 오늘의 단어 (매일 생성 · 크론)
@@ -115,6 +116,11 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 | `POST /family/<childId>/code` · 보호자 코드 | 아이 코드 새로 발급(옛 코드 무효). `{ ok, child }` |
 | `POST /family/<childId>/name` · 보호자 코드 · JSON `{ name }` | 이름 바꾸기. `{ ok, child }` |
 | `POST /join` · 가족 또는 보호자 코드 · JSON `{ code, device: { id, label } }` | 아이 기기 연결. `{ ok, childId, name, timeLimitSec }`. 모르는 코드는 404 `unknown_code` |
+| `POST /sets/<childId>` · 가족 또는 보호자 코드 · JSON `{ device?, known: [{ id, updatedAt }], sets: [{ id, name, words, updatedAt }], deleted: [{ id, deletedAt }] }` | 아이 기기의 세트 동기화. `{ ok, sets: [기기에 없거나 더 새 세트 전체], deleted: [지워진 id], summary: [{ id, name, count, updatedAt }], syncedAt }`. 아이당 50세트 초과는 400 `too_many_sets` |
+| `GET /family/<childId>/sets` · 보호자 코드 | 아이의 세트 요약 `{ sets: [{ id, name, count, updatedAt }] }` |
+| `POST /family/<childId>/sets` · 보호자 코드 · JSON `{ set: { id?, name, words } }` | 세트 만들어 보내기(또는 같은 id로 고치기). `{ ok, set: { id, name, count, updatedAt }, summary }` |
+| `GET /family/<childId>/sets/<setId>` · 보호자 코드 | 세트 하나(단어 포함) `{ set }`. 없거나 지워졌으면 404 `unknown_set` |
+| `DELETE /family/<childId>/sets/<setId>` · 보호자 코드 | 세트 삭제(묘비). `{ ok, summary }` |
 | `GET /daily/<childId>?date=YYYY-MM-DD` · 가족 또는 보호자 코드 | 그날의 단어 `{ date, level, words: [{ id, en, ko, ipa, aliases, kind: "review"\|"new" }], note, completed? }`. 없으면 404 `no_daily`, 계획이 꺼져 있으면 409 `plan_disabled` |
 | `POST /daily/<childId>` · 가족 또는 보호자 코드 · JSON `{ date? }` | 그날 것이 없으면 Claude로 만들어 저장하고 돌려줍니다(있으면 그대로) |
 
@@ -124,4 +130,4 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 
 `tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의)·오늘의 단어(계획·앵커·생성·완료·크론)·아이 코드(아이 만들기·연결·기기·코드 재발급·이름)를 Node에서 확인합니다 (`node tests/worker.cjs`).
 
-2026-10-18 이전에 배포한 Worker에는 `/define`과 가족 기록함(`/sync`, `/family`)이 없어 앱의 ‘빈 뜻 AI로 채우기’와 가족 기록함이 “다시 배포” 안내를 띄웁니다. `npm run deploy`로 다시 배포하면 됩니다(앱 배포와 별개, 먼저 배포해도 옛 앱과 호환).
+2026-10-18 이전에 배포한 Worker에는 `/define`과 가족 기록함(`/sync`, `/family`), 세트 동기화(`/sets`)가 없어 앱의 ‘빈 뜻 AI로 채우기’와 가족 기록함이 “다시 배포” 안내를 띄웁니다. `npm run deploy`로 다시 배포하면 됩니다(앱 배포와 별개, 먼저 배포해도 옛 앱과 호환).

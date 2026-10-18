@@ -3,7 +3,9 @@
 // 보호자 폰은 보호자 코드를 저장하면 생기는 ‘아이들’ 탭에서 아이를 만들고(6자리 아이 코드·전용 링크), 아이별 기록을 보고, 오늘의 단어 계획을 정한다.
 // 아이 기기(아이폰·태블릿)는 아이 코드나 전용 링크(?child=코드)로 연결되어 시험을 마칠 때마다 압축 기록을 보내고 매일 ‘오늘의 단어’를 받는다.
 // 같은 코드를 넣은 기기는 한 아이로 묶인다. quiz.js 다음, sets.js 앞에 불러오고 sets.js가 마지막에 initFamily()를 부른다.
-// 저장 키 daily_vocab_family_v1 = {childId, childName, joinCode, pendingCode, deviceId, sendEnabled, lastSyncAt, lastError, pending:[기록 id], parentCode}
+// 세트는 아이에게 속한다: 연결된 기기는 POST /sets/<childId>로 세트를 올리고 다른 기기·보호자가 바꾼 것을 받아 같은 아이의 기기가 항상 같은 세트를 본다(아래 ‘세트 동기화’).
+// 저장 키 daily_vocab_family_v1 = {childId, childName, joinCode, pendingCode, deviceId, sendEnabled, lastSyncAt, lastError, pending:[기록 id], parentCode,
+//        setsAcked:{세트 id: 수정 시각}, setsDeleted:[{id, deletedAt}], setsSyncedAt, setsError}
 //        daily_vocab_daily_v1  = {childId, date, words, level, note, fetchedAt, result?, disabled?, lastCheckedAt, lastError?}
 // 보호자 코드·아이 코드·아이 이름은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다.
 const FAMILY_KEY = "daily_vocab_family_v1";
@@ -44,6 +46,14 @@ function readFamily() {
     pending: Array.isArray(f.pending) ? f.pending.filter((x) => typeof x === "string").slice(0, 5000) : [],
     parentCode: typeof f.parentCode === "string" ? f.parentCode : "",
     parentModeOff: f.parentModeOff === true, // 보호자 코드가 있어도 아이용 화면을 쓰고 싶을 때(설정의 ‘아이 기기처럼 보기’)
+    // 세트 동기화: 서버가 아는 세트 id → 수정 시각(이와 다르면 다시 올림), 아직 못 보낸 삭제 묘비, 마지막 동기화·오류
+    setsAcked:
+      f.setsAcked && typeof f.setsAcked === "object" && !Array.isArray(f.setsAcked)
+        ? Object.fromEntries(Object.entries(f.setsAcked).filter(([, v]) => typeof v === "string"))
+        : {},
+    setsDeleted: Array.isArray(f.setsDeleted) ? f.setsDeleted.filter((d) => d && typeof d.id === "string" && typeof d.deletedAt === "string").slice(-200) : [],
+    setsSyncedAt: typeof f.setsSyncedAt === "string" ? f.setsSyncedAt : "",
+    setsError: typeof f.setsError === "string" ? f.setsError : "",
     // 보호자가 정한 아이 설정(서버 plan에서 받아 둠). timeLimitSec 0 = 제한 없음
     settings: {
       timeLimitSec: Number.isInteger(f.settings?.timeLimitSec) && f.settings.timeLimitSec >= 0 ? f.settings.timeLimitSec : 0,
@@ -283,6 +293,117 @@ async function flushFamilySync(options = {}) {
   }
 }
 
+// ---- 아이 기기: 세트 동기화(아이 단위) ----
+// 연결된 기기는 POST /sets/<childId>에 known(기기의 세트 id·수정 시각 전부) + sets(새로 만들거나 고친 세트 전체) + deleted(지운 세트 묘비)를 보내고,
+// 다른 기기·보호자가 만들거나 고친 세트(sets)와 지워진 id(deleted), 서버의 전체 요약(summary → setsAcked)을 받는다. 세트별 updatedAt이 나중인 쪽이 이긴다.
+// 기본 예제 세트(day04)는 손대지 않았으면 올리지 않고 첫 동기화가 끝나면 기기에서 치운다(아이마다 세트가 다르므로 예제가 모든 기기에 보이면 안 된다).
+// 앱을 열 때·화면 복귀(10분 간격)·온라인 복귀·세트 저장/이름 바꾸기/삭제/가져오기 뒤에 맞춘다. 시험 중에는 건드리지 않는다.
+const SETS_CHECK_MS = DAILY_CHECK_MS;
+const SETS_TIMEOUT_MS = 60000;
+const EXAMPLE_SET_ID = "day04";
+const wordSignature = (words) => JSON.stringify(words.map((w) => [w.en, w.ko, w.aliases]));
+let exampleSignature = null;
+function isUntouchedExample(set) {
+  if (!set || set.id !== EXAMPLE_SET_ID || typeof defaultWords === "undefined") return false;
+  if (exampleSignature === null) exampleSignature = wordSignature(defaultWords);
+  return wordSignature(set.words) === exampleSignature;
+}
+const validSyncedWord = (w) =>
+  w && ["string", "number"].includes(typeof w.id) && typeof w.en === "string" && w.en.trim() && typeof w.ko === "string" && w.ko.trim() && Array.isArray(w.aliases);
+function validSyncedSet(s) {
+  return Boolean(
+    s && typeof s.id === "string" && typeof s.name === "string" && s.name.trim() && typeof s.updatedAt === "string" && Array.isArray(s.words) && s.words.length > 0 && s.words.every(validSyncedWord),
+  );
+}
+function setsSyncReady() {
+  return isLinked() && Boolean(syncPasscode()) && storageAvailable;
+}
+// sets.js 가 세트를 지울 때 부른다: 같은 아이의 다른 기기에서도 지워지도록 묘비를 남긴다.
+function noteSetDeleted(id) {
+  if (!isLinked()) return;
+  if (id === EXAMPLE_SET_ID && !(id in family.setsAcked)) return; // 서버가 모르는 예제 세트는 묘비가 필요 없다
+  family.setsDeleted = [...family.setsDeleted.filter((d) => d.id !== id), { id, deletedAt: new Date().toISOString() }].slice(-200);
+  delete family.setsAcked[id];
+  writeFamily();
+}
+// sets.js 가 세트를 저장·이름 바꾸기·삭제·가져오기 한 뒤 부른다.
+function queueSetsSync() {
+  syncSets({ force: true });
+}
+let setsSyncInFlight = false, setsSyncAgain = false;
+async function syncSets(options = {}) {
+  if (!setsSyncReady()) {
+    renderFamilySettings();
+    return;
+  }
+  if (sessionRunning) return; // 시험 중에는 세트를 바꾸지 않는다(끝나고 화면 복귀 때 다시)
+  if (setsSyncInFlight) {
+    setsSyncAgain = true;
+    return;
+  }
+  if (!options.force && family.setsSyncedAt && Date.now() - Date.parse(family.setsSyncedAt) < SETS_CHECK_MS) return;
+  setsSyncInFlight = true;
+  renderFamilySettings();
+  try {
+    // 수정 시각이 없는 옛 세트(동기화 전에 만든 것)는 지금 시각을 붙여 올린다
+    if (sets.some((s) => !s.updatedAt && !isUntouchedExample(s))) {
+      const stamp = new Date().toISOString();
+      if (!persistSets(sets.map((s) => (s.updatedAt || isUntouchedExample(s) ? s : { ...s, updatedAt: stamp })))) throw Error("세트를 저장하지 못했어요. 저장 공간을 확인하세요.");
+    }
+    const mine = sets.filter((s) => !isUntouchedExample(s));
+    const dirty = mine.filter((s) => family.setsAcked[s.id] !== s.updatedAt);
+    const deleted = family.setsDeleted.slice();
+    const data = await familyRequest("/sets/" + encodeURIComponent(family.childId), {
+      body: {
+        device: { id: ensureDeviceId(), label: deviceLabel() },
+        known: mine.map((s) => ({ id: s.id, updatedAt: s.updatedAt })),
+        sets: dirty.map((s) => ({ id: s.id, name: s.name, words: s.words, updatedAt: s.updatedAt })),
+        deleted,
+      },
+      passcode: syncPasscode(),
+      timeout: SETS_TIMEOUT_MS,
+    });
+    applySetsResponse(data, deleted);
+  } catch (e) {
+    family.setsError = e?.message || String(e);
+    writeFamily();
+  } finally {
+    setsSyncInFlight = false;
+    renderFamilySettings();
+    if (setsSyncAgain) {
+      setsSyncAgain = false;
+      syncSets({ force: true });
+    }
+  }
+}
+// 서버 응답을 기기에 반영: 받은 세트는 넣거나 바꾸고, 지워진 세트는 빼고, 손대지 않은 예제 세트는 치운다.
+function applySetsResponse(data, sentDeleted) {
+  const incoming = (Array.isArray(data?.sets) ? data.sets : []).filter(validSyncedSet);
+  const removed = new Set((Array.isArray(data?.deleted) ? data.deleted : []).filter((id) => typeof id === "string"));
+  const next = sets.filter((s) => !removed.has(s.id) && !isUntouchedExample(s));
+  for (const s of incoming) {
+    const normalized = { id: s.id, name: tidy(s.name).slice(0, 120), words: s.words, updatedAt: s.updatedAt };
+    const i = next.findIndex((x) => x.id === s.id);
+    if (i >= 0) next[i] = normalized;
+    else next.push(normalized);
+  }
+  const changed = next.length !== sets.length || incoming.length > 0 || removed.size > 0;
+  if (changed && !persistSets(next)) throw Error("세트를 저장하지 못했어요. 저장 공간을 확인하세요.");
+  for (const id of removed) {
+    try {
+      localStorage.removeItem("daily_vocab_missed_" + id);
+    } catch {}
+  }
+  family.setsAcked = Object.fromEntries(
+    (Array.isArray(data?.summary) ? data.summary : []).filter((s) => s && typeof s.id === "string" && typeof s.updatedAt === "string").map((s) => [s.id, s.updatedAt]),
+  );
+  family.setsDeleted = family.setsDeleted.filter((d) => !sentDeleted.some((x) => x.id === d.id && x.deletedAt === d.deletedAt));
+  family.setsSyncedAt = new Date().toISOString();
+  family.setsError = "";
+  writeFamily();
+  if (changed) selectSet(sets.some((s) => s.id === activeSetId) ? activeSetId : sets[0]?.id ?? null); // WORDS·범위·기록 필터를 새 세트 목록으로
+}
+
 // ---- 아이 기기: 아이 코드·전용 링크로 연결 ----
 // 전용 링크(…/?child=483921)로 열렸으면 코드를 꺼내고 주소에서 지운다.
 function linkCodeFromUrl() {
@@ -335,11 +456,13 @@ async function joinChild(code) {
       daily = emptyDaily();
       writeDaily();
     }
+    if (switching) family = { ...family, setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "" }; // 새 아이의 세트와 처음부터 맞춘다
     $("childCode").value = "";
     $("familySend").checked = true;
     renderFamilySettings(`이 기기를 ‘${family.childName}’의 기기로 연결했어요. 기록을 보내는 중…`);
     flushFamilySync({ force: true });
     checkDaily({ force: true });
+    syncSets({ force: true }); // 이 아이의 세트를 받고 이 기기의 세트를 올린다
     return true;
   } catch (e) {
     setFeedback(
@@ -355,9 +478,12 @@ async function joinChild(code) {
 async function handleLinkCode(code) {
   if (isLinked() && family.joinCode === code) {
     renderFamilySettings();
+    fetchSettings({ force: true });
+    checkDaily({ ignoreThrottle: true });
+    syncSets({ force: true });
     return;
   }
-  if (isLinked() && !confirm(`이 기기는 이미 ‘${family.childName}’의 기기로 연결되어 있어요. 링크의 아이로 바꿀까요? 지금까지의 기록은 각자에게 남아요.`)) return;
+  if (isLinked() && !confirm(`이 기기는 이미 ‘${family.childName}’의 기기로 연결되어 있어요. 링크의 아이로 바꿀까요? 지금까지의 기록은 각자에게 남고, 이 기기의 세트는 링크의 아이 세트와 합쳐져요.`)) return;
   showView("settings");
   $("familySettings").open = true;
   $("childCode").value = code;
@@ -376,7 +502,10 @@ $("childCode").addEventListener("keydown", (e) => {
 $("unlinkChild").onclick = () => {
   if (!isLinked()) return;
   if (!confirm(`이 기기를 ‘${family.childName}’에서 연결 해제할까요? 이 기기의 세트와 기록은 그대로 남고, 서버에 보낸 기록도 지워지지 않아요.`)) return;
-  family = { ...family, childId: "", childName: "", joinCode: "", pendingCode: "", sendEnabled: false, pending: [], lastError: "", settings: { timeLimitSec: 0, fetchedAt: "" } };
+  family = {
+    ...family, childId: "", childName: "", joinCode: "", pendingCode: "", sendEnabled: false, pending: [], lastError: "",
+    setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "", settings: { timeLimitSec: 0, fetchedAt: "" },
+  };
   writeFamily();
   daily = emptyDaily();
   writeDaily();
@@ -518,6 +647,13 @@ function renderFamilySettings(progress) {
   if (linked) {
     $("childName").textContent = family.childName;
     $("deviceLabelText").textContent = deviceLabel();
+    $("setsSyncText").textContent = setsSyncInFlight
+      ? "세트를 보호자·다른 기기와 맞추는 중…"
+      : family.setsError
+        ? "세트를 맞추지 못했어요: " + family.setsError
+        : family.setsSyncedAt
+          ? `세트 ${sets.length}개 · 보호자·다른 기기와 같은 세트 (마지막 확인 ${new Date(family.setsSyncedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })})`
+          : "세트는 아직 맞추지 않았어요. 인터넷이 되면 자동으로 보호자·다른 기기와 같아져요.";
   }
   const pill = $("familyState");
   pill.textContent = !linked ? "연결 안 됨" : !family.sendEnabled ? "꺼짐" : family.pending.length ? `보낼 기록 ${family.pending.length}개` : syncInFlight ? "보내는 중" : "기록 보내기 켜짐";
@@ -565,12 +701,16 @@ $("saveFamily").onclick = () => {
   if (enable) {
     flushFamilySync({ force: true });
     checkDaily({ force: true });
+    syncSets({ force: true });
   } else {
     renderFamilySettings("저장했어요. 이제 기록을 보내지 않아요.");
     renderDailyCard();
   }
 };
-$("syncNow").onclick = () => flushFamilySync({ force: true });
+$("syncNow").onclick = () => {
+  flushFamilySync({ force: true });
+  syncSets({ force: true });
+};
 // 보호자 코드 저장(설정의 보호자 폰 칸과 보호자 모드 첫 화면이 함께 쓴다). 저장되면 보호자 모드로 바뀌고 아이들 화면으로 간다.
 async function saveParentCode(input, button, status) {
   const code = input.value.trim();
@@ -586,6 +726,7 @@ async function saveParentCode(input, button, status) {
   }
   input.value = "";
   renderFamilySettings();
+  if (typeof renderAiSettings === "function") renderAiSettings(); // 보호자 코드로 사진 인식도 쓸 수 있다
   setFeedback(status, "info", "저장했어요. 아이들 기록을 확인하는 중…");
   button.disabled = true;
   try {
@@ -615,6 +756,7 @@ $("clearParent").onclick = () => {
   family.parentCode = "";
   family.parentModeOff = false;
   writeFamily();
+  if (typeof renderAiSettings === "function") renderAiSettings();
   familyData = null;
   try {
     localStorage.removeItem(FAMILY_CACHE_KEY);
@@ -923,9 +1065,11 @@ async function openChild(c) {
   $("childDetail").classList.remove("hidden");
   $("childDetailTitle").textContent = "🧒 " + c.name;
   renderLinkBox(c);
+  renderChildSets(c);
   renderPlan(c, summaryToday);
   setFeedback($("planStatus"), "info", "");
   setFeedback($("linkStatus"), "info", "");
+  setFeedback($("setsStatus"), "info", "");
   renderChildRecords("전체 기록을 불러오는 중…");
   $("childDetail").scrollIntoView({ behavior: "smooth", block: "start" });
   try {
@@ -933,6 +1077,7 @@ async function openChild(c) {
     if (familyDetail?.child.id !== c.id) return;
     familyDetail = { child: data.child || c, records: Array.isArray(data.records) ? data.records : [], today: data.today || summaryToday };
     renderLinkBox(familyDetail.child);
+    renderChildSets(familyDetail.child);
     renderPlan(familyDetail.child, familyDetail.today);
     renderChildRecords();
   } catch (e) {
@@ -1006,9 +1151,8 @@ function renderChildRecords(note) {
   const { child, records } = familyDetail;
   const sorted = records.slice().sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)));
   const avg = sorted.length ? Math.round(sorted.reduce((s, r) => s + pctOf(r), 0) / sorted.length) : 0;
-  const setsText = (Array.isArray(child.sets) ? child.sets : []).map((s) => `${s.name} ${s.count}단어`).join(", ");
-  $("childDetailSummary").textContent =
-    `시험 ${sorted.length}회` + (sorted.length ? ` · 평균 ${avg}점` : "") + (setsText ? ` · 세트: ${setsText}` : "") + (note ? " · " + note : "");
+  const setCount = Array.isArray(child.sets) ? child.sets.length : 0;
+  $("childDetailSummary").textContent = `시험 ${sorted.length}회` + (sorted.length ? ` · 평균 ${avg}점` : "") + ` · 세트 ${setCount}개` + (note ? " · " + note : "");
   renderMissedTop(sorted);
   const list = $("childRecords");
   list.textContent = "";
@@ -1052,6 +1196,112 @@ function renderChildRecords(note) {
     list.append(entry);
   }
 }
+// ---- 보호자 폰: 아이 세트 (아이 기기와 자동으로 같아짐) ----
+// 서버의 세트 요약(child.sets = [{id, name, count, updatedAt}])을 보여 주고, 사진으로 세트를 만들어 보내거나(편집기 재사용) 고치고 지운다.
+function renderChildSets(child) {
+  const list = $("childSets");
+  list.textContent = "";
+  const summary = (Array.isArray(child.sets) ? child.sets : []).filter((s) => s && typeof s.name === "string");
+  if (!summary.length) {
+    list.textContent = "아직 세트가 없어요. 아래 ‘세트 만들어 보내기’로 교재 사진에서 만들어 주면 아이 기기가 다음에 앱을 열 때 들어가요.";
+    return;
+  }
+  for (const s of summary) {
+    const row = document.createElement("div");
+    row.className = "set-row";
+    const name = document.createElement("span");
+    name.className = "set-name";
+    name.textContent = `${s.name} · ${s.count}단어`;
+    const when = document.createElement("small");
+    when.className = "muted";
+    when.textContent = s.id && s.updatedAt ? relativeTime(s.updatedAt) : "아이 기기가 새 버전으로 보내면 여기서 고칠 수 있어요";
+    row.append(name, when);
+    if (s.id) {
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "btn small";
+      edit.textContent = "보기·수정";
+      edit.addEventListener("click", () => openChildSet(child, s));
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "btn small outline danger";
+      del.textContent = "삭제";
+      del.addEventListener("click", () => deleteChildSet(child, s));
+      row.append(edit, del);
+    }
+    list.append(row);
+  }
+}
+async function openChildSet(child, s) {
+  setFeedback($("setsStatus"), "info", `‘${s.name}’을(를) 불러오는 중…`);
+  try {
+    const data = await familyRequest("/family/" + encodeURIComponent(child.id) + "/sets/" + encodeURIComponent(s.id), {
+      method: "GET", passcode: family.parentCode, timeout: SETS_TIMEOUT_MS,
+    });
+    if (!validSyncedSet(data?.set)) throw Error("세트 내용이 올바르지 않아요.");
+    setFeedback($("setsStatus"), "info", "");
+    openChildSetEditor(child, data.set);
+  } catch (e) {
+    setFeedback($("setsStatus"), "bad", "세트를 불러오지 못했어요: " + e.message);
+  }
+}
+// 보호자 편집기: sets.js 의 편집 화면을 그대로 쓰되 저장은 기기가 아니라 아이의 세트로 서버에 보낸다(editorForChild).
+function openChildSetEditor(child, set) {
+  window.editorForChild = { id: child.id, name: child.name };
+  openEditor(set ? { id: set.id, name: set.name, words: set.words } : null); // sets.js
+}
+// sets.js 의 저장 버튼이 보호자 편집 중일 때 부른다.
+async function sendSetToChild(set) {
+  const target = window.editorForChild;
+  if (!target) return;
+  $("saveSet").disabled = true;
+  $("draftWarnings").textContent = `‘${target.name}’에게 보내는 중…`;
+  try {
+    const data = await familyRequest("/family/" + encodeURIComponent(target.id) + "/sets", {
+      method: "POST", body: { set: { id: set.id, name: set.name, words: set.words } }, passcode: family.parentCode, timeout: SETS_TIMEOUT_MS,
+    });
+    $("draftWarnings").textContent = "";
+    finishEditor(); // sets.js
+    returnToChild(Array.isArray(data?.summary) ? data.summary : null);
+    setFeedback($("setsStatus"), "good", `‘${set.name}’(${set.words.length}단어)을(를) ${target.name}에게 보냈어요. 아이 기기가 다음에 앱을 열 때 들어가요.`);
+  } catch (e) {
+    $("draftWarnings").textContent = "보내지 못했어요: " + e.message;
+  } finally {
+    $("saveSet").disabled = false;
+  }
+}
+// 보호자 편집기를 닫거나 보낸 뒤 아이 상세로 돌아간다(세트 요약을 받았으면 반영).
+function returnToChild(summary) {
+  const target = window.editorForChild;
+  window.editorForChild = null;
+  const cached = target ? familyData?.children.find((c) => c.id === target.id) : null;
+  if (cached && summary) {
+    cached.sets = summary;
+    updateCachedChild(cached);
+  }
+  showView("family");
+  if (cached) openChild(cached);
+}
+async function deleteChildSet(child, s) {
+  if (!confirm(`‘${s.name}’ 세트를 ${child.name}의 모든 기기에서 지울까요? 시험 기록은 남아요.`)) return;
+  setFeedback($("setsStatus"), "info", "지우는 중…");
+  try {
+    const data = await familyRequest("/family/" + encodeURIComponent(child.id) + "/sets/" + encodeURIComponent(s.id), { method: "DELETE", passcode: family.parentCode });
+    const summary = Array.isArray(data?.summary) ? data.summary : (child.sets || []).filter((x) => x.id !== s.id);
+    if (familyDetail?.child.id === child.id) {
+      familyDetail.child = { ...familyDetail.child, sets: summary };
+      updateCachedChild(familyDetail.child);
+      renderChildSets(familyDetail.child);
+      renderChildRecords();
+    }
+    setFeedback($("setsStatus"), "good", `‘${s.name}’을(를) 지웠어요. 아이 기기에서는 다음에 앱을 열 때 사라져요.`);
+  } catch (e) {
+    setFeedback($("setsStatus"), "bad", "지우지 못했어요: " + e.message);
+  }
+}
+$("sendNewSet").onclick = () => {
+  if (familyDetail?.child) openChildSetEditor(familyDetail.child, null);
+};
 // ---- 보호자 폰: 오늘의 단어 계획 ----
 function fillPlanSelects() {
   const level = $("planLevel");
@@ -1221,16 +1471,19 @@ function initFamily() {
     if (family.pending.length) flushFamilySync();
     fetchSettings({ force: true }); // 보호자가 바꾼 제한 시간 등을 앱을 열 때 받아 둔다
     checkDaily({ ignoreThrottle: true }); // 앱을 새로 열 때는 10분 제한 없이 확인한다(보호자가 방금 켰을 수 있다)
+    syncSets({ force: true }); // 보호자·다른 기기가 바꾼 세트를 받고 이 기기의 변경을 올린다
   }
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
     if (family.pending.length) flushFamilySync();
     fetchSettings();
     checkDaily();
+    syncSets();
   });
   window.addEventListener("online", () => {
     if (family.pending.length) flushFamilySync();
     fetchSettings();
     checkDaily();
+    syncSets();
   });
 }

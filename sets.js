@@ -67,6 +67,7 @@ $("renameSave").onclick = () => {
   populateSets();
   renderHome();
   renderHistory();
+  if (typeof queueSetsSync === "function") queueSetsSync(); // family.js
   $("manageStatus").textContent = `이름을 ‘${name}’(으)로 바꿨어요.`;
   status(`이름을 ‘${name}’(으)로 바꿨어요.`);
 };
@@ -87,7 +88,8 @@ function openEditor(set) {
   editingId = set?.id || null;
   selectedFiles = [];
   aiFilled = new Map();
-  $("manageBox").classList.toggle("hidden", !set);
+  const target = window.editorForChild || null; // family.js: 보호자가 아이에게 보낼 세트를 만들거나 고치는 중
+  $("manageBox").classList.toggle("hidden", !set || Boolean(target)); // 아이 세트의 이름 바꾸기·삭제는 아이들 화면에서 한다
   $("manageStatus").textContent = "";
   $("renameBox").classList.add("hidden");
   $("setName").value = set?.name || "새 세트 " + new Date().toLocaleDateString("sv-SE");
@@ -101,7 +103,7 @@ function openEditor(set) {
   releasePhotos();
   $("extractStatus").textContent = set ? "" : "사진을 고르거나 찍은 뒤 ‘사진에서 단어 가져오기’를 누르세요. 직접 입력해도 돼요.";
   $("draftWarnings").textContent = "";
-  $("editorTitle").textContent = set ? "✏️ 세트 수정" : "➕ 새 세트 만들기";
+  $("editorTitle").textContent = (set ? "✏️ 세트 수정" : "➕ 새 세트 만들기") + (target ? ` → 🧒 ${target.name}에게 보내기` : "");
   window.editorOpen = true;
   setTextMode(false);
   draftDirty = false;
@@ -122,13 +124,17 @@ function cancelExtract() {
   $("extractStatus").textContent = "취소했습니다. 다시 시도하거나 아래에 직접 입력하세요.";
 }
 $("cancelExtract").onclick = cancelExtract;
-$("closeEditor").onclick = () => {
-  if (!confirmDiscardDraft()) return;
-  cancelExtract();
-  releasePhotos();
+function finishEditor() {
   window.editorOpen = false;
   draftDirty = false;
   selectedFiles = [];
+  releasePhotos();
+}
+$("closeEditor").onclick = () => {
+  if (!confirmDiscardDraft()) return;
+  cancelExtract();
+  finishEditor();
+  if (window.editorForChild && typeof returnToChild === "function") return returnToChild(); // family.js: 보호자는 아이 상세로 돌아간다
   showView("home");
 };
 function renderPhotos(announce = false) {
@@ -367,35 +373,36 @@ $("saveSet").onclick = () => {
   }
   const id = editingId || crypto.randomUUID();
   const set = { id, name, words, updatedAt: new Date().toISOString() };
+  if (window.editorForChild && typeof sendSetToChild === "function") return sendSetToChild(set); // family.js: 보호자 → 아이의 세트로 서버에 보낸다
   const others = sets.filter((s) => s.id !== id);
   const index = sets.findIndex((s) => s.id === id);
   const next = index >= 0 ? [...sets.slice(0, index), set, ...sets.slice(index + 1)] : [...others, set];
   if (persistSets(next)) {
     if (previous && previous.name !== name && historyRecords.some((r) => r.setId === id))
       persistHistory(historyRecords.map((r) => (r.setId === id ? { ...r, setName: name } : r)));
-    window.editorOpen = false;
-    draftDirty = false;
-    selectedFiles = [];
-    releasePhotos();
+    finishEditor();
     selectSet(id);
     showView("home");
     status(`‘${name}’ 세트를 저장했어요 (${words.length}단어). 아래에서 시험을 시작해 보세요.`);
+    if (typeof queueSetsSync === "function") queueSetsSync(); // family.js: 연결된 아이의 다른 기기·보호자에게도 같은 세트가 가도록
   }
 };
+// 마지막 세트도 지울 수 있다(세트 0개 허용). 연결된 아이 기기면 다른 기기에서도 지워진다(family.js 묘비).
 $("deleteSet").onclick = () => {
   const targetId = editingId || activeSetId;
-  if (sets.length === 1) {
-    $("manageStatus").textContent = "마지막 세트는 삭제할 수 없어요. 새 세트를 먼저 만들어 주세요.";
-    return;
-  }
   const set = sets.find((s) => s.id === targetId);
-  if (confirm(`‘${set?.name}’ 세트를 삭제할까요? 단어는 사라지지만 시험 기록은 남아요.`) && persistSets(sets.filter((s) => s.id !== targetId))) {
-    window.editorOpen = false;
-    draftDirty = false;
-    releasePhotos();
-    selectSet(sets[0].id);
+  if (!set) return;
+  const linked = typeof isLinked === "function" && isLinked();
+  const question = linked
+    ? `‘${set.name}’ 세트를 삭제할까요? 같은 아이로 연결된 다른 기기에서도 사라져요. 시험 기록은 남아요.`
+    : `‘${set.name}’ 세트를 삭제할까요? 단어는 사라지지만 시험 기록은 남아요.`;
+  if (confirm(question) && persistSets(sets.filter((s) => s.id !== targetId))) {
+    if (typeof noteSetDeleted === "function") noteSetDeleted(targetId);
+    finishEditor();
+    selectSet(sets[0]?.id ?? null);
     showView("home");
-    status("세트를 삭제했어요.");
+    status(sets.length ? "세트를 삭제했어요." : "세트를 모두 지웠어요. 새 세트를 만들거나 보호자가 보내 주면 여기에 나타나요.");
+    if (typeof queueSetsSync === "function") queueSetsSync();
   }
 };
 
@@ -465,8 +472,10 @@ $("importSets").onchange = async () => {
     )
       throw Error("백업 형식 또는 단어/이력이 올바르지 않습니다");
     const idMap = new Map(data.sets.map((s) => [s.id, crypto.randomUUID()]));
-    const imported = data.sets.map((s) => ({ ...s, id: idMap.get(s.id) }));
+    const importedAt = new Date().toISOString();
+    const imported = data.sets.map((s) => ({ ...s, id: idMap.get(s.id), updatedAt: importedAt })); // 새 수정 시각: 연결된 아이의 다른 기기에도 올라가도록
     if (!persistSets([...sets, ...imported])) return;
+    if (typeof queueSetsSync === "function") queueSetsSync(); // family.js
     const records = (data.history || []).map((r) => ({ ...r, id: crypto.randomUUID(), setId: idMap.get(r.setId) || "import-deleted-" + r.setId }));
     const merged = [...records, ...historyRecords].sort((a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt));
     if (!persistHistory(merged)) status("세트는 가져왔지만 이력 저장에 실패했습니다. 원본 JSON을 보관하세요.");
@@ -551,7 +560,8 @@ function savedAi() {
 function aiConfig() {
   const saved = savedAi();
   const server = normalizeServer(saved?.server || AI_SERVER_DEFAULT);
-  const passcode = typeof saved?.passcode === "string" ? saved.passcode.trim() : "";
+  // 보호자 폰은 AI 연결에 코드를 따로 넣지 않아도 보호자 코드로 사진 인식·AI 사전을 쓴다(Worker가 보호자 코드를 가족 코드가 통하는 곳에 모두 허용).
+  const passcode = (typeof saved?.passcode === "string" ? saved.passcode.trim() : "") || (typeof family === "object" && family?.parentCode) || "";
   return server && passcode ? { server, passcode } : null;
 }
 function storeAi(next) {
