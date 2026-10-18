@@ -27,6 +27,8 @@ const { chromium } = require("playwright");
   const requests = [];
   const children = new Map();
   const dailies = new Map(); // childId:date → daily
+  const HANEUL = "11111111-2222-4333-8444-555555555555", HANEUL_CODE = "483921"; // 보호자가 미리 만들어 둔 아이
+  children.set(HANEUL, { id: HANEUL, name: "하늘", joinCode: HANEUL_CODE, devices: {}, sets: [], records: new Map(), lastTestAt: null });
   const NEW_WORDS = ["glimpse", "verdict", "linger", "thrive", "plead", "subtle", "wither", "forge", "ample", "dwell", "exert", "notion"];
   const localDate = () => {
     const d = new Date();
@@ -60,10 +62,17 @@ const { chromium } = require("playwright");
     const passcode = req.headers()["x-app-passcode"];
     requests.push({ method: req.method(), path: url.pathname, search: url.search, passcode, body });
     const family = [FAMILY_CODE, PARENT_CODE].includes(passcode);
+    if (url.pathname === "/join" && req.method() === "POST") {
+      if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
+      const c = [...children.values()].find((x) => x.joinCode === String(body.code || "").replace(/\D/g, ""));
+      if (!c) return reply(route, 404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요." });
+      if (body.device?.id) c.devices[body.device.id] = { label: body.device.label, joinedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() };
+      return reply(route, 200, { ok: true, childId: c.id, name: c.name });
+    }
     if (url.pathname === "/sync" && req.method() === "POST") {
       if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      const c = children.get(body.child.id) || { id: body.child.id, sets: [], records: new Map(), lastTestAt: null };
-      c.name = body.child.name;
+      const c = children.get(body.child.id) || { id: body.child.id, sets: [], records: new Map(), lastTestAt: null, devices: {} };
+      if (!c.name) c.name = body.child.name;
       if (body.sets) c.sets = body.sets;
       if (body.anchor) c.anchor = body.anchor;
       c.updatedAt = new Date().toISOString();
@@ -122,14 +131,14 @@ const { chromium } = require("playwright");
   await page.evaluate((cfg) => localStorage.setItem("daily_vocab_ai_v2", JSON.stringify(cfg)), { server: SERVER, passcode: FAMILY_CODE });
   await page.reload();
 
-  // 아이 기기: 기록 보내기를 켠다. 계획이 꺼져 있으므로 오늘의 단어 카드는 없다.
+  // 아이 기기: 아이 코드로 연결한다(보내기 자동 켜짐). 계획이 꺼져 있으므로 오늘의 단어 카드는 없다.
   await page.click("#tabSettings");
   await openFamilySettings();
-  await page.fill("#childName", "하늘");
-  await page.check("#familySend");
-  await page.click("#saveFamily");
-  await waitFor(() => statusHas("familyStatus", "마지막 전송"), "registered");
+  await page.fill("#childCode", HANEUL_CODE);
+  await page.click("#joinChild");
+  await waitFor(() => statusHas("familyStatus", "마지막 전송"), "joined and registered");
   const childId = paths("/sync")[0].body.child.id;
+  assert(childId === HANEUL && (await page.textContent("#childName")) === "하늘", "joined as the pre-made child");
   await waitFor(() => paths("/daily/" + childId, "GET").length >= 1, "daily checked after enabling");
   assert(paths("/daily/" + childId, "POST").length === 0, "no generation while the plan is off");
   assert(await page.isHidden("#dailyCard"), "no daily card while the plan is off");

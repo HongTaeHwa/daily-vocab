@@ -1,11 +1,11 @@
 "use strict";
-// family.js — 가족 기록함 + 오늘의 단어.
-// 아이 기기는 시험을 마칠 때마다 압축 기록(점수·틀린 단어·세트 이름)을 가족 서버(Worker)에 보내고, 매일 ‘오늘의 단어’를 받아 홈 카드로 보여 준다.
-// 보호자 폰은 보호자 코드를 저장하면 생기는 ‘아이들’ 탭에서 아이별 기록을 보고 오늘의 단어 계획(켜기·수준·개수·시각)을 정한다.
-// quiz.js(기록·뷰 전환) 다음, sets.js(AI 서버 주소·접속 코드) 앞에 불러온다. sets.js가 마지막에 initFamily()를 부른다.
-// 저장 키 daily_vocab_family_v1 = {childId, childName, sendEnabled, lastSyncAt, lastError, pending:[기록 id], parentCode}
+// family.js — 가족 기록함 + 오늘의 단어 + 아이 코드 연결.
+// 보호자 폰은 보호자 코드를 저장하면 생기는 ‘아이들’ 탭에서 아이를 만들고(6자리 아이 코드·전용 링크), 아이별 기록을 보고, 오늘의 단어 계획을 정한다.
+// 아이 기기(아이폰·태블릿)는 아이 코드나 전용 링크(?child=코드)로 연결되어 시험을 마칠 때마다 압축 기록을 보내고 매일 ‘오늘의 단어’를 받는다.
+// 같은 코드를 넣은 기기는 한 아이로 묶인다. quiz.js 다음, sets.js 앞에 불러오고 sets.js가 마지막에 initFamily()를 부른다.
+// 저장 키 daily_vocab_family_v1 = {childId, childName, joinCode, pendingCode, deviceId, sendEnabled, lastSyncAt, lastError, pending:[기록 id], parentCode}
 //        daily_vocab_daily_v1  = {childId, date, words, level, note, fetchedAt, result?, disabled?, lastCheckedAt, lastError?}
-// 보호자 코드·아이 이름은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다.
+// 보호자 코드·아이 코드·아이 이름은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다.
 const FAMILY_KEY = "daily_vocab_family_v1";
 const FAMILY_CACHE_KEY = "daily_vocab_family_cache_v1";
 const DAILY_KEY = "daily_vocab_daily_v1";
@@ -14,11 +14,15 @@ const FAMILY_TIMEOUT_MS = 20000;
 const DAILY_TIMEOUT_MS = 90000; // 오늘의 단어 생성은 Claude 호출이라 더 기다린다
 const FAMILY_MISSED_LIMIT = 200; // 기록 하나에 담는 틀린 단어 수 (Worker 상한과 같음)
 const ANCHOR_LIMIT = 60; // 교재 앵커: 최근 세트에서 보내는 영어 단어 수 (Worker 상한과 같음)
-const DAILY_CHECK_MS = 10 * 60 * 1000; // 오늘 것이 없거나 꺼져 있을 때 다시 물어보는 간격
+const DAILY_CHECK_MS = 10 * 60 * 1000; // 오늘 것이 없거나 꺼져 있을 때, 또는 다른 기기의 완료를 확인할 때 다시 물어보는 간격
+const JOIN_CODE_PATTERN = /^\d{6}$/;
 const PLAN_LEVELS = ["초등 고학년 상위권", "중1", "중2 상위권", "중3·고1", "고1·수능 기초", "고2·수능 실전"];
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const tidy = (s) => String(s ?? "").replace(/[\t\r\n]+/g, " ").trim();
 const hourLabel = (h) => (h < 12 ? "오전 " : "오후 ") + (h % 12 || 12) + "시";
+const formatCode = (code) => (code ? String(code).slice(0, 3) + " " + String(code).slice(3) : "");
+const appBaseUrl = () => new URL("./", location.href).href;
+const linkFor = (code) => appBaseUrl() + "?child=" + code;
 
 function readFamily() {
   let saved = null;
@@ -26,9 +30,13 @@ function readFamily() {
     saved = JSON.parse(localStorage.getItem(FAMILY_KEY) || "null");
   } catch {}
   const f = saved && typeof saved === "object" ? saved : {};
+  const idLike = (v) => (typeof v === "string" && /^[A-Za-z0-9-]{8,64}$/.test(v) ? v : "");
   return {
-    childId: typeof f.childId === "string" && /^[A-Za-z0-9-]{8,64}$/.test(f.childId) ? f.childId : "",
+    childId: idLike(f.childId),
     childName: typeof f.childName === "string" ? tidy(f.childName).slice(0, 20) : "",
+    joinCode: typeof f.joinCode === "string" && JOIN_CODE_PATTERN.test(f.joinCode) ? f.joinCode : "",
+    pendingCode: typeof f.pendingCode === "string" && JOIN_CODE_PATTERN.test(f.pendingCode) ? f.pendingCode : "",
+    deviceId: idLike(f.deviceId),
     sendEnabled: f.sendEnabled === true,
     lastSyncAt: typeof f.lastSyncAt === "string" ? f.lastSyncAt : "",
     lastError: typeof f.lastError === "string" ? f.lastError : "",
@@ -45,12 +53,29 @@ function writeFamily() {
     return false;
   }
 }
+// 보호자 화면에 보일 기기 이름. iPadOS는 Mac처럼 보이므로 터치 지원으로 가른다.
+function deviceLabel() {
+  const ua = navigator.userAgent || "";
+  if (/iPhone/.test(ua)) return "iPhone";
+  if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return "iPad";
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? "Android 폰" : "Android 태블릿";
+  if (/Windows/.test(ua)) return "Windows PC";
+  if (/Macintosh/.test(ua)) return "Mac";
+  return "기타 기기";
+}
+function ensureDeviceId() {
+  if (!family.deviceId) {
+    family.deviceId = crypto.randomUUID();
+    writeFamily();
+  }
+  return family.deviceId;
+}
 
 // ---- 가족 서버 요청 (서버 주소는 sets.js 의 AI 연결 설정과 같다) ----
 function familyServer() {
   return normalizeServer(savedAi()?.server || AI_SERVER_DEFAULT);
 }
-// 기록 보내기·오늘의 단어 받기는 가족 코드(AI 접속 코드)로, 없으면 보호자 코드로 보낸다.
+// 기록 보내기·연결·오늘의 단어 받기는 가족 코드(AI 접속 코드)로, 없으면 보호자 코드로 보낸다.
 function syncPasscode() {
   return aiConfig()?.passcode || family.parentCode || "";
 }
@@ -84,7 +109,7 @@ async function familyRequest(path, { method = "POST", body, passcode, timeout = 
   const code = payload?.error;
   let message;
   if (response.status === 401) message = viewing ? "보호자 코드가 맞지 않아요. 다시 입력해 주세요." : "접속 코드가 맞지 않아요. 보호자 설정 · AI 연결에서 다시 입력하세요.";
-  else if (response.status === 404 && !["unknown_child", "no_daily"].includes(code))
+  else if (response.status === 404 && !["unknown_child", "no_daily", "unknown_code"].includes(code))
     message = "AI 서버가 아직 이 기능을 지원하지 않아요. 보호자가 Worker를 새 버전으로 다시 배포해 주세요.";
   else if (response.status === 403) message = "이 주소에서는 가족 서버를 쓸 수 없어요. 보호자가 ALLOWED_ORIGINS를 확인해 주세요.";
   else if (typeof payload?.message === "string" && payload.message) message = payload.message;
@@ -122,13 +147,14 @@ function anchorPayload() {
   const words = [...new Set(set.words.map((w) => tidy(w.en)).filter((w) => WORD_PATTERN.test(w)))].slice(0, ANCHOR_LIMIT);
   return { setName: set.name, words };
 }
+const isLinked = () => Boolean(family.childId && family.childName);
 function syncReady() {
-  return family.sendEnabled && Boolean(family.childName && family.childId && syncPasscode());
+  return isLinked() && family.sendEnabled && Boolean(syncPasscode());
 }
 // quiz.js 의 saveSession 이 기록을 확정할 때(완료·중단) 부른다.
 function queueFamilySync(record) {
   if (record.daily) noteDailyResult(record);
-  if (!family.sendEnabled) return;
+  if (!syncReady() && !family.sendEnabled) return;
   if (!family.pending.includes(record.id)) family.pending.push(record.id);
   writeFamily();
   flushFamilySync();
@@ -145,7 +171,7 @@ async function flushFamilySync(options = {}) {
     return;
   }
   family.pending = family.pending.filter((id) => historyRecords.some((r) => r.id === id)); // 기기에서 지운 기록은 보내지 않는다
-  let force = options.force === true; // 기록이 없어도 아이 이름·세트 목록·앵커를 한 번 보낸다
+  let force = options.force === true; // 기록이 없어도 아이 이름·기기·세트 목록·앵커를 한 번 보낸다
   if (!family.pending.length && !force) {
     writeFamily();
     renderFamilySettings();
@@ -161,6 +187,7 @@ async function flushFamilySync(options = {}) {
       await familyRequest("/sync", {
         body: {
           child: { id: family.childId, name: family.childName },
+          device: { id: ensureDeviceId(), label: deviceLabel() },
           records,
           sets: sets.map((s) => ({ name: s.name, count: s.words.length })),
           anchor: anchorPayload(),
@@ -184,6 +211,107 @@ async function flushFamilySync(options = {}) {
     }
   }
 }
+
+// ---- 아이 기기: 아이 코드·전용 링크로 연결 ----
+// 전용 링크(…/?child=483921)로 열렸으면 코드를 꺼내고 주소에서 지운다.
+function linkCodeFromUrl() {
+  try {
+    const u = new URL(location.href);
+    const fromHash = /child=(\d{6})/.exec(u.hash);
+    const raw = u.searchParams.get("child") || (fromHash ? fromHash[1] : "");
+    if (u.searchParams.has("child") || fromHash) {
+      u.searchParams.delete("child");
+      u.hash = u.hash.replace(/#?child=\d+/, "");
+      history.replaceState(history.state, "", u.pathname + u.search + u.hash);
+    }
+    const code = String(raw || "").replace(/\D/g, "");
+    return JOIN_CODE_PATTERN.test(code) ? code : "";
+  } catch {
+    return "";
+  }
+}
+async function joinChild(code) {
+  code = String(code || "").replace(/\D/g, "");
+  if (!JOIN_CODE_PATTERN.test(code)) {
+    setFeedback($("familyStatus"), "bad", "아이 코드는 숫자 6자리예요. 보호자 폰의 아이들 탭에서 확인하세요.");
+    return false;
+  }
+  const passcode = syncPasscode();
+  if (!passcode) {
+    family.pendingCode = code;
+    writeFamily();
+    $("childCode").value = code;
+    $("aiSettings").open = true; // 접속 코드를 넣을 곳을 바로 보여 준다
+    renderFamilySettings();
+    setFeedback($("familyStatus"), "bad", `아이 코드 ${formatCode(code)}을(를) 연결하려면 먼저 위의 ‘보호자 설정 · AI 연결’에서 접속 코드를 저장하세요. 저장하면 바로 연결돼요.`);
+    return false;
+  }
+  $("joinChild").disabled = true;
+  setFeedback($("familyStatus"), "info", "아이 코드를 확인하는 중…");
+  try {
+    const data = await familyRequest("/join", { body: { code, device: { id: ensureDeviceId(), label: deviceLabel() } }, passcode });
+    const switching = family.childId && family.childId !== data.childId;
+    family.childId = data.childId;
+    family.childName = tidy(data.name).slice(0, 20) || "아이";
+    family.joinCode = code;
+    family.pendingCode = "";
+    family.sendEnabled = true;
+    family.lastError = "";
+    family.pending = [...new Set([...historyRecords.map((r) => r.id), ...family.pending])]; // 연결하면 지금까지의 기록도 함께 보낸다
+    writeFamily();
+    if (switching || daily.childId !== family.childId) {
+      daily = emptyDaily();
+      writeDaily();
+    }
+    $("childCode").value = "";
+    $("familySend").checked = true;
+    renderFamilySettings(`이 기기를 ‘${family.childName}’의 기기로 연결했어요. 기록을 보내는 중…`);
+    flushFamilySync({ force: true });
+    checkDaily({ force: true });
+    return true;
+  } catch (e) {
+    setFeedback(
+      $("familyStatus"),
+      "bad",
+      e.code === "unknown_code" ? "그 아이 코드를 찾을 수 없어요. 보호자 폰의 아이들 탭에서 코드를 다시 확인해 주세요." : "연결 실패: " + e.message,
+    );
+    return false;
+  } finally {
+    $("joinChild").disabled = false;
+  }
+}
+async function handleLinkCode(code) {
+  if (isLinked() && family.joinCode === code) {
+    renderFamilySettings();
+    return;
+  }
+  if (isLinked() && !confirm(`이 기기는 이미 ‘${family.childName}’의 기기로 연결되어 있어요. 링크의 아이로 바꿀까요? 지금까지의 기록은 각자에게 남아요.`)) return;
+  showView("settings");
+  $("familySettings").open = true;
+  $("childCode").value = code;
+  $("familySettings").scrollIntoView({ behavior: "smooth", block: "start" });
+  await joinChild(code);
+}
+// sets.js 가 접속 코드를 저장한 뒤 부른다: 링크로 받아 둔 아이 코드가 있으면 바로 연결한다.
+function onAiSettingsSaved() {
+  renderFamilySettings();
+  if (family.pendingCode && syncPasscode()) joinChild(family.pendingCode);
+}
+$("joinChild").onclick = () => joinChild($("childCode").value);
+$("childCode").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("joinChild").click();
+});
+$("unlinkChild").onclick = () => {
+  if (!isLinked()) return;
+  if (!confirm(`이 기기를 ‘${family.childName}’에서 연결 해제할까요? 이 기기의 세트와 기록은 그대로 남고, 서버에 보낸 기록도 지워지지 않아요.`)) return;
+  family = { ...family, childId: "", childName: "", joinCode: "", pendingCode: "", sendEnabled: false, pending: [], lastError: "" };
+  writeFamily();
+  daily = emptyDaily();
+  writeDaily();
+  $("familySend").checked = false;
+  renderFamilySettings("연결을 해제했어요. 다시 연결하려면 아이 코드를 넣으세요.");
+  renderDailyCard();
+};
 
 // ---- 아이 기기: 오늘의 단어 ----
 function emptyDaily() {
@@ -210,7 +338,9 @@ const todayKey = () => {
   return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
 };
 const dailyLabel = (date) => `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
-// 앱 시작·화면 복귀·보내기 켤 때. 오늘 것이 기기에 있으면 서버에 묻지 않고, 없으면 받고, 아직 없으면 만들어 달라고 한다.
+const resultFrom = (completed) =>
+  completed ? { id: completed.recordId, correct: completed.correct, total: completed.total, completedAt: completed.completedAt } : null;
+// 앱 시작·화면 복귀·연결 때. 오늘 것이 기기에 있으면 서버에 묻지 않고(다른 기기의 완료만 가끔 확인), 없으면 받고, 아직 없으면 만들어 달라고 한다.
 async function checkDaily(options = {}) {
   const today = todayKey();
   if (dailyChecking || !syncReady()) {
@@ -218,11 +348,12 @@ async function checkDaily(options = {}) {
     return;
   }
   const fresh = daily.childId === family.childId && daily.date === today;
-  if (fresh && daily.words.length && !options.force) {
+  const throttled = Boolean(daily.lastCheckedAt) && Date.now() - Date.parse(daily.lastCheckedAt) < DAILY_CHECK_MS;
+  if (fresh && !options.force && daily.words.length && (daily.result || throttled || options.ignoreThrottle)) {
     renderDailyCard();
     return;
   }
-  if (fresh && !options.force && !options.ignoreThrottle && daily.lastCheckedAt && Date.now() - Date.parse(daily.lastCheckedAt) < DAILY_CHECK_MS) {
+  if (fresh && !options.force && !options.ignoreThrottle && !daily.words.length && throttled) {
     renderDailyCard();
     return;
   }
@@ -240,7 +371,7 @@ async function checkDaily(options = {}) {
         writeDaily();
         return;
       } else if (e.code === "unknown_child") {
-        // 보호자가 서버에서 지운 뒤 다시 등록하는 경우
+        // 보호자가 서버에서 지운 경우: 다시 등록을 시도한다
         daily = { ...emptyDaily(), childId: family.childId, date: today, lastCheckedAt: now, lastError: e.message };
         writeDaily();
         flushFamilySync({ force: true });
@@ -248,7 +379,6 @@ async function checkDaily(options = {}) {
       } else throw e;
     }
     const words = (Array.isArray(data?.words) ? data.words : []).filter((w) => w && typeof w.en === "string" && typeof w.ko === "string");
-    const keepResult = fresh && daily.result;
     daily = {
       ...emptyDaily(),
       childId: family.childId,
@@ -258,7 +388,7 @@ async function checkDaily(options = {}) {
       note: typeof data.note === "string" ? data.note : "",
       fetchedAt: now,
       lastCheckedAt: now,
-      result: keepResult ? daily.result : data.completed ? { id: data.completed.recordId, correct: data.completed.correct, total: data.completed.total, completedAt: data.completed.completedAt } : null,
+      result: (fresh && daily.result) || resultFrom(data.completed), // 다른 기기에서 풀었으면 그 결과를 보여 준다
     };
     writeDaily();
   } catch (e) {
@@ -278,7 +408,7 @@ function noteDailyResult(record) {
 }
 function renderDailyCard() {
   const card = $("dailyCard");
-  const show = family.sendEnabled && !daily.disabled && daily.date === todayKey() && daily.words.length > 0;
+  const show = syncReady() && !daily.disabled && daily.childId === family.childId && daily.date === todayKey() && daily.words.length > 0;
   card.classList.toggle("hidden", !show);
   if (!show) return;
   const total = daily.words.length, review = daily.words.filter((w) => w.kind === "review").length;
@@ -310,12 +440,23 @@ $("startDaily").onclick = () => {
 
 // ---- 설정 화면(아이 기기 + 보호자 폰) ----
 function renderFamilySettings(progress) {
+  const linked = isLinked();
+  $("joinBox").classList.toggle("hidden", linked);
+  $("linkedBox").classList.toggle("hidden", !linked);
+  if (linked) {
+    $("childName").textContent = family.childName;
+    $("deviceLabelText").textContent = deviceLabel();
+  }
   const pill = $("familyState");
-  pill.textContent = !family.sendEnabled ? "꺼짐" : family.pending.length ? `보낼 기록 ${family.pending.length}개` : syncInFlight ? "보내는 중" : "기록 보내기 켜짐";
+  pill.textContent = !linked ? "연결 안 됨" : !family.sendEnabled ? "꺼짐" : family.pending.length ? `보낼 기록 ${family.pending.length}개` : syncInFlight ? "보내는 중" : "기록 보내기 켜짐";
   $("syncNow").disabled = !syncReady() || syncInFlight;
   let text = progress || "", type = "info";
   if (!text) {
-    if (!family.sendEnabled) text = "꺼져 있어요. 아이 이름을 적고 스위치를 켜서 저장하면 시험을 마칠 때마다 기록을 보내요.";
+    if (!linked)
+      text = family.pendingCode
+        ? `아이 코드 ${formatCode(family.pendingCode)}을(를) 연결하려면 먼저 위의 ‘보호자 설정 · AI 연결’에서 접속 코드를 저장하세요.`
+        : "보호자 폰의 아이들 탭에서 만든 아이 코드 6자리를 넣고 ‘연결’을 누르세요. 아이 전용 링크를 열어도 돼요.";
+    else if (!family.sendEnabled) text = "연결은 되어 있지만 보내기가 꺼져 있어요. 스위치를 켜고 저장하면 시험을 마칠 때마다 기록을 보내요.";
     else if (!syncPasscode()) {
       text = "보내려면 먼저 위의 ‘보호자 설정 · AI 연결’에서 접속 코드를 저장하세요.";
       type = "bad";
@@ -335,27 +476,20 @@ function renderFamilySettings(progress) {
   $("tabFamily").classList.toggle("hidden", !family.parentCode);
 }
 $("saveFamily").onclick = () => {
-  const name = tidy($("childName").value).slice(0, 20);
+  if (!isLinked()) return;
   const enable = $("familySend").checked;
-  if (enable && !name) {
-    setFeedback($("familyStatus"), "bad", "아이 이름을 먼저 적어 주세요.");
-    return;
-  }
   if (enable && !syncPasscode()) {
     setFeedback($("familyStatus"), "bad", "먼저 위의 ‘보호자 설정 · AI 연결’에서 접속 코드를 저장하세요.");
     return;
   }
-  if (!family.childId) family.childId = crypto.randomUUID();
   const turningOn = enable && !family.sendEnabled;
-  family.childName = name;
   family.sendEnabled = enable;
   family.lastError = "";
-  if (turningOn) family.pending = [...new Set([...historyRecords.map((r) => r.id), ...family.pending])]; // 처음 켤 때는 지금까지의 기록도 함께 보낸다
+  if (turningOn) family.pending = [...new Set([...historyRecords.map((r) => r.id), ...family.pending])]; // 다시 켤 때는 그동안의 기록도 함께 보낸다
   if (!writeFamily()) {
     setFeedback($("familyStatus"), "bad", "저장 실패: 브라우저 저장 공간을 확인하세요.");
     return;
   }
-  $("childName").value = family.childName;
   if (enable) {
     flushFamilySync({ force: true });
     checkDaily({ force: true });
@@ -383,7 +517,11 @@ $("saveParent").onclick = async () => {
   try {
     const data = await familyRequest("/family", { method: "GET", passcode: code });
     cacheFamily(data);
-    setFeedback($("parentStatus"), "good", `연결 성공 · 기록을 보낸 아이 ${familyData.children.length}명. 아래 ‘아이들’ 탭에서 볼 수 있어요.`);
+    setFeedback(
+      $("parentStatus"),
+      "good",
+      `연결 성공 · 등록된 아이 ${familyData.children.length}명. 아래 ‘아이들’ 탭에서 아이를 추가하고 기록을 볼 수 있어요.`,
+    );
   } catch (e) {
     setFeedback($("parentStatus"), "bad", "연결 실패: " + e.message);
   } finally {
@@ -418,6 +556,11 @@ function loadFamilyCache() {
     const cached = JSON.parse(localStorage.getItem(FAMILY_CACHE_KEY) || "null");
     if (cached && Array.isArray(cached.children)) familyData = cached;
   } catch {}
+}
+// 목록 캐시 안의 아이 하나를 바꾼다(이름·코드·기기 갱신 뒤).
+function updateCachedChild(child) {
+  if (!familyData) return;
+  cacheFamily({ ...familyData, children: familyData.children.map((c) => (c.id === child.id ? { ...c, ...child, records: c.records, today: child.today ?? c.today } : c)) });
 }
 async function refreshFamily() {
   if (!family.parentCode || familyLoading) return;
@@ -477,6 +620,11 @@ function dailyStatusText(c) {
   if (t?.exists) return "오늘의 단어 📬 도착 · 아직 안 풀었어요";
   return `오늘의 단어: 아직 없음 (${hourLabel(plan.hour)}에 만들어요)`;
 }
+function devicesSummary(devices) {
+  const counts = new Map();
+  for (const d of Object.values(devices || {})) counts.set(d.label || "기기", (counts.get(d.label || "기기") || 0) + 1);
+  return [...counts].map(([label, n]) => `${label} ${n}`).join(" · ");
+}
 function describeChild(c) {
   const records = (Array.isArray(c.records) ? c.records : []).slice().sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)));
   const days = [];
@@ -506,7 +654,7 @@ function renderChildren() {
     return;
   }
   if (!familyData.children.length) {
-    list.textContent = "아직 기록을 보낸 아이가 없어요. 아이 기기의 설정 → 가족 기록함에서 이름을 적고 ‘시험 기록을 보호자에게 보내기’를 켜 주세요.";
+    list.textContent = "아직 등록된 아이가 없어요. 아래 ‘아이 추가’에 이름을 적어 아이를 만들고, 받은 아이 코드를 아이 기기에 넣어 주세요.";
     return;
   }
   for (const c of familyData.children) {
@@ -527,6 +675,10 @@ function renderChildren() {
     last.textContent = info.latest
       ? `마지막 시험: ${relativeTime(info.latest.completedAt)} · ${info.latest.setName} · ${pctOf(info.latest)}점${info.latest.partial ? " (중단)" : ""}`
       : "아직 시험 기록이 없어요.";
+    const devices = document.createElement("p");
+    devices.className = "muted device-line";
+    const summary = devicesSummary(c.devices);
+    devices.textContent = summary ? "연결 기기: " + summary : c.joinCode ? `아직 연결된 기기 없음 · 아이 코드 ${formatCode(c.joinCode)}` : "연결된 기기 정보 없음";
     const dailyLine = document.createElement("p");
     dailyLine.className = "muted daily-line";
     dailyLine.textContent = dailyStatusText(c);
@@ -552,32 +704,120 @@ function renderChildren() {
     const detail = document.createElement("button");
     detail.type = "button";
     detail.className = "btn small";
-    detail.textContent = "기록 자세히 보기";
+    detail.textContent = summary ? "기록 자세히 보기" : "연결 코드·설정 보기";
     detail.addEventListener("click", () => openChild(c));
     actions.append(detail);
-    card.append(head, last, dailyLine, dots, week, actions);
+    card.append(head, last, devices, dailyLine, dots, week, actions);
     list.append(card);
   }
 }
+$("addChild").onclick = async () => {
+  const name = tidy($("newChildName").value).slice(0, 20);
+  if (!name) {
+    setFeedback($("addChildStatus"), "bad", "아이 이름을 적어 주세요.");
+    return;
+  }
+  $("addChild").disabled = true;
+  setFeedback($("addChildStatus"), "info", "아이를 만드는 중…");
+  try {
+    const data = await familyRequest("/family/children", { method: "POST", body: { name }, passcode: family.parentCode });
+    const child = { ...data.child, records: [], today: null };
+    $("newChildName").value = "";
+    cacheFamily({ ...(familyData || { children: [] }), children: [...(familyData?.children || []), child] });
+    renderChildren();
+    setFeedback($("addChildStatus"), "good", `‘${child.name}’을(를) 만들었어요. 아이 코드 ${formatCode(child.joinCode)} · 아래에서 링크를 복사해 아이 기기로 보내세요.`);
+    openChild(child);
+  } catch (e) {
+    setFeedback($("addChildStatus"), "bad", "만들지 못했어요: " + e.message);
+  } finally {
+    $("addChild").disabled = false;
+  }
+};
 async function openChild(c) {
   const summaryToday = c.today ? { date: c.today.date, exists: c.today.exists, words: [], note: "", completed: c.today.completed || null } : null;
   familyDetail = { child: c, records: Array.isArray(c.records) ? c.records : [], today: summaryToday };
   $("childDetail").classList.remove("hidden");
   $("childDetailTitle").textContent = "🧒 " + c.name;
+  renderLinkBox(c);
   renderPlan(c, summaryToday);
   setFeedback($("planStatus"), "info", "");
+  setFeedback($("linkStatus"), "info", "");
   renderChildRecords("전체 기록을 불러오는 중…");
   $("childDetail").scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     const data = await familyRequest("/family/" + encodeURIComponent(c.id), { method: "GET", passcode: family.parentCode });
     if (familyDetail?.child.id !== c.id) return;
     familyDetail = { child: data.child || c, records: Array.isArray(data.records) ? data.records : [], today: data.today || summaryToday };
+    renderLinkBox(familyDetail.child);
     renderPlan(familyDetail.child, familyDetail.today);
     renderChildRecords();
   } catch (e) {
     if (familyDetail?.child.id === c.id) renderChildRecords("전체 기록을 불러오지 못했어요: " + e.message + " · 최근 기록만 보여 줘요.");
   }
 }
+function renderLinkBox(child) {
+  const code = JOIN_CODE_PATTERN.test(child.joinCode || "") ? child.joinCode : "";
+  $("childCodeText").textContent = code ? formatCode(code) : "(없음 · ‘코드 새로 만들기’를 누르세요)";
+  $("childLinkText").textContent = code ? linkFor(code) : "";
+  $("copyLink").disabled = !code;
+  $("copyCode").disabled = !code;
+  $("renameChild").value = child.name || "";
+  const devices = Object.values(child.devices || {}).sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)));
+  $("deviceList").textContent = devices.length
+    ? "연결된 기기: " + devices.map((d) => `${d.label || "기기"} (${relativeTime(d.lastSeenAt)})`).join(" · ")
+    : "아직 연결된 기기가 없어요. 아이 기기에서 코드를 넣거나 링크를 열어 주세요.";
+}
+async function copyText(text, label) {
+  try {
+    await navigator.clipboard.writeText(text);
+    setFeedback($("linkStatus"), "good", `${label}을(를) 복사했어요. 카톡 등으로 아이 기기에 보내 주세요.`);
+  } catch {
+    setFeedback($("linkStatus"), "info", `${label}: ${text} (길게 눌러 복사하세요)`);
+  }
+}
+$("copyLink").onclick = () => familyDetail?.child.joinCode && copyText(linkFor(familyDetail.child.joinCode), "아이 전용 링크");
+$("copyCode").onclick = () => familyDetail?.child.joinCode && copyText(familyDetail.child.joinCode, "아이 코드");
+$("regenCode").onclick = async () => {
+  const c = familyDetail?.child;
+  if (!c) return;
+  if (!confirm("아이 코드를 새로 만들면 옛 코드와 옛 링크로는 더 연결할 수 없어요. 이미 연결된 기기는 그대로예요. 새로 만들까요?")) return;
+  $("regenCode").disabled = true;
+  try {
+    const data = await familyRequest("/family/" + encodeURIComponent(c.id) + "/code", { method: "POST", body: {}, passcode: family.parentCode });
+    familyDetail.child = { ...c, ...(data.child || {}) };
+    updateCachedChild(familyDetail.child);
+    renderLinkBox(familyDetail.child);
+    renderChildren();
+    setFeedback($("linkStatus"), "good", `새 아이 코드 ${formatCode(familyDetail.child.joinCode)}을(를) 만들었어요.`);
+  } catch (e) {
+    setFeedback($("linkStatus"), "bad", "코드를 만들지 못했어요: " + e.message);
+  } finally {
+    $("regenCode").disabled = false;
+  }
+};
+$("saveChildName").onclick = async () => {
+  const c = familyDetail?.child;
+  if (!c) return;
+  const name = tidy($("renameChild").value).slice(0, 20);
+  if (!name) {
+    setFeedback($("linkStatus"), "bad", "이름을 적어 주세요.");
+    return;
+  }
+  $("saveChildName").disabled = true;
+  try {
+    const data = await familyRequest("/family/" + encodeURIComponent(c.id) + "/name", { method: "POST", body: { name }, passcode: family.parentCode });
+    familyDetail.child = { ...c, ...(data.child || {}), name: data.child?.name || name };
+    updateCachedChild(familyDetail.child);
+    $("childDetailTitle").textContent = "🧒 " + familyDetail.child.name;
+    renderLinkBox(familyDetail.child);
+    renderChildren();
+    setFeedback($("linkStatus"), "good", `이름을 ‘${familyDetail.child.name}’(으)로 바꿨어요. 아이 기기에는 다음 전송 때 반영돼요.`);
+  } catch (e) {
+    setFeedback($("linkStatus"), "bad", "이름을 바꾸지 못했어요: " + e.message);
+  } finally {
+    $("saveChildName").disabled = false;
+  }
+};
 function renderChildRecords(note) {
   const { child, records } = familyDetail;
   const sorted = records.slice().sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)));
@@ -701,7 +941,9 @@ $("savePlan").onclick = async () => {
   try {
     const data = await familyRequest("/family/" + encodeURIComponent(c.id) + "/plan", { method: "POST", body, passcode: family.parentCode });
     familyDetail.child = { ...c, ...(data.child || {}), plan: data.child?.plan || body };
+    updateCachedChild(familyDetail.child);
     renderPlan(familyDetail.child, familyDetail.today);
+    renderChildren();
     setFeedback($("planStatus"), "good", body.enabled ? `저장했어요. 매일 ${hourLabel(body.hour)}에 ${body.dailyCount}개를 만들어요.` : "저장했어요. 오늘의 단어를 만들지 않아요.");
   } catch (e) {
     setFeedback($("planStatus"), "bad", "저장 실패: " + e.message);
@@ -733,7 +975,7 @@ $("refreshFamily").onclick = () => refreshFamily();
 $("deleteChild").onclick = async () => {
   const c = familyDetail?.child;
   if (!c) return;
-  if (!confirm(`‘${c.name}’의 기록을 가족 서버에서 모두 지울까요? 아이 기기에 있는 기록은 그대로예요.`)) return;
+  if (!confirm(`‘${c.name}’을(를) 가족 서버에서 지울까요? 기록과 아이 코드가 모두 지워지고 연결된 기기는 다시 연결할 수 없어요. 아이 기기에 있는 기록은 그대로예요.`)) return;
   $("deleteChild").disabled = true;
   try {
     await familyRequest("/family/" + encodeURIComponent(c.id), { method: "DELETE", passcode: family.parentCode });
@@ -741,7 +983,7 @@ $("deleteChild").onclick = async () => {
     familyDetail = null;
     if (familyData) cacheFamily({ ...familyData, children: familyData.children.filter((x) => x.id !== c.id) });
     renderChildren();
-    setFeedback($("familyLoadStatus"), "info", `‘${c.name}’의 기록을 지웠어요.`);
+    setFeedback($("familyLoadStatus"), "info", `‘${c.name}’을(를) 지웠어요.`);
   } catch (e) {
     setFeedback($("familyLoadStatus"), "bad", "지우지 못했어요: " + e.message);
   } finally {
@@ -751,13 +993,16 @@ $("deleteChild").onclick = async () => {
 
 // sets.js 가 보호자 설정을 준비한 뒤 부른다.
 function initFamily() {
-  $("childName").value = family.childName;
   $("familySend").checked = family.sendEnabled;
   fillPlanSelects();
   renderFamilySettings();
   renderDailyCard();
-  if (family.sendEnabled && family.pending.length) flushFamilySync();
-  checkDaily({ ignoreThrottle: true }); // 앱을 새로 열 때는 10분 제한 없이 확인한다(보호자가 방금 켰을 수 있다)
+  const linkCode = linkCodeFromUrl();
+  if (linkCode) handleLinkCode(linkCode);
+  else {
+    if (family.pending.length) flushFamilySync();
+    checkDaily({ ignoreThrottle: true }); // 앱을 새로 열 때는 10분 제한 없이 확인한다(보호자가 방금 켰을 수 있다)
+  }
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
     if (family.pending.length) flushFamilySync();

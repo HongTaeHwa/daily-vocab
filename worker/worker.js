@@ -17,6 +17,10 @@
 //   GET  /daily/<childId>?date=  가족·보호자 코드 → 그날의 단어 { date, words:[{id,en,ko,ipa,aliases,kind}], level, completed? }
 //                                없으면 404 no_daily, 계획이 꺼져 있으면 409 plan_disabled
 //   POST /daily/<childId>        가족·보호자 코드, JSON {date?} → 없으면 Claude로 생성해 저장하고 돌려준다
+//   POST /family/children        보호자 코드, JSON {name} → { ok, child }   (아이 만들기: 6자리 아이 코드 발급)
+//   POST /family/<childId>/code  보호자 코드 → 아이 코드 새로 발급 { ok, child }  (옛 코드는 무효)
+//   POST /family/<childId>/name  보호자 코드, JSON {name} → 이름 바꾸기 { ok, child }
+//   POST /join                   가족·보호자 코드, JSON {code, device:{id,label}} → { ok, childId, name }   (아이 기기 연결)
 //   (크론, 매시) scheduled() → FamilyStore /cron: 계획 시각이 지난 아이의 그날 단어를 만든다
 //
 // 비밀값: ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE(선택: 보호자 폰에서 아이들 기록 보기)   (wrangler secret put ...)
@@ -57,7 +61,11 @@ const SUMMARY_MIN_RECORDS = 20; // 최근 14일 기록이 이보다 적으면 �
 const STORAGE_BATCH = 128; // Durable Object storage put/delete 한 번에 넣을 수 있는 키 수
 
 // ---- 오늘의 단어(매일 자동 생성 퀴즈) 규칙 ----
-const PLAN_PATH = /^\/family\/([A-Za-z0-9-]{8,64})\/plan$/;
+const CHILD_ACTION_PATH = /^\/family\/([A-Za-z0-9-]{8,64})\/(plan|code|name)$/; // 계획 저장·아이 코드 새로 만들기·이름 바꾸기(보호자)
+const CHILDREN_PATH = /^\/family\/children$/; // 아이 만들기(보호자). 아이 id는 UUID라 "children"과 겹치지 않는다.
+const JOIN_CODE_PATTERN = /^\d{6}$/; // 아이 기기 연결용 아이 코드(전용 링크 ?child=코드 에도 쓴다)
+const MAX_DEVICES = 10; // 아이당 연결 기기 수
+const MAX_DEVICE_LABEL = 40;
 const DAILY_PATH = /^\/daily\/([A-Za-z0-9-]{8,64})$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DAILY_MODEL_DEFAULT = "claude-sonnet-5-5";
@@ -305,8 +313,15 @@ export class FamilyStore {
     const readBody = () => request.json().catch(() => ({}));
     if (url.pathname === "/sync" && method === "POST") return this.sync(await request.json());
     if (url.pathname === "/cron" && method === "POST") return this.cron(await readBody());
-    const plan = PLAN_PATH.exec(url.pathname);
-    if (plan && method === "POST") return this.savePlan(plan[1], await readBody());
+    if (url.pathname === "/join" && method === "POST") return this.join(await readBody());
+    if (CHILDREN_PATH.test(url.pathname) && method === "POST") return this.createChild(await readBody());
+    const action = CHILD_ACTION_PATH.exec(url.pathname);
+    if (action && method === "POST") {
+      const body = await readBody();
+      if (action[2] === "plan") return this.savePlan(action[1], body);
+      if (action[2] === "code") return this.regenerateCode(action[1]);
+      return this.rename(action[1], body);
+    }
     const daily = DAILY_PATH.exec(url.pathname);
     if (daily && method === "GET") return this.getDaily(daily[1], url.searchParams.get("date"));
     if (daily && method === "POST") return this.generateDaily(daily[1], (await readBody())?.date);
@@ -332,10 +347,10 @@ export class FamilyStore {
   async deleteMany(keys) {
     for (let i = 0; i < keys.length; i += STORAGE_BATCH) await this.storage.delete(keys.slice(i, i + STORAGE_BATCH));
   }
-  async sync({ child, records, sets, anchor }) {
+  async sync({ child, records, sets, anchor, device }) {
     const now = new Date().toISOString();
     const key = "child:" + child.id;
-    const current = (await this.storage.get(key)) || { id: child.id, createdAt: now, sets: [], recordCount: 0 };
+    const current = (await this.storage.get(key)) || { id: child.id, createdAt: now, createdBy: "device", sets: [], recordCount: 0, devices: {} };
     const entries = {};
     let lastTestAt = current.lastTestAt || null;
     for (const r of records) {
@@ -344,7 +359,8 @@ export class FamilyStore {
     }
     const next = {
       ...current,
-      name: child.name,
+      name: current.name || child.name, // 보호자가 만든 아이의 이름은 서버가 기준이다(기기가 보낸 이름으로 덮어쓰지 않는다)
+      devices: registerDevice(current.devices, device, now),
       sets: sets === undefined ? current.sets || [] : sets,
       ...(anchor ? { anchor: { ...anchor, updatedAt: now } } : {}),
       updatedAt: now,
@@ -407,8 +423,57 @@ export class FamilyStore {
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
     const keys = [...(await this.storage.list({ prefix: this.recordPrefix(childId) })).keys()];
     const dailies = [...(await this.storage.list({ prefix: "daily:" + childId + ":" })).keys()];
-    await this.deleteMany([...keys, ...dailies, "served:" + childId, "child:" + childId]);
+    await this.deleteMany([...keys, ...dailies, "served:" + childId, "child:" + childId, ...(c.joinCode ? ["code:" + c.joinCode] : [])]);
     return json(200, { ok: true, deleted: keys.length });
+  }
+  // ---- 아이 만들기·아이 코드·기기 연결 ----
+  // 보호자가 아이를 만들면 6자리 아이 코드를 발급하고(code:<코드> → childId), 아이 기기는 코드나 전용 링크로 연결한다.
+  // 같은 코드를 넣은 기기(아이폰·태블릿)는 한 아이로 묶여 기록이 모이고 오늘의 단어도 같은 것을 받는다.
+  async newJoinCode() {
+    for (let i = 0; i < 20; i++) {
+      const code = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
+      if (!(await this.storage.get("code:" + code))) return code;
+    }
+    throw Error("join code space exhausted");
+  }
+  async createChild(body) {
+    const name = clean(body?.name);
+    if (!name || name.length > MAX_CHILD_NAME) return json(400, { error: "bad_request", message: `아이 이름은 1~${MAX_CHILD_NAME}자로 적어 주세요.` });
+    const now = new Date().toISOString();
+    const joinCode = await this.newJoinCode();
+    const child = { id: crypto.randomUUID(), name, createdAt: now, updatedAt: now, createdBy: "parent", joinCode, devices: {}, sets: [], recordCount: 0, lastTestAt: null };
+    await this.storage.put({ ["child:" + child.id]: child, ["code:" + joinCode]: { childId: child.id, createdAt: now } });
+    return json(200, { ok: true, child: { ...child, plan: this.planOf(child) } });
+  }
+  async regenerateCode(childId) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    const now = new Date().toISOString();
+    const joinCode = await this.newJoinCode();
+    const next = { ...c, joinCode, updatedAt: now };
+    await this.storage.put({ ["child:" + childId]: next, ["code:" + joinCode]: { childId, createdAt: now } });
+    if (c.joinCode) await this.storage.delete("code:" + c.joinCode);
+    return json(200, { ok: true, child: { ...next, plan: this.planOf(next) } });
+  }
+  async rename(childId, body) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    const name = clean(body?.name);
+    if (!name || name.length > MAX_CHILD_NAME) return json(400, { error: "bad_request", message: `아이 이름은 1~${MAX_CHILD_NAME}자로 적어 주세요.` });
+    const next = { ...c, name, updatedAt: new Date().toISOString() };
+    await this.storage.put("child:" + childId, next);
+    return json(200, { ok: true, child: { ...next, plan: this.planOf(next) } });
+  }
+  async join(body) {
+    const code = String(body?.code ?? "").replace(/\D/g, "");
+    if (!JOIN_CODE_PATTERN.test(code)) return json(400, { error: "bad_request", message: "아이 코드는 숫자 6자리예요." });
+    const ref = await this.storage.get("code:" + code);
+    const c = ref ? await this.storage.get("child:" + ref.childId) : null;
+    if (!c || c.joinCode !== code)
+      return json(404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요. 보호자 폰의 아이들 탭에서 코드를 다시 확인해 주세요." });
+    const now = new Date().toISOString();
+    await this.storage.put("child:" + c.id, { ...c, devices: registerDevice(c.devices, parseDevice(body?.device), now), updatedAt: now });
+    return json(200, { ok: true, childId: c.id, name: c.name });
   }
   // ---- 오늘의 단어 ----
   async savePlan(childId, body) {
@@ -559,6 +624,21 @@ function parsePlan(body, current) {
   return { plan };
 }
 
+// 아이 기기 정보(선택). 형식이 틀리면 무시한다.
+function parseDevice(d) {
+  if (!d || typeof d !== "object" || !CHILD_ID_PATTERN.test(String(d.id || ""))) return null;
+  return { id: d.id, label: clean(d.label).slice(0, MAX_DEVICE_LABEL) || "기기" };
+}
+function registerDevice(devices, device, now) {
+  const next = { ...(devices || {}) };
+  if (!device) return next;
+  next[device.id] = { label: device.label, joinedAt: next[device.id]?.joinedAt || now, lastSeenAt: now };
+  const ids = Object.keys(next);
+  if (ids.length > MAX_DEVICES)
+    for (const id of ids.sort((a, b) => String(next[a].lastSeenAt).localeCompare(String(next[b].lastSeenAt))).slice(0, ids.length - MAX_DEVICES)) delete next[id];
+  return next;
+}
+
 function isoDate(value) {
   if (value == null || value === "") return null;
   const t = Date.parse(value);
@@ -618,15 +698,15 @@ function parseSync(body) {
     const words = [...new Set(body.anchor.words.map((w) => clean(w)).filter((w) => WORD_PATTERN.test(w)))].slice(0, MAX_ANCHOR_WORDS);
     anchor = { setName: clean(body.anchor.setName).slice(0, 120), words };
   }
-  return { child: { id, name }, records, sets, anchor };
+  return { child: { id, name }, records, sets, anchor, device: parseDevice(body.device) };
 }
 
-// /sync, /daily…, /family… 처리. 오늘의 단어 생성 외에는 Anthropic을 부르지 않는다.
-// kind: sync(가족·보호자 코드) / daily(가족·보호자 코드) / view(보호자 코드만: 기록 보기·삭제·계획)
+// /sync, /join, /daily…, /family… 처리. 오늘의 단어 생성 외에는 Anthropic을 부르지 않는다.
+// kind: sync·join·daily(가족 또는 보호자 코드) / view(보호자 코드만: 기록 보기·삭제·아이 만들기·계획·코드·이름)
 async function family(request, env, path, cors) {
   if (!env.APP_PASSCODE)
     return json(500, { error: "misconfigured", message: "AI 서버에 비밀값(APP_PASSCODE)이 설정되지 않았습니다." }, cors);
-  const kind = path === "/sync" ? "sync" : DAILY_PATH.test(path) ? "daily" : "view";
+  const kind = path === "/sync" ? "sync" : path === "/join" ? "join" : DAILY_PATH.test(path) ? "daily" : "view";
   if (kind === "view" && !env.PARENT_PASSCODE)
     return json(500, {
       error: "misconfigured",
@@ -635,7 +715,7 @@ async function family(request, env, path, cors) {
   const role = roleOf(request, env);
   if (!role) return json(401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." }, cors);
   if (kind === "view" && role !== "parent") return json(401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." }, cors);
-  const limited = await rateLimited(request, env, kind === "sync" ? "/sync" : kind === "daily" ? "/daily" : "/family", cors);
+  const limited = await rateLimited(request, env, "/" + (kind === "view" ? "family" : kind), cors);
   if (limited) return limited;
   if (!env.FAMILY)
     return json(500, { error: "misconfigured", message: "AI 서버에 가족 기록함(FAMILY)이 아직 없습니다. 보호자가 Worker를 새 버전으로 다시 배포해 주세요." }, cors);
@@ -956,7 +1036,9 @@ export default {
     const familyRoute =
       (path === "/sync" && request.method === "POST") ||
       (FAMILY_PATH.test(path) && ["GET", "DELETE"].includes(request.method)) ||
-      (PLAN_PATH.test(path) && request.method === "POST") ||
+      (CHILDREN_PATH.test(path) && request.method === "POST") ||
+      (CHILD_ACTION_PATH.test(path) && request.method === "POST") ||
+      (path === "/join" && request.method === "POST") ||
       (DAILY_PATH.test(path) && ["GET", "POST"].includes(request.method));
     const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define"].includes(path);
     if (!familyRoute && !aiRoute)
