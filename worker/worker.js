@@ -13,9 +13,14 @@
 //   GET  /family     헤더 X-App-Passcode(보호자 코드만) → { children:[{id,name,sets,lastTestAt,…,records}], serverTime }  (아이별 최근 기록)
 //   GET  /family/<childId>     보호자 코드 → { child, records }  (전체 기록, 최신순)
 //   DELETE /family/<childId>   보호자 코드 → { ok, deleted }
+//   POST /family/<childId>/plan  보호자 코드, JSON {enabled, level, dailyCount, hour} → { ok, child }   (오늘의 단어 계획)
+//   GET  /daily/<childId>?date=  가족·보호자 코드 → 그날의 단어 { date, words:[{id,en,ko,ipa,aliases,kind}], level, completed? }
+//                                없으면 404 no_daily, 계획이 꺼져 있으면 409 plan_disabled
+//   POST /daily/<childId>        가족·보호자 코드, JSON {date?} → 없으면 Claude로 생성해 저장하고 돌려준다
+//   (크론, 매시) scheduled() → FamilyStore /cron: 계획 시각이 지난 아이의 그날 단어를 만든다
 //
 // 비밀값: ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE(선택: 보호자 폰에서 아이들 기록 보기)   (wrangler secret put ...)
-// 변수:   CLAUDE_MODEL(기본 claude-opus-5-5), ALLOWED_ORIGINS(쉼표 구분), ANTHROPIC_WORKSPACE_ID(선택)   (wrangler.jsonc vars)
+// 변수:   CLAUDE_MODEL(기본 claude-opus-5-5), DAILY_MODEL(오늘의 단어 생성, 기본 claude-sonnet-5-5), ALLOWED_ORIGINS(쉼표 구분), ANTHROPIC_WORKSPACE_ID(선택)   (wrangler.jsonc vars)
 // 바인딩: RATE_LIMITER(선택, ratelimits), RELAY(Durable Object, 아래 참고), FAMILY(Durable Object FamilyStore: 가족 기록함)
 //
 // 왜 Durable Object를 거치나: 한국에서 온 요청은 Cloudflare 홍콩(HKG) 데이터센터에서 실행될 때가 있는데,
@@ -50,6 +55,23 @@ const MAX_CHILD_RECORDS = 5000; // 아이당 보관 기록 수. 넘으면 오래
 const SUMMARY_DAYS = 14; // GET /family 가 아이별로 돌려주는 최근 기록 범위
 const SUMMARY_MIN_RECORDS = 20; // 최근 14일 기록이 이보다 적으면 최근 20개를 돌려준다
 const STORAGE_BATCH = 128; // Durable Object storage put/delete 한 번에 넣을 수 있는 키 수
+
+// ---- 오늘의 단어(매일 자동 생성 퀴즈) 규칙 ----
+const PLAN_PATH = /^\/family\/([A-Za-z0-9-]{8,64})\/plan$/;
+const DAILY_PATH = /^\/daily\/([A-Za-z0-9-]{8,64})$/;
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const DAILY_MODEL_DEFAULT = "claude-sonnet-5-5";
+const DAILY_DEFAULTS = { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16 }; // hour는 한국 시각
+const DAILY_COUNT_MIN = 5;
+const DAILY_COUNT_MAX = 20;
+const DAILY_REVIEW_MAX = 3; // 하루치 중 복습(최근 틀린 단어) 수
+const DAILY_REVIEW_DAYS = 14;
+const DAILY_EXCLUDE_RECENT = 200; // 요청에 “최근에 이미 낸 단어”로 넣는 수
+const DAILY_SERVED_MAX = 5000; // 아이별 ‘이미 낸 단어’ 보관 수
+const DAILY_ATTEMPTS = 2;
+const MAX_ANCHOR_WORDS = 60; // 교재 앵커: 아이 기기가 보내는 현재 세트 단어 수
+const MAX_PLAN_BODY = 16 * 1024;
+const KST_OFFSET_MS = 9 * 3600000;
 
 // 실제 교재(예: 0161 amend [əménd] 동 (법 등을) 수정하다, 개정하다 ⊜ alter, revise / 예문 / ⊕ amendment …) 레이아웃 기준.
 // 영어 단어만 있는 사진(단어 목록·시험지·손글씨)은 뜻이 없으므로 AI가 학습자 사전처럼 채우고 generated 로 표시한다.
@@ -129,6 +151,41 @@ const DEFINE_SCHEMA = {
   required: ["words", "note"],
   additionalProperties: false,
 };
+
+// 오늘의 단어: 수준 라벨 + 교재 앵커(지금 공부 중인 단어) + 제외 목록 + 복습 단어 → 새 단어 제안과 전체 정의.
+const DAILY_SYSTEM = `You create a short daily English vocabulary quiz for one Korean student. The user message gives the student's level, the words the student is currently studying (the "anchor" list, which shows the difficulty they already handle), words to avoid because they were used recently, review words to define exactly as given, and how many NEW words to propose.
+Rules for NEW words:
+- Choose words that are similar to or slightly harder than the anchor words and useful for Korean school English tests at the given level (textbook and academic vocabulary). Avoid rare, technical, archaic or slang words, proper nouns, abbreviations and phrases longer than two words. Use the base dictionary form in lowercase.
+- Never propose an anchor word, an avoid-list word, a review word, or another form of one of them (plural, -ing, -ed, -ly, -ness).
+- Vary parts of speech and topics across the list. Propose exactly the number of new words requested.
+For every item, review words first and exactly as given, then the new words, output:
+- english: the word.
+- korean: its 1 to 3 most common meanings, in the form Korean vocabulary workbooks print them (verbs ending in 다, nouns as bare nouns, adjectives such as "행복한"), joined with " · ", most common first.
+- ipa: the American English pronunciation in IPA without brackets.
+- aliases: 2 to 10 short Korean answers that should count as correct: each meaning without its parenthetical context, plus natural stem forms without 다/하다/시키다 endings. No duplicates, no English.
+- note: one short Korean sentence about anything you could not do, or an empty string.`;
+
+function dailyUserMessage(level, anchor, avoid, review, count) {
+  return [
+    `학생 수준: ${level}`,
+    anchor.length ? `지금 공부 중인 단어(수준 기준, 제외): ${anchor.join(", ")}` : "지금 공부 중인 단어: (없음)",
+    avoid.length ? `최근에 이미 낸 단어(제외): ${avoid.join(", ")}` : "",
+    review.length ? `복습 단어(그대로 정의): ${review.map((r) => r.en).join(", ")}` : "",
+    `새 단어 ${count}개를 제안하세요.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function pickDailyModel(env) {
+  return ALLOWED_MODELS.includes(env.DAILY_MODEL) ? env.DAILY_MODEL : DAILY_MODEL_DEFAULT;
+}
+
+// 한국 시각 기준 날짜(YYYY-MM-DD)와 시(0~23). 가족이 한국에 있으므로 서버 시간은 KST로 고정한다.
+function kstNow(now = Date.now()) {
+  const d = new Date(now + KST_OFFSET_MS);
+  return { date: d.toISOString().slice(0, 10), hour: d.getUTCHours() };
+}
 
 function allowedOrigins(env) {
   const configured = String(env.ALLOWED_ORIGINS || "")
@@ -237,19 +294,35 @@ export class AnthropicRelay {
 //   rec:<childId>:<completedAt ISO>:<recordId>   압축 기록 {id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed, receivedAt}
 // 같은 기록을 다시 보내면 같은 키라 덮어쓴다. 키가 완료 시각 순이라 prefix 나열이 곧 시간순이다.
 export class FamilyStore {
-  constructor(state) {
+  constructor(state, env = {}) {
     this.storage = state.storage;
+    this.env = env;
+    this.generating = new Map(); // 같은 날짜의 생성 요청이 겹치면(크론·기기) Claude를 한 번만 부른다
   }
   async fetch(request) {
     const url = new URL(request.url);
+    const method = request.method;
+    const readBody = () => request.json().catch(() => ({}));
+    if (url.pathname === "/sync" && method === "POST") return this.sync(await request.json());
+    if (url.pathname === "/cron" && method === "POST") return this.cron(await readBody());
+    const plan = PLAN_PATH.exec(url.pathname);
+    if (plan && method === "POST") return this.savePlan(plan[1], await readBody());
+    const daily = DAILY_PATH.exec(url.pathname);
+    if (daily && method === "GET") return this.getDaily(daily[1], url.searchParams.get("date"));
+    if (daily && method === "POST") return this.generateDaily(daily[1], (await readBody())?.date);
     const match = FAMILY_PATH.exec(url.pathname);
-    if (url.pathname === "/sync" && request.method === "POST") return this.sync(await request.json());
-    if (match && request.method === "GET") return match[1] ? this.child(match[1]) : this.summary();
-    if (match && match[1] && request.method === "DELETE") return this.remove(match[1]);
+    if (match && method === "GET") return match[1] ? this.child(match[1]) : this.summary();
+    if (match && match[1] && method === "DELETE") return this.remove(match[1]);
     return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." });
   }
   recordPrefix(childId) {
     return "rec:" + childId + ":";
+  }
+  dailyKey(childId, date) {
+    return "daily:" + childId + ":" + date;
+  }
+  planOf(child) {
+    return { ...DAILY_DEFAULTS, ...(child?.plan || {}) };
   }
   async putMany(entries) {
     const keys = Object.keys(entries);
@@ -259,7 +332,7 @@ export class FamilyStore {
   async deleteMany(keys) {
     for (let i = 0; i < keys.length; i += STORAGE_BATCH) await this.storage.delete(keys.slice(i, i + STORAGE_BATCH));
   }
-  async sync({ child, records, sets }) {
+  async sync({ child, records, sets, anchor }) {
     const now = new Date().toISOString();
     const key = "child:" + child.id;
     const current = (await this.storage.get(key)) || { id: child.id, createdAt: now, sets: [], recordCount: 0 };
@@ -273,12 +346,14 @@ export class FamilyStore {
       ...current,
       name: child.name,
       sets: sets === undefined ? current.sets || [] : sets,
+      ...(anchor ? { anchor: { ...anchor, updatedAt: now } } : {}),
       updatedAt: now,
       lastTestAt,
       // 다시 보낸 기록도 세므로 대략값이다. 상한을 넘었을 때만 실제로 세어 정리한다.
       recordCount: (current.recordCount || 0) + records.length,
     };
     await this.putMany({ ...entries, [key]: next });
+    for (const r of records) if (r.daily && !r.partial) await this.markDaily(child.id, r); // 오늘의 단어로 본 시험(중단 제외)이면 그날 것에 완료 표시
     let trimmed = 0;
     if (next.recordCount > MAX_CHILD_RECORDS) {
       const all = await this.storage.list({ prefix: this.recordPrefix(child.id) });
@@ -289,16 +364,28 @@ export class FamilyStore {
     }
     return json(200, { ok: true, stored: records.length, trimmed, syncedAt: now });
   }
+  async markDaily(childId, r) {
+    const key = this.dailyKey(childId, r.daily);
+    const d = await this.storage.get(key);
+    if (!d) return;
+    if (d.completed && d.completed.completedAt >= r.completedAt) return;
+    await this.storage.put(key, { ...d, completed: { recordId: r.id, correct: r.correct, total: r.total, completedAt: r.completedAt } });
+  }
+  async todayOf(childId, date) {
+    const d = await this.storage.get(this.dailyKey(childId, date));
+    return { date, exists: Boolean(d), count: d ? d.words.length : 0, completed: d?.completed || null };
+  }
   // 아이별 최근 14일 기록(20개 미만이면 최근 20개). 오늘·7일·이번 주 계산은 폰의 현지 시간으로 앱이 한다.
   async summary() {
     const since = new Date(Date.now() - SUMMARY_DAYS * 86400000).toISOString();
+    const { date: today } = kstNow();
     const children = [];
     for (const c of (await this.storage.list({ prefix: "child:" })).values()) {
       const prefix = this.recordPrefix(c.id);
       let records = [...(await this.storage.list({ prefix, start: prefix + since })).values()].reverse();
       if (records.length < SUMMARY_MIN_RECORDS)
         records = [...(await this.storage.list({ prefix, reverse: true, limit: SUMMARY_MIN_RECORDS })).values()];
-      children.push({ ...c, records });
+      children.push({ ...c, plan: this.planOf(c), today: await this.todayOf(c.id, today), records });
     }
     children.sort((a, b) => String(a.name).localeCompare(String(b.name), "ko"));
     return json(200, { children, serverTime: new Date().toISOString() });
@@ -307,16 +394,169 @@ export class FamilyStore {
     const c = await this.storage.get("child:" + childId);
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
     const records = [...(await this.storage.list({ prefix: this.recordPrefix(childId), reverse: true })).values()];
-    return json(200, { child: c, records });
+    const { date: today } = kstNow();
+    const daily = await this.storage.get(this.dailyKey(childId, today));
+    return json(200, {
+      child: { ...c, plan: this.planOf(c) },
+      records,
+      today: { date: today, exists: Boolean(daily), words: daily?.words || [], note: daily?.note || "", completed: daily?.completed || null },
+    });
   }
   async remove(childId) {
     const c = await this.storage.get("child:" + childId);
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
     const keys = [...(await this.storage.list({ prefix: this.recordPrefix(childId) })).keys()];
-    await this.deleteMany(keys);
-    await this.storage.delete("child:" + childId);
+    const dailies = [...(await this.storage.list({ prefix: "daily:" + childId + ":" })).keys()];
+    await this.deleteMany([...keys, ...dailies, "served:" + childId, "child:" + childId]);
     return json(200, { ok: true, deleted: keys.length });
   }
+  // ---- 오늘의 단어 ----
+  async savePlan(childId, body) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    const parsed = parsePlan(body, c.plan);
+    if (parsed.error) return json(400, { error: "bad_request", message: parsed.error });
+    const next = { ...c, plan: parsed.plan, updatedAt: new Date().toISOString() };
+    await this.storage.put("child:" + childId, next);
+    return json(200, { ok: true, child: { ...next, plan: this.planOf(next) } });
+  }
+  async getDaily(childId, dateParam) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
+    const date = DATE_PATTERN.test(dateParam || "") ? dateParam : kstNow().date;
+    const d = await this.storage.get(this.dailyKey(childId, date));
+    if (d) return json(200, d);
+    if (!this.planOf(c).enabled) return json(409, { error: "plan_disabled", message: "보호자가 아직 오늘의 단어를 켜지 않았어요." });
+    return json(404, { error: "no_daily", message: "오늘의 단어가 아직 없어요." });
+  }
+  async generateDaily(childId, dateParam) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
+    const date = DATE_PATTERN.test(dateParam || "") ? dateParam : kstNow().date;
+    const existing = await this.storage.get(this.dailyKey(childId, date));
+    if (existing) return json(200, existing);
+    const plan = this.planOf(c);
+    if (!plan.enabled) return json(409, { error: "plan_disabled", message: "보호자가 아직 오늘의 단어를 켜지 않았어요." });
+    const outcome = await this.ensureDaily(c, plan, date);
+    if (outcome.failure) return json(outcome.failure.status, outcome.failure.body);
+    return json(200, outcome.daily);
+  }
+  ensureDaily(child, plan, date) {
+    const key = this.dailyKey(child.id, date);
+    if (!this.generating.has(key)) this.generating.set(key, this.buildDaily(child, plan, date).finally(() => this.generating.delete(key)));
+    return this.generating.get(key);
+  }
+  // 크론(매시): 계획이 켜져 있고 시각이 지났는데 그날 것이 없는 아이에게 만든다.
+  async cron({ date, hour }) {
+    if (!DATE_PATTERN.test(date || "") || !Number.isInteger(hour)) return json(400, { error: "bad_request", message: "date, hour가 필요합니다." });
+    const generated = [], failed = [];
+    for (const c of (await this.storage.list({ prefix: "child:" })).values()) {
+      const plan = this.planOf(c);
+      if (!plan.enabled || plan.hour > hour) continue;
+      if (await this.storage.get(this.dailyKey(c.id, date))) continue;
+      const outcome = await this.ensureDaily(c, plan, date);
+      (outcome.failure ? failed : generated).push(c.id);
+      if (outcome.failure) console.error("daily_generate_failed", c.id, outcome.failure.status, outcome.failure.body?.message || "");
+    }
+    return json(200, { date, hour, generated, failed });
+  }
+  // 복습(최근 14일 틀린 단어, 최대 3개) + 새 단어(Claude 제안에서 앵커·이미 낸 단어·규칙 위반을 걸러 채움).
+  async buildDaily(child, plan, date) {
+    const childId = child.id;
+    const prefix = this.recordPrefix(childId);
+    const since = new Date(Date.parse(date + "T00:00:00+09:00") - DAILY_REVIEW_DAYS * 86400000).toISOString();
+    const recent = [...(await this.storage.list({ prefix, start: prefix + since })).values()].reverse();
+    const review = [];
+    const seen = new Set();
+    outer: for (const r of recent) {
+      for (const m of r.missed || []) {
+        const k = String(m.en).toLowerCase();
+        if (seen.has(k) || !WORD_PATTERN.test(m.en)) continue;
+        seen.add(k);
+        review.push({ en: m.en, ko: m.ko });
+        if (review.length >= DAILY_REVIEW_MAX) break outer;
+      }
+    }
+    const served = (await this.storage.get("served:" + childId)) || { words: {} };
+    const servedSet = new Set(Object.keys(served.words));
+    const anchor = Array.isArray(child.anchor?.words) ? child.anchor.words : [];
+    const anchorSet = new Set(anchor.map((w) => w.toLowerCase()));
+    const avoid = Object.entries(served.words)
+      .sort((a, b) => b[1].localeCompare(a[1]))
+      .slice(0, DAILY_EXCLUDE_RECENT)
+      .map(([w]) => w);
+    const need = Math.max(1, plan.dailyCount - review.length);
+    const model = pickDailyModel(this.env);
+    const fresh = [];
+    const defined = new Map();
+    const notes = [];
+    for (let attempt = 0; attempt < DAILY_ATTEMPTS && fresh.length < need; attempt++) {
+      const outcome = await callAnthropic(this.env, model, {
+        model,
+        max_tokens: 8192,
+        system: DAILY_SYSTEM,
+        output_config: { effort: "medium", format: { type: "json_schema", schema: DEFINE_SCHEMA } },
+        messages: [{ role: "user", content: dailyUserMessage(plan.level, anchor, [...avoid, ...fresh.map((w) => w.en)], review, (need - fresh.length) * 2) }],
+      });
+      if (outcome.failure) return { failure: outcome.failure };
+      const parsed = parseJsonMessage(outcome.message, {
+        refused: "AI가 오늘의 단어 만들기를 거부했어요. 수준 문구를 확인해 주세요.",
+        truncated: "AI 응답이 잘렸어요. 하루 단어 수를 줄여 보세요.",
+      });
+      if (!parsed.data) return { failure: { status: parsed.status, body: parsed.body } };
+      for (const w of sanitizeWords(parsed.data)) {
+        const k = w.en.toLowerCase();
+        if (seen.has(k)) {
+          if (!defined.has(k)) defined.set(k, w);
+          continue;
+        }
+        if (!WORD_PATTERN.test(w.en) || servedSet.has(k) || anchorSet.has(k) || fresh.some((f) => f.en.toLowerCase() === k)) continue;
+        if (fresh.length < need) fresh.push(w);
+      }
+      const note = clean(parsed.data?.note);
+      if (note) notes.push(note);
+    }
+    if (!fresh.length && !review.length)
+      return { failure: { status: 422, body: { error: "empty", message: "오늘의 단어를 만들지 못했어요. 잠시 후 다시 시도해 주세요." + (notes.length ? " " + notes.join(" ") : "") } } };
+    const words = [
+      ...review.map((r) => {
+        const d = defined.get(r.en.toLowerCase());
+        return { en: r.en, ko: d?.ko || r.ko, ipa: d?.ipa || "", aliases: d?.aliases || [], kind: "review" };
+      }),
+      ...fresh.map((w) => ({ en: w.en, ko: w.ko, ipa: w.ipa, aliases: w.aliases, kind: "new" })),
+    ].map((w, i) => ({ id: i + 1, ...w }));
+    const daily = { childId, date, level: plan.level, model, createdAt: new Date().toISOString(), words, note: notes.join(" ") };
+    for (const w of fresh) served.words[w.en.toLowerCase()] = date;
+    const entries = Object.entries(served.words);
+    if (entries.length > DAILY_SERVED_MAX) served.words = Object.fromEntries(entries.sort((a, b) => b[1].localeCompare(a[1])).slice(0, DAILY_SERVED_MAX));
+    await this.storage.put({ [this.dailyKey(childId, date)]: daily, ["served:" + childId]: served });
+    return { daily };
+  }
+}
+
+// 오늘의 단어 계획(보호자가 아이들 탭에서 저장). 빠진 항목은 기존 값(없으면 기본값)을 유지한다.
+function parsePlan(body, current) {
+  const plan = { ...DAILY_DEFAULTS, ...(current || {}) };
+  if (body?.enabled !== undefined) {
+    if (typeof body.enabled !== "boolean") return { error: "enabled는 true 또는 false여야 합니다." };
+    plan.enabled = body.enabled;
+  }
+  if (body?.level !== undefined) {
+    const level = clean(body.level);
+    if (!level || level.length > 40) return { error: "수준은 1~40자로 적어 주세요." };
+    plan.level = level;
+  }
+  if (body?.dailyCount !== undefined) {
+    if (!Number.isInteger(body.dailyCount) || body.dailyCount < DAILY_COUNT_MIN || body.dailyCount > DAILY_COUNT_MAX)
+      return { error: `하루 단어 수는 ${DAILY_COUNT_MIN}~${DAILY_COUNT_MAX}개여야 합니다.` };
+    plan.dailyCount = body.dailyCount;
+  }
+  if (body?.hour !== undefined) {
+    if (!Number.isInteger(body.hour) || body.hour < 0 || body.hour > 23) return { error: "만드는 시각은 0~23시여야 합니다." };
+    plan.hour = body.hour;
+  }
+  plan.updatedAt = new Date().toISOString();
+  return { plan };
 }
 
 function isoDate(value) {
@@ -362,6 +602,7 @@ function parseSync(body) {
       partial: r.partial === true,
       activeMs: Number.isInteger(r.activeMs) && r.activeMs >= 0 ? Math.min(r.activeMs, 7 * 86400000) : null,
       missed,
+      ...(typeof r.daily === "string" && DATE_PATTERN.test(r.daily) ? { daily: r.daily } : {}), // 오늘의 단어로 본 시험
     });
   }
   let sets;
@@ -371,47 +612,58 @@ function parseSync(body) {
       .map((s) => ({ name: clean(s?.name).slice(0, 120), count: Number.isInteger(s?.count) && s.count >= 0 ? Math.min(s.count, 5000) : 0 }))
       .filter((s) => s.name);
   }
-  return { child: { id, name }, records, sets };
+  let anchor;
+  if (body.anchor !== undefined) {
+    if (!body.anchor || typeof body.anchor !== "object" || !Array.isArray(body.anchor.words)) return { error: "anchor 형식이 올바르지 않습니다." };
+    const words = [...new Set(body.anchor.words.map((w) => clean(w)).filter((w) => WORD_PATTERN.test(w)))].slice(0, MAX_ANCHOR_WORDS);
+    anchor = { setName: clean(body.anchor.setName).slice(0, 120), words };
+  }
+  return { child: { id, name }, records, sets, anchor };
 }
 
-// /sync, /family… 처리. Anthropic은 부르지 않는다.
+// /sync, /daily…, /family… 처리. 오늘의 단어 생성 외에는 Anthropic을 부르지 않는다.
+// kind: sync(가족·보호자 코드) / daily(가족·보호자 코드) / view(보호자 코드만: 기록 보기·삭제·계획)
 async function family(request, env, path, cors) {
   if (!env.APP_PASSCODE)
     return json(500, { error: "misconfigured", message: "AI 서버에 비밀값(APP_PASSCODE)이 설정되지 않았습니다." }, cors);
-  const viewing = path !== "/sync";
-  if (viewing && !env.PARENT_PASSCODE)
+  const kind = path === "/sync" ? "sync" : DAILY_PATH.test(path) ? "daily" : "view";
+  if (kind === "view" && !env.PARENT_PASSCODE)
     return json(500, {
       error: "misconfigured",
       message: "보호자 코드(PARENT_PASSCODE)가 아직 설정되지 않았습니다. 보호자가 worker 폴더에서 npx wrangler secret put PARENT_PASSCODE 로 등록한 뒤 다시 시도해 주세요.",
     }, cors);
   const role = roleOf(request, env);
   if (!role) return json(401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." }, cors);
-  if (viewing && role !== "parent") return json(401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." }, cors);
-  const limited = await rateLimited(request, env, viewing ? "/family" : "/sync", cors);
+  if (kind === "view" && role !== "parent") return json(401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." }, cors);
+  const limited = await rateLimited(request, env, kind === "sync" ? "/sync" : kind === "daily" ? "/daily" : "/family", cors);
   if (limited) return limited;
   if (!env.FAMILY)
     return json(500, { error: "misconfigured", message: "AI 서버에 가족 기록함(FAMILY)이 아직 없습니다. 보호자가 Worker를 새 버전으로 다시 배포해 주세요." }, cors);
   let payload;
-  if (!viewing) {
+  if (request.method === "POST") {
     const text = await request.text();
-    if (text.length > MAX_SYNC_BODY)
-      return json(413, { error: "too_large", message: "보내는 기록이 너무 큽니다. 앱을 새 버전으로 불러온 뒤 다시 시도해 주세요." }, cors);
-    let body;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      return json(400, { error: "bad_request", message: "JSON 본문이 필요합니다." }, cors);
+    if (text.length > (kind === "sync" ? MAX_SYNC_BODY : MAX_PLAN_BODY))
+      return json(413, { error: "too_large", message: "보내는 내용이 너무 큽니다. 앱을 새 버전으로 불러온 뒤 다시 시도해 주세요." }, cors);
+    let body = {};
+    if (text || kind === "sync") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        return json(400, { error: "bad_request", message: "JSON 본문이 필요합니다." }, cors);
+      }
     }
-    const parsed = parseSync(body);
-    if (parsed.error) return json(400, { error: "bad_request", message: parsed.error }, cors);
-    payload = parsed;
+    if (kind === "sync") {
+      const parsed = parseSync(body);
+      if (parsed.error) return json(400, { error: "bad_request", message: parsed.error }, cors);
+      payload = parsed;
+    } else payload = body && typeof body === "object" ? body : {};
   }
   try {
     const stub = env.FAMILY.get(env.FAMILY.idFromName("family"));
-    const response = await stub.fetch("https://family.internal" + path, {
+    const response = await stub.fetch("https://family.internal" + path + (request.method === "GET" ? new URL(request.url).search : ""), {
       method: request.method,
       headers: { "content-type": "application/json" },
-      body: payload ? JSON.stringify(payload) : undefined,
+      body: payload !== undefined ? JSON.stringify(payload) : undefined,
     });
     return json(response.status, await response.json(), cors);
   } catch (e) {
@@ -521,10 +773,10 @@ function sanitizeWords(data) {
     .slice(0, 300);
 }
 
-// 구조화 출력 응답에서 JSON을 꺼낸다. 거부·잘림·해석 실패는 그대로 돌려줄 응답으로 만든다.
-function readJsonMessage(message, cors, hints) {
-  if (message.stop_reason === "refusal") return { response: json(422, { error: "refused", message: hints.refused }, cors) };
-  if (message.stop_reason === "max_tokens") return { response: json(422, { error: "truncated", message: hints.truncated }, cors) };
+// 구조화 출력 응답에서 JSON을 꺼낸다. 거부·잘림·해석 실패는 상태 코드와 본문으로 돌려준다.
+function parseJsonMessage(message, hints) {
+  if (message.stop_reason === "refusal") return { status: 422, body: { error: "refused", message: hints.refused } };
+  if (message.stop_reason === "max_tokens") return { status: 422, body: { error: "truncated", message: hints.truncated } };
   const text = (message.content || [])
     .filter((b) => b && b.type === "text")
     .map((b) => b.text)
@@ -532,8 +784,12 @@ function readJsonMessage(message, cors, hints) {
   try {
     return { data: JSON.parse(text) };
   } catch {
-    return { response: json(502, { error: "bad_upstream", message: "AI 응답을 해석하지 못했습니다. 다시 시도해 주세요." }, cors) };
+    return { status: 502, body: { error: "bad_upstream", message: "AI 응답을 해석하지 못했습니다. 다시 시도해 주세요." } };
   }
+}
+function readJsonMessage(message, cors, hints) {
+  const parsed = parseJsonMessage(message, hints);
+  return parsed.data ? { data: parsed.data } : { response: json(parsed.status, parsed.body, cors) };
 }
 
 function usageOf(message) {
@@ -677,13 +933,31 @@ async function diag(request, env, cors) {
 }
 
 export default {
+  // 크론(매시 0분): 한국 시각 기준 날짜·시를 가족 기록함에 넘겨 계획 시각이 지난 아이의 오늘의 단어를 만든다.
+  async scheduled(controller, env, ctx) {
+    if (!env.FAMILY) return;
+    const run = env.FAMILY.get(env.FAMILY.idFromName("family"))
+      .fetch("https://family.internal/cron", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(kstNow(Number.isFinite(controller?.scheduledTime) ? controller.scheduledTime : Date.now())),
+      })
+      .then(async (r) => console.log("daily_cron", r.status, (await r.text()).slice(0, 300)))
+      .catch((e) => console.error("daily_cron_failed", e?.name || "", e?.message || ""));
+    if (ctx?.waitUntil) ctx.waitUntil(run);
+    else await run;
+  },
   async fetch(request, env) {
     const cors = corsHeaders(request, env);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     if (path === "/diag") return diag(request, env, cors);
-    const familyRoute = (path === "/sync" && request.method === "POST") || (FAMILY_PATH.test(path) && ["GET", "DELETE"].includes(request.method));
+    const familyRoute =
+      (path === "/sync" && request.method === "POST") ||
+      (FAMILY_PATH.test(path) && ["GET", "DELETE"].includes(request.method)) ||
+      (PLAN_PATH.test(path) && request.method === "POST") ||
+      (DAILY_PATH.test(path) && ["GET", "POST"].includes(request.method));
     const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define"].includes(path);
     if (!familyRoute && !aiRoute)
       return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." }, cors);

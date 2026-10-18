@@ -1,6 +1,6 @@
 # AI 사진 인식·사전 프록시 (Cloudflare Worker)
 
-앱(GitHub Pages)은 Anthropic API를 직접 부르지 않고 이 Worker만 호출합니다. 사진 인식(`/recognize`), 영어 단어 목록의 뜻·발음을 찾는 AI 사전(`/define`), 그리고 아이 기기가 보낸 시험 기록을 저장해 보호자 폰에 보여 주는 가족 기록함(`/sync`, `/family`)을 처리합니다. Anthropic API 키는 Worker의 비밀값에만 있고, 앱·저장소·태블릿 어디에도 들어가지 않습니다. 가족용 **접속 코드**가 맞는 요청만 처리합니다.
+앱(GitHub Pages)은 Anthropic API를 직접 부르지 않고 이 Worker만 호출합니다. 사진 인식(`/recognize`), 영어 단어 목록의 뜻·발음을 찾는 AI 사전(`/define`), 아이 기기가 보낸 시험 기록을 저장해 보호자 폰에 보여 주는 가족 기록함(`/sync`, `/family`), 그리고 매일 아이 수준에 맞는 ‘오늘의 단어’를 만드는 생성기(`/daily`, 크론)를 처리합니다. Anthropic API 키는 Worker의 비밀값에만 있고, 앱·저장소·태블릿 어디에도 들어가지 않습니다. 가족용 **접속 코드**가 맞는 요청만 처리합니다.
 
 ```
 태블릿 앱 ──(사진 + 접속 코드)──▶ Worker ──(API 키)──▶ Anthropic
@@ -55,6 +55,15 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 - 한도: 본문 256KB, 기록 100개/회, 틀린 단어 200개/기록, 이름 20자. 요청 제한은 `/sync`, `/family` 버킷으로 IP당 분당 30회(공통 설정).
 - 2026-10-18 이전에 배포한 Worker에는 이 기능이 없어 앱이 “다시 배포” 안내를 띄웁니다. `npm run deploy` 뒤 `npm run parent-code`를 실행하세요.
 
+## 오늘의 단어 (매일 생성 · 크론)
+
+보호자가 아이별 계획(`POST /family/<childId>/plan`: 켜기, 수준, 하루 단어 수 5~20, 만드는 시각 0~23시 KST)을 저장하면, 매시 0분에 실행되는 크론(`wrangler.jsonc`의 `triggers.crons`)이 한국 시각 기준 계획 시각이 지난 아이의 그날 단어를 만들어 `FamilyStore`에 저장합니다. 아이 기기가 먼저 열리면 `POST /daily/<childId>`로 그 자리에서 만듭니다(같은 날 두 번 만들지 않음).
+
+- 구성: 복습 최대 3개(최근 14일 기록의 틀린 단어, 최신순) + 새 단어. 새 단어는 `DAILY_MODEL`(기본 `claude-sonnet-5-5`)에 수준 문구, 아이 기기가 `/sync`로 보낸 최근 세트 단어(교재 앵커, 최대 60개), 최근에 이미 낸 단어(최대 200개), 복습 단어를 넘겨 필요한 수의 2배를 받은 뒤 앵커·이미 낸 단어·규칙 위반을 걸러 채웁니다. 모자라면 한 번 더 요청합니다. 아이별 ‘이미 낸 단어’는 5,000개까지 기억합니다.
+- 형식은 AI 사전과 같아(영어·뜻·발음·허용 답안) 앱의 시험 엔진이 그대로 채점합니다. 기록에 `daily: "YYYY-MM-DD"`가 붙어 오면 그날 것에 완료(점수)를 표시합니다(중단 기록 제외).
+- 비용: 아이당 하루 1회, 텍스트 20단어 안팎이라 1원 미만 수준입니다. 품질이 아쉬우면 `DAILY_MODEL`을 `claude-opus-5-5`로 바꾸고 `npm run deploy`.
+- 크론은 Workers 무료 플랜에서 동작합니다. 배포 로그의 `scheduled` 항목 또는 `npm run tail`의 `daily_cron` 줄로 확인할 수 있습니다.
+
 ## 지역 차단과 북미 중계 (Durable Object)
 
 한국에서 온 요청은 Cloudflare의 홍콩(HKG) 데이터센터에서 실행될 때가 있는데, Anthropic은 홍콩발 요청을 `403 forbidden: Request not allowed`로 거절합니다. 그래서 Worker는 Anthropic 호출만 북미에 고정된 Durable Object(`AnthropicRelay`, `locationHint: wnam`)를 통해 보냅니다. `wrangler.jsonc`의 `durable_objects`와 `migrations`가 이 설정이며, 무료 플랜에서 동작합니다.
@@ -68,6 +77,8 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 | 항목 | 방법 |
 |---|---|
 | 모델 | `wrangler.jsonc`의 `CLAUDE_MODEL` (`claude-opus-5-5` 기본 / `claude-sonnet-5-5` / `claude-haiku-5-5`) 수정 후 `npm run deploy` |
+| 오늘의 단어 모델 | `wrangler.jsonc`의 `DAILY_MODEL` (기본 `claude-sonnet-5-5`) 수정 후 `npm run deploy` |
+| 오늘의 단어 크론 | `wrangler.jsonc`의 `triggers.crons` (기본 매시 0분; 생성 시각은 아이별 계획의 `hour`) |
 | 허용 주소 | `wrangler.jsonc`의 `ALLOWED_ORIGINS` (쉼표로 여러 개). 앱 주소가 바뀌면 여기도 바꿉니다 |
 | 분당 요청 제한 | `wrangler.jsonc`의 `ratelimits[0].simple.limit` (기본 30회/분, IP당) |
 | 접속 코드 변경 | `npx wrangler secret put APP_PASSCODE` 후 태블릿의 보호자 설정에서 새 코드 저장 |
@@ -96,12 +107,15 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 | `POST /sync` · 헤더 `X-App-Passcode`(가족 또는 보호자 코드) · JSON `{ child: { id, name }, records: [{ id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed: [{ en, ko, unknown? }] }], sets: [{ name, count }] }` | 아이 기기의 시험 기록 저장(기록 최대 100개, 같은 id는 덮어씀). `{ ok, stored, trimmed, syncedAt }` |
 | `GET /family` · 헤더 `X-App-Passcode`(보호자 코드만) | 아이별 요약 `{ children: [{ id, name, sets, lastTestAt, updatedAt, records }], serverTime }`. `records`는 최근 14일(20개 미만이면 최근 20개), 최신순 |
 | `GET /family/<childId>` · 보호자 코드 | 한 아이의 전체 기록 `{ child, records }`(최신순). 모르는 아이는 404 `unknown_child` |
-| `DELETE /family/<childId>` · 보호자 코드 | 아이 항목과 기록 삭제. `{ ok, deleted }` |
+| `DELETE /family/<childId>` · 보호자 코드 | 아이 항목과 기록·오늘의 단어 삭제. `{ ok, deleted }` |
+| `POST /family/<childId>/plan` · 보호자 코드 · JSON `{ enabled, level, dailyCount, hour }` | 오늘의 단어 계획 저장(빠진 항목은 유지). `{ ok, child }` |
+| `GET /daily/<childId>?date=YYYY-MM-DD` · 가족 또는 보호자 코드 | 그날의 단어 `{ date, level, words: [{ id, en, ko, ipa, aliases, kind: "review"\|"new" }], note, completed? }`. 없으면 404 `no_daily`, 계획이 꺼져 있으면 409 `plan_disabled` |
+| `POST /daily/<childId>` · 가족 또는 보호자 코드 · JSON `{ date? }` | 그날 것이 없으면 Claude로 만들어 저장하고 돌려줍니다(있으면 그대로) |
 
 오류는 `{ error, message }` JSON으로 돌려주며(원인은 `npm run tail` 로그의 `anthropic_error` 줄에서 확인) `message`는 앱이 그대로 보여 주는 한국어 안내입니다. 접속 코드 오류는 401, 허용되지 않은 주소는 403, 요청 과다는 429, Anthropic 쪽 문제는 502/503/504입니다. 보호자 코드가 필요한 요청(`/family…`)에 가족 코드를 쓰면 401 “보호자 코드가 맞지 않습니다”, 보호자 코드를 등록하지 않았으면 500, 가족 기록함에 닿지 못하면 503입니다. Anthropic 키 문제는 앱의 접속 코드 오류(401)와 구분하기 위해 502로 돌려줍니다.
 
 보안 메모: Origin 검사와 CORS는 다른 웹사이트가 이 Worker를 쓰지 못하게 막고, 접속 코드는 주소를 아는 사람의 무단 사용을 막습니다. 접속 코드는 태블릿 브라우저에 저장되므로, 기기를 잃어버리면 코드를 바꾸세요. 피해 범위는 어차피 Anthropic 콘솔의 사용 한도로 제한됩니다.
 
-`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의)을 Node에서 확인합니다 (`node tests/worker.cjs`).
+`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의)·오늘의 단어(계획·앵커·생성·완료·크론)를 Node에서 확인합니다 (`node tests/worker.cjs`).
 
 2026-10-18 이전에 배포한 Worker에는 `/define`과 가족 기록함(`/sync`, `/family`)이 없어 앱의 ‘빈 뜻 AI로 채우기’와 가족 기록함이 “다시 배포” 안내를 띄웁니다. `npm run deploy`로 다시 배포하면 됩니다(앱 배포와 별개, 먼저 배포해도 옛 앱과 호환).

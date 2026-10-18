@@ -9,6 +9,8 @@
   "vars": {
     // 사진 인식 모델: claude-opus-5-5(기본, 가장 정확) / claude-sonnet-5-5(빠름) / claude-haiku-5-5(가장 저렴)
     "CLAUDE_MODEL": "claude-opus-5-5",
+    // 오늘의 단어 생성 모델(텍스트만, 하루 아이당 20단어 안팎). 품질이 아쉬우면 claude-opus-5-5 로.
+    "DAILY_MODEL": "claude-sonnet-5-5",
     // 앱이 배포된 주소만 허용 (쉼표로 여러 개). 로컬 개발은 .dev.vars 에서 덮어쓴다.
     "ALLOWED_ORIGINS": "https://hongtaehwa.github.io"
   },
@@ -25,6 +27,8 @@
     { "tag": "v1", "new_sqlite_classes": ["AnthropicRelay"] },
     { "tag": "v2", "new_sqlite_classes": ["FamilyStore"] }
   ],
+  // 오늘의 단어: 매시 0분(UTC)에 scheduled()가 실행되어 한국 시각 기준 계획 시각이 지난 아이의 그날 단어를 만든다.
+  "triggers": { "crons": ["0 * * * *"] },
   // IP당 분당 요청 수 제한. 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE)은 여기에 적지 않고 wrangler secret put 으로 넣는다.
   "ratelimits": [
     {

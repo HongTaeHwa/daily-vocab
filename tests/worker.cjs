@@ -384,7 +384,7 @@ const { pathToFileURL } = require("url");
       },
     };
   };
-  const familyObject = new FamilyStore({ storage: familyStorage() });
+  const familyObject = new FamilyStore({ storage: familyStorage() }, { ...env, PARENT_PASSCODE: "parent-9999" });
   const FAMILY = { idFromName: (n) => "id:" + n, get: () => ({ fetch: (u, init) => familyObject.fetch(new Request(u, init)) }) };
   const fenv = { ...env, PARENT_PASSCODE: "parent-9999", FAMILY };
   const PARENT = { passcode: "parent-9999" };
@@ -507,8 +507,148 @@ const { pathToFileURL } = require("url");
   data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
   assert.deepEqual(data.children, []);
 
+  // ---- 오늘의 단어: 계획(plan)·교재 앵커·생성(복습+새 단어, 제외 규칙, 재요청)·완료 표시·크론 ----
+  const kid = { id: "22222222-3333-4444-8555-666666666666", name: "한결" };
+  const kstDate = (offsetDays = 0) => new Date(Date.now() + 9 * 3600000 + offsetDays * 86400000).toISOString().slice(0, 10);
+  const today = kstDate(0), tomorrow = kstDate(1), day3 = kstDate(2), day4 = kstDate(3);
+  const anthropicCalls = [];
+  const candidateQueue = [];
+  const define = (en) => ({ english: en, ipa: "ˈ" + en, korean: en + "의 뜻", aliases: [en + "뜻", en + "뜻2"] });
+  const dailyMock = async (url, init) => {
+    const body = JSON.parse(init.body);
+    anthropicCalls.push(body);
+    const content = body.messages[0].content;
+    const review = (/복습 단어\(그대로 정의\): ([^\n]+)/.exec(content)?.[1] || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const count = Number(/새 단어 (\d+)개/.exec(content)?.[1] || 0);
+    const letters = "abcdefghijklmnopqrstuvwxyz";
+    const fresh = candidateQueue.length ? candidateQueue.shift() : Array.from({ length: count }, (_, i) => "auto" + letters[anthropicCalls.length % 26] + letters[i % 26]); // 숫자 없는 가짜 단어(WORD_PATTERN 통과)
+    const payload = { words: [...review.map(define), ...fresh.map(define)], note: "" };
+    return new Response(
+      JSON.stringify({ model: body.model, stop_reason: "end_turn", usage: {}, content: [{ type: "text", text: JSON.stringify(payload) }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  globalThis.fetch = dailyMock;
+  // 아이 등록 + 교재 앵커 + 틀린 단어가 있는 기록
+  await familyCase("/sync", {
+    body: {
+      child: kid,
+      sets: [{ name: "중등 DAY05", count: 40 }],
+      anchor: { setName: "중등 DAY05", words: ["authority", "devote", " evident ", "bad word!!", "authority"] },
+      records: [rec("k1", hoursAgo(5), { missed: [{ en: "linger", ko: "남다" }, { en: "glimpse", ko: "흘끗 봄", unknown: true }] })],
+    },
+  }, 200);
+  data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(data.child.anchor.words, ["authority", "devote", "evident"], "anchor cleaned and deduped");
+  assert.equal(data.child.anchor.setName, "중등 DAY05");
+  assert.deepEqual(data.child.plan, { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16 }, "default plan");
+  assert.equal(data.today.exists, false);
+  await familyCase("/sync", { body: { child: kid, anchor: { words: "nope" } } }, 400, "anchor");
+  // 계획이 꺼져 있으면 409
+  await familyCase("/daily/" + kid.id, { method: "GET" }, 409, "plan_disabled");
+  await familyCase("/daily/" + kid.id, { body: {} }, 409, "plan_disabled");
+  // 계획 저장: 보호자만, 검증
+  await familyCase("/family/" + kid.id + "/plan", { body: { enabled: true } }, 401, "보호자 코드");
+  await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { dailyCount: 30 } }, 400, "5~20");
+  await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { hour: 24 } }, 400, "0~23");
+  await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { level: "  " } }, 400, "수준");
+  await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { enabled: "yes" } }, 400, "enabled");
+  await familyCase("/family/99999999-aaaa-4bbb-8ccc-dddddddddddd/plan", { ...PARENT, body: { enabled: true } }, 404, "unknown_child");
+  data = await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { enabled: true, dailyCount: 5, level: " 고1·수능 기초 " } }, 200);
+  assert.deepEqual([data.child.plan.enabled, data.child.plan.dailyCount, data.child.plan.level, data.child.plan.hour], [true, 5, "고1·수능 기초", 16]);
+  assert.equal(anthropicCalls.length, 0, "no Claude call so far");
+  // 아직 없음 → 404 no_daily (옛 Worker의 not_found 와 구분)
+  await familyCase("/daily/" + kid.id, { method: "GET" }, 404, "no_daily");
+  // 생성: 복습 2개(linger, glimpse) + 새 단어 3개. 앵커(authority, devote)는 걸러진다.
+  candidateQueue.push(["authority", "devote", "verdict", "thrive", "plead", "subtle"]);
+  data = await familyCase("/daily/" + kid.id, { body: {} }, 200);
+  assert.equal(anthropicCalls.length, 1, "one Claude call when candidates suffice");
+  assert.equal(anthropicCalls[0].model, "claude-sonnet-5-5", "daily model default");
+  assert(anthropicCalls[0].system.includes("daily English vocabulary quiz"), "daily prompt");
+  assert.equal(anthropicCalls[0].output_config.format.type, "json_schema");
+  const sentContent = anthropicCalls[0].messages[0].content;
+  assert(
+    sentContent.includes("학생 수준: 고1·수능 기초") && sentContent.includes("authority, devote, evident") &&
+      sentContent.includes("복습 단어(그대로 정의): linger, glimpse") && sentContent.includes("새 단어 6개"),
+    "prompt content: " + sentContent,
+  );
+  assert.equal(data.date, today);
+  assert.deepEqual(data.words.map((w) => w.en), ["linger", "glimpse", "verdict", "thrive", "plead"], "review first, anchor words filtered");
+  assert.deepEqual(data.words.map((w) => w.kind), ["review", "review", "new", "new", "new"]);
+  assert.deepEqual(data.words.map((w) => w.id), [1, 2, 3, 4, 5]);
+  assert.equal(data.words[0].ko, "linger의 뜻", "review word defined by the model");
+  assert.deepEqual(data.words[2].aliases, ["verdict뜻", "verdict뜻2"]);
+  assert.equal(data.level, "고1·수능 기초");
+  assert.equal(data.model, "claude-sonnet-5-5");
+  assert.equal(data.completed, undefined);
+  // 같은 날 다시 요청하면 만들지 않고 그대로, 보호자 코드로 조회도 된다
+  await familyCase("/daily/" + kid.id, { body: {} }, 200);
+  assert.equal(anthropicCalls.length, 1, "no second generation for the same day");
+  data = await familyCase("/daily/" + kid.id + "?date=" + today, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.words.length, 5);
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  let k = data.children.find((c) => c.id === kid.id);
+  assert.deepEqual([k.today.exists, k.today.count, k.today.completed, k.plan.dailyCount], [true, 5, null, 5]);
+  // 완료 표시: daily 날짜가 붙은 기록(중단 기록은 완료로 치지 않는다)
+  const k2At = hoursAgo(0.5);
+  await familyCase("/sync", { body: { child: kid, records: [rec("k2p", hoursAgo(0.7), { total: 2, correct: 1, partial: true, daily: today, missed: [] })] } }, 200);
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  assert.equal(data.children.find((c) => c.id === kid.id).today.completed, null, "partial record does not complete the daily quiz");
+  await familyCase("/sync", { body: { child: kid, records: [rec("k2", k2At, { total: 5, correct: 4, daily: today, missed: [{ en: "plead", ko: "plead의 뜻" }] })] } }, 200);
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual(data.children.find((c) => c.id === kid.id).today.completed, { recordId: "k2", correct: 4, total: 5, completedAt: k2At });
+  data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.today.words.length, 5);
+  assert.equal(data.today.completed.correct, 4);
+  assert.equal(data.records.find((r) => r.id === "k2").daily, today, "daily date kept on the record");
+  // 다음 날: 복습은 최신 틀린 단어부터 3개, 이미 낸 단어(verdict, thrive)는 걸러지고 모자라면 한 번 더 요청한다
+  candidateQueue.push(["verdict", "thrive", "plead", "wither"], ["forge", "ample", "dwell", "exert"]);
+  anthropicCalls.length = 0;
+  data = await familyCase("/daily/" + kid.id, { body: { date: tomorrow } }, 200);
+  assert.equal(anthropicCalls.length, 2, "second call when the first batch was mostly used words");
+  assert(anthropicCalls[0].messages[0].content.includes("새 단어 4개"), "first call asks 2× the need");
+  assert(anthropicCalls[1].messages[0].content.includes("새 단어 2개"), "retry asks 2× the remaining need");
+  assert(anthropicCalls[1].messages[0].content.includes("wither"), "already picked words are excluded in the retry");
+  assert(anthropicCalls[0].messages[0].content.includes("최근에 이미 낸 단어(제외): "), "served words sent as avoid list");
+  assert.deepEqual(data.words.map((w) => w.en), ["plead", "linger", "glimpse", "wither", "forge"], "review newest-first then new words");
+  assert.deepEqual(data.words.map((w) => w.kind), ["review", "review", "review", "new", "new"]);
+  // 거부 → 422 (저장되지 않음)
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ model: "m", stop_reason: "refusal", usage: {}, content: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  await familyCase("/daily/" + kid.id, { body: { date: day3 } }, 422, "거부");
+  await familyCase("/daily/" + kid.id + "?date=" + day3, { method: "GET" }, 404, "no_daily");
+  // 크론: 계획 시각(16시 KST)이 지나면 1회 생성, 다시 돌려도 중복 없음, 시각 전이면 생성 안 함, 계획 꺼진 아이는 건너뜀
+  globalThis.fetch = dailyMock;
+  anthropicCalls.length = 0;
+  const pending = [];
+  const ctx = { waitUntil: (p) => pending.push(p) };
+  const runCron = async (iso) => {
+    pending.length = 0;
+    await worker.scheduled({ scheduledTime: Date.parse(iso) }, fenv, ctx);
+    await Promise.all(pending);
+  };
+  await runCron(day3 + "T07:00:00Z"); // 16:00 KST
+  assert.equal(anthropicCalls.length, 1, "cron generated once for the enabled child");
+  data = await familyCase("/daily/" + kid.id + "?date=" + day3, { method: "GET" }, 200);
+  assert.equal(data.date, day3);
+  await runCron(day3 + "T08:00:00Z");
+  assert.equal(anthropicCalls.length, 1, "cron does not regenerate");
+  await runCron(day4 + "T01:00:00Z"); // 10:00 KST, before the plan hour
+  assert.equal(anthropicCalls.length, 1, "cron waits for the plan hour");
+  await familyCase("/daily/" + kid.id + "?date=" + day4, { method: "GET" }, 404, "no_daily");
+  const kid2 = { id: "33333333-3333-4444-8555-666666666666", name: "둘째" };
+  await familyCase("/sync", { body: { child: kid2 } }, 200);
+  await runCron(day4 + "T07:00:00Z");
+  assert.equal(anthropicCalls.length, 2, "cron generated day4 for the enabled child only");
+  await familyCase("/daily/" + kid2.id + "?date=" + day4, { method: "GET" }, 409, "plan_disabled");
+  await worker.scheduled({ scheduledTime: Date.parse(day4 + "T07:00:00Z") }, { ...env }, ctx); // FAMILY 없음 → 조용히 종료
+  // 삭제하면 오늘의 단어·이미 낸 단어도 지운다
+  await familyCase("/family/" + kid.id, { method: "DELETE", ...PARENT }, 200);
+  await familyCase("/daily/" + kid.id, { method: "GET" }, 404, "unknown_child");
+  await familyCase("/family/" + kid2.id, { method: "DELETE", ...PARENT }, 200);
+
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/fallback retry/upstream error mapping/family store",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/fallback retry/upstream error mapping/family store/daily words",
   );
 })().catch((e) => {
   console.error(e);

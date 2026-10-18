@@ -52,6 +52,7 @@ const { chromium } = require("playwright");
       children.set(c.id, c);
       return reply(route, 200, { ok: true, stored: body.records.length, trimmed: 0, syncedAt: c.updatedAt });
     }
+    if (url.pathname.startsWith("/daily/")) return reply(route, 409, { error: "plan_disabled", message: "보호자가 아직 오늘의 단어를 켜지 않았어요." });
     const m = /^\/family(?:\/([A-Za-z0-9-]+))?$/.exec(url.pathname);
     if (!m) return reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
     if (passcode !== PARENT_CODE) return reply(route, 401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." });
