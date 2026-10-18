@@ -81,7 +81,9 @@ function applyParentMode() {
   $("tabHistory").classList.toggle("hidden", on);
   $("tabFamily").classList.toggle("hidden", !(on || family.parentCode));
   $("brandTagline").textContent = on ? "보호자 · 아이들 관리" : "사진으로 만드는 나만의 단어장";
-  $("parentModeRow").classList.toggle("hidden", !(appMode === "parent" || family.parentCode));
+  const parentDevice = appMode === "parent" || Boolean(family.parentCode);
+  $("parentBox").classList.toggle("hidden", !parentDevice); // 아이 기기에는 보호자 코드 칸을 보이지 않는다(parent.html로 연 기기에서만)
+  $("parentModeRow").classList.toggle("hidden", !parentDevice);
   $("parentModeOff").checked = Boolean(family.parentModeOff);
 }
 // quiz.js 가 문제마다 부른다: 보호자가 정한 문제당 제한 시간(초). 연결되지 않은 기기는 0.

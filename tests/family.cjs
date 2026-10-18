@@ -260,11 +260,18 @@ const { chromium } = require("playwright");
   assert((await page.textContent("#childName")) === "하늘", "linked again as the same child");
   assert(syncs().slice(4).some((r) => r.body.records.length >= 1), "history resent after re-joining");
 
+  // 아이 기기에는 보호자 코드 칸이 보이지 않는다. 보호자 화면(?mode=parent)으로 열어야 나타난다.
+  assert(await page.isHidden("#parentBox"), "no parent-code box on a child device");
+  await page.goto(url + "?mode=parent");
+  await waitFor(() => page.evaluate(() => document.body.classList.contains("parent-mode")), "parent screen opened");
+  assert(await page.isVisible("#parentSetup"), "setup card asks for the code");
+  await page.click("#tabSettings");
+  await openFamilySettings();
+  assert(await page.isVisible("#parentBox"), "parent-code box visible on the parent screen");
   // 보호자 폰: 코드 길이·코드 오류·옛 Worker 안내
   await page.fill("#parentCode", "bad");
   await page.click("#saveParent");
   assert((await page.textContent("#parentStatus")).includes("4자"), "parent code length check");
-  assert(await page.isHidden("#tabFamily"), "no tab for a rejected code");
   await page.fill("#parentCode", "wrong-code");
   await page.click("#saveParent");
   await waitFor(() => statusHas("parentStatus", "보호자 코드가 맞지 않아요"), "wrong parent code message");
@@ -349,6 +356,7 @@ const { chromium } = require("playwright");
   await page.click("#tabSettings");
   await openFamilySettings();
   assert(await page.isVisible("#parentModeRow") && (await page.isHidden("#familyChildPart")) && (await page.isHidden("#micPanel")), "parent mode hides child-only settings");
+  assert(await page.isVisible("#parentBox"), "parent-code box stays on a parent device");
   await page.check("#parentModeOff");
   await waitFor(() => page.isVisible("#home"), "home shown when parent mode is off");
   assert((await page.isVisible("#tabHome")) && !(await page.evaluate(() => document.body.classList.contains("parent-mode"))), "child UI back");
@@ -367,8 +375,11 @@ const { chromium } = require("playwright");
   assert(await page.isHidden("#childDetail"), "detail closed");
   await page.click("#tabSettings");
   await page.click("#clearParent");
-  assert(await page.isHidden("#tabFamily"), "family tab hidden after clearing the code");
-  assert(!(await page.evaluate(() => document.body.classList.contains("parent-mode"))) && (await page.isVisible("#tabHome")), "parent mode off after clearing the code");
+  assert(await page.isVisible("#tabFamily"), "family tab stays on a parent-installed device (code can be entered again)");
+  assert(await page.evaluate(() => document.body.classList.contains("parent-mode")), "parent-installed device stays in parent mode after clearing the code");
+  await page.goto(url + "?mode=child");
+  await waitFor(() => page.evaluate(() => !document.body.classList.contains("parent-mode")), "child mode after ?mode=child");
+  assert((await page.isHidden("#tabFamily")) && (await page.isVisible("#tabHome")), "child tabs after leaving the parent mode");
   assert((await page.evaluate(() => localStorage.getItem("daily_vocab_family_cache_v1"))) === null, "cache cleared");
   assert(!(await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).parentCode)), "parent code removed");
 

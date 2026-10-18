@@ -200,13 +200,12 @@ const { chromium } = require("playwright");
   await new Promise((r) => setTimeout(r, 400));
   assert(paths("/daily/" + childId, "POST").length === 1, "no regeneration after reload");
 
-  // 보호자 폰: 아이 카드의 오늘의 단어 상태, 상세의 계획·미리보기
-  await page.click("#tabSettings");
-  await openFamilySettings();
-  await page.fill("#parentCode", PARENT_CODE);
-  await page.click("#saveParent");
-  await waitFor(() => statusHas("parentStatus", "연결 성공"), "parent connected");
-  await page.click("#tabFamily");
+  // 보호자 폰: 아이 카드의 오늘의 단어 상태, 상세의 계획·미리보기 (보호자 화면으로 열어야 코드 칸이 보인다)
+  await page.goto(url + "?mode=parent");
+  await waitFor(() => page.isVisible("#parentSetup"), "parent setup screen");
+  await page.fill("#parentCodeStart", PARENT_CODE);
+  await page.click("#saveParentStart");
+  await waitFor(() => statusHas("parentSetupStatus", "연결 성공"), "parent connected");
   await waitFor(() => statusHas("familyLoadStatus", "방금 확인했어요"), "family loaded");
   assert((await page.textContent("#childrenList")).includes("오늘의 단어 ✅ 0 / 10"), "child card shows daily completion: " + (await page.textContent("#childrenList")));
   await page.click("#childrenList button");
