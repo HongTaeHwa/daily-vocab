@@ -87,6 +87,7 @@
 
 ## 갤럭시 앱 (`android/`)
 - 목적: 웹앱은 OS의 서클 투 서치·스크린샷을 막을 수 없으므로, 안드로이드 앱의 `FLAG_SECURE`로 **이 앱 화면에서만** 막는다. 아이폰은 해당 수단이 없다(스크린 타임 안내).
+- 화면 분할 차단(v1.2, `docs/DESIGN.md` 13.2절): 매니페스트 `resizeableActivity="false"` + `MainActivity`의 멀티윈도우 감지(`onMultiWindowModeChanged`/`isInMultiWindowMode`) → WebView `INVISIBLE` + 남색 가림막(`split_blocked_*` 문자열). WebView를 숨기면 페이지가 `visibilitychange(hidden)`을 받아 웹앱의 화면 이탈 기록이 동작한다. 이 두 겹을 없애면 안 된다.
 - 창 여백: Android 15(targetSdk 35)의 edge-to-edge 강제로 상태 표시줄이 가려지던 문제를 `MainActivity`가 `setDecorFitsSystemWindows(false)` + 인셋 리스너로 위(남색)·아래(흰색, 키보드 포함) 여백을 직접 두어 해결했다(v1.1). 웹 쪽 `.topbar`도 `env(safe-area-inset-top)` 여백을 둔다.
 - 웹앱과의 관계: 앱은 `https://hongtaehwa.github.io/daily-vocab/` 주소만 안다. `assets/bridge.js`가 페이지 스크립트보다 먼저 실행되어(`WebViewCompat.addDocumentStartJavaScript`) `window.SpeechRecognition`·`speechSynthesis`를 `AndroidSpeech` 브리지로 바꾸므로 quiz.js의 음성 코드는 그대로다. UA에 `DailyVocabApp/버전`이 붙는다(가족 기록함의 기기 종류 표시에 쓸 수 있음). WebView 저장 공간은 Chrome과 별개다.
 - 빌드·배포: 로컬에 JDK/Android SDK가 없어도 된다. `android/**`를 바꾼 PR은 GitHub Actions가 APK를 아티팩트로 만들고, `main`에 올라가거나 수동 실행하면 Release `android-vN`에 APK를 붙인다. 서명 키는 보호자가 `bash android/scripts/setup-signing.sh`로 한 번 만들어 Secrets(`ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`)에 넣는다. Secrets가 없으면 debug 키로 서명된다(업데이트 때 기존 앱 삭제 필요). 키 파일(`android/keystore/`, `*.p12`, `*.jks`)은 절대 커밋하지 않는다.
