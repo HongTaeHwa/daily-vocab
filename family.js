@@ -1047,6 +1047,10 @@ function renderChildren() {
     devices.className = "muted device-line";
     const summary = devicesSummary(c.devices);
     devices.textContent = summary ? "연결 기기: " + summary : c.joinCode ? `아직 연결된 기기 없음 · 아이 코드 ${formatCode(c.joinCode)}` : "연결된 기기 정보 없음";
+    const questionLine = document.createElement("p");
+    questionLine.className = "muted";
+    questionLine.textContent = c.questionCount ? `📷 물어본 문제 ${c.questionCount}개` + (c.lastQuestionAt ? ` · 마지막 ${relativeTime(c.lastQuestionAt)}` : "") : "";
+    questionLine.classList.toggle("hidden", !c.questionCount);
     const dailyLine = document.createElement("p");
     dailyLine.className = "muted daily-line";
     dailyLine.textContent = dailyStatusText(c);
@@ -1080,7 +1084,7 @@ function renderChildren() {
     detail.textContent = summary ? "기록 자세히 보기" : "연결 코드·설정 보기";
     detail.addEventListener("click", () => openChild(c));
     actions.append(detail);
-    card.append(head, last, devices, dailyLine, awayLine, dots, week, actions);
+    card.append(head, last, devices, dailyLine, questionLine, awayLine, dots, week, actions);
     list.append(card);
   }
 }
@@ -1118,11 +1122,13 @@ async function openChild(c) {
   setFeedback($("linkStatus"), "info", "");
   setFeedback($("setsStatus"), "info", "");
   renderChildRecords("전체 기록을 불러오는 중…");
+  renderChildQuestions(null);
   $("childDetail").scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     const data = await familyRequest("/family/" + encodeURIComponent(c.id), { method: "GET", passcode: family.parentCode });
     if (familyDetail?.child.id !== c.id) return;
-    familyDetail = { child: data.child || c, records: Array.isArray(data.records) ? data.records : [], today: data.today || summaryToday };
+    familyDetail = { child: data.child || c, records: Array.isArray(data.records) ? data.records : [], today: data.today || summaryToday, questions: Array.isArray(data.questions) ? data.questions : [] };
+    renderChildQuestions(familyDetail.questions);
     renderLinkBox(familyDetail.child);
     renderChildSets(familyDetail.child);
     renderPlan(familyDetail.child, familyDetail.today);
@@ -1241,6 +1247,44 @@ function renderChildRecords(note) {
       entry.append(perfect);
     }
     list.append(entry);
+  }
+}
+// ---- 보호자 폰: 아이가 AI 선생님에게 물어본 문제(요약만, 사진 없음) ----
+const TUTOR_KIND_TEXT = { explain: "풀이 설명", translate: "해석", grammar: "어법 설명", check: "내 답 확인", ask: "직접 질문" };
+function renderChildQuestions(questions) {
+  const box = $("childQuestions");
+  box.textContent = "";
+  if (!questions) {
+    $("childQuestionCount").textContent = `${familyDetail?.child?.questionCount || 0}개`;
+    box.textContent = "불러오는 중…";
+    return;
+  }
+  $("childQuestionCount").textContent = `${familyDetail?.child?.questionCount || questions.length}개`;
+  if (!questions.length) {
+    box.textContent = "아직 물어본 문제가 없어요.";
+    return;
+  }
+  for (const q of questions) {
+    const row = document.createElement("div");
+    row.className = "lookup-row";
+    const main = document.createElement("div");
+    main.className = "row-main";
+    const title = document.createElement("strong");
+    title.textContent = q.problem || "(문제)";
+    const kind = document.createElement("span");
+    kind.textContent = (TUTOR_KIND_TEXT[q.kind] || q.kind || "") + (q.question ? ` · ${q.question}` : "");
+    const meta = document.createElement("small");
+    meta.textContent = new Date(q.askedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    main.append(title, kind, meta);
+    row.append(main);
+    if (q.summary) {
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.style.margin = "4px 0 0";
+      p.textContent = q.summary;
+      row.append(p);
+    }
+    box.append(row);
   }
 }
 // ---- 보호자 폰: 아이 세트 (아이 기기와 자동으로 같아짐) ----

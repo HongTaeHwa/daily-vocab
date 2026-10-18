@@ -155,6 +155,16 @@ body.parent-mode .child-only{display:none!important}
 .chip b{color:#b83a48}.chip small{color:#88541f}
 .plan-box{margin:12px 0 16px;padding:12px;border:1px dashed var(--border);border-radius:12px;background:#f8fbff}
 .lookup-result{margin-top:12px;border:1px solid var(--border);border-radius:14px;padding:14px;background:#fbfdff}
+.tutor-kinds{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}
+.kind{border:2px solid var(--border);padding:10px 6px;cursor:pointer;border-radius:14px;background:#f8fbff;color:var(--navy);font-weight:800;font:inherit;font-weight:800;display:flex;flex-direction:column;align-items:center;gap:2px}
+.kind small{font-size:12px;font-weight:500;color:#526d90}.kind.active{background:#e7f0ff;border-color:#2466cf;box-shadow:0 0 0 2px #2466cf33}
+.tutor-answer{margin-top:12px;border:1px solid var(--border);border-radius:14px;padding:14px;background:#fbfdff}
+.tutor-answer h3{margin:12px 0 4px;font-size:15px;color:var(--navy)}.tutor-answer h3 small{font-weight:500;font-size:12px}
+.tutor-answer ol,.tutor-answer ul{padding-left:20px;margin:4px 0}.tutor-answer li{margin:5px 0;line-height:1.5}
+.tutor-translation{white-space:pre-wrap;line-height:1.6}
+.tutor-answer details{margin-top:12px;border:1px dashed var(--border);border-radius:12px;padding:10px 12px;background:#fff}
+.tutor-answer summary{cursor:pointer;font-weight:800;color:var(--blue)}.tutor-answer details p{margin:8px 0 0;font-weight:700;font-size:16px}
+button.chip{cursor:pointer;font:inherit;font-size:14px}button.chip:disabled{opacity:.7;cursor:default}
 .lookup-word{font-size:28px;color:var(--navy);font-weight:900;overflow-wrap:anywhere}
 .lookup-meaning{font-size:18px;font-weight:700;margin:6px 0}
 .lookup-examples{margin:8px 0;padding-left:18px}.lookup-examples li{margin:6px 0}.lookup-examples small{display:block;color:var(--muted)}
@@ -355,6 +365,38 @@ body.in-quiz main{padding-bottom:30px}
     </div>
   </div>
   <div class="card">
+    <h2 class="section-title">📷 문제 물어보기</h2>
+    <p class="muted">문제지 사진을 찍고 무엇을 도와줄지 고르면 AI 선생님이 쉬운 말로 설명해 줘요. 정답은 접혀 있으니 먼저 생각해 보고 열어 보세요. 사진은 읽는 동안만 전송되고 저장되지 않아요.</p>
+    <div class="photo-row">
+      <button type="button" class="btn" id="tutorPick">🖼️ 사진 고르기</button><input id="tutorPhoto" type="file" accept="image/*" hidden>
+      <button type="button" class="btn" id="tutorShoot">📷 촬영</button><input id="tutorCamera" type="file" accept="image/*" capture="environment" hidden>
+    </div>
+    <div id="tutorPreview" class="thumbs"></div>
+    <div class="tutor-kinds" role="group" aria-label="도움 종류">
+      <button type="button" class="kind active" data-kind="explain" aria-pressed="true">풀이 설명<small>어떻게 푸는지</small></button>
+      <button type="button" class="kind" data-kind="translate" aria-pressed="false">해석해 줘<small>지문·문장 해석</small></button>
+      <button type="button" class="kind" data-kind="grammar" aria-pressed="false">어법 설명<small>문법 포인트</small></button>
+      <button type="button" class="kind" data-kind="check" aria-pressed="false">내 답 확인<small>표시한 답 채점</small></button>
+    </div>
+    <input id="tutorQuestion" type="text" maxlength="300" autocomplete="off" placeholder="직접 질문 (선택) 예: 3번이 왜 3번이에요?" aria-label="직접 질문">
+    <div class="actionbar"><button type="button" class="btn primary" id="tutorAsk">✨ 물어보기</button><button type="button" class="btn outline" id="tutorCancel" disabled>취소</button></div>
+    <div id="tutorStatus" class="feedback info" role="status">사진을 고르고 도움 종류를 누른 뒤 ‘물어보기’를 누르세요.</div>
+    <div id="tutorAnswer" class="tutor-answer hidden">
+      <p class="muted" id="tutorProblem"></p>
+      <h3>📘 요약</h3><p id="tutorSummary"></p>
+      <div id="tutorTranslationBox"><h3>🇰🇷 해석</h3><p id="tutorTranslation" class="tutor-translation"></p></div>
+      <h3>🧭 풀이</h3><ol id="tutorSteps"></ol>
+      <div id="tutorGrammarBox"><h3>✏️ 기억할 포인트</h3><ul id="tutorGrammar"></ul></div>
+      <div id="tutorChecked" class="feedback info hidden" role="status"></div>
+      <details id="tutorAnswerBox"><summary>정답 보기 (먼저 생각해 본 뒤 열어요)</summary><p id="tutorAnswerText"></p></details>
+      <h3>🔤 모르는 단어 후보 <small class="muted">누르면 ‘찾아본 단어’ 세트에 들어가요</small></h3>
+      <div id="tutorWords" class="chips"></div>
+      <p class="muted" id="tutorNote"></p>
+    </div>
+    <h3 class="section-title" style="margin-top:16px">📒 물어본 문제 <span class="pill" id="tutorCount">0개</span></h3>
+    <div id="tutorHistory" class="lookup-recent"></div>
+  </div>
+  <div class="card">
     <div class="row-between"><h2 class="section-title" style="margin:0">📒 찾아본 단어 <span class="pill" id="lookupCount">0개</span></h2><button type="button" class="btn small" id="lookupQuiz" disabled>이 단어들로 시험 보기</button></div>
     <div id="lookupRecent" class="lookup-recent"></div>
   </div>
@@ -418,6 +460,9 @@ body.in-quiz main{padding-bottom:30px}
     </div>
     <h3 class="section-title">📉 자주 틀린 단어 (최근 2주)</h3>
     <div id="missedTop" class="chips"></div>
+    <h3 class="section-title" style="margin-top:16px">📷 물어본 문제 <span class="pill" id="childQuestionCount">0개</span></h3>
+    <p class="muted">아이가 찾기 탭의 ‘문제 물어보기’로 AI 선생님에게 물은 문제예요. 사진은 저장되지 않고 어떤 문제를 무엇 때문에 물었는지 요약만 남아요.</p>
+    <div id="childQuestions" class="lookup-recent"></div>
     <h3 class="section-title" style="margin-top:16px">🕒 기록</h3>
     <div id="childRecords"></div>
     <div class="actionbar"><button type="button" class="btn outline danger small" id="deleteChild">이 아이 기록 서버에서 삭제</button></div>
@@ -484,7 +529,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-13 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-16 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -500,7 +545,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-13';
+  var release = '20261018-16';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -536,8 +581,8 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./quiz.js?v=20261018-13" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-13" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-13" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-16" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-16" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-16" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

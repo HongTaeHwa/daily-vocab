@@ -289,7 +289,17 @@
 - 보호자 모드에서는 `#tabLookup`이 숨고 `showView("lookup")`은 아이들 화면으로 간다. 시험 중에는 탭 바가 숨는다. 예문은 세트 단어 형식에 없으므로 찾기 기록에만 남는다(세트 편집기로 고쳐도 사라지지 않음).
 - 테스트: `tests/worker.cjs` lookup 절, `tests/ai-recognition.cjs` 찾기 흐름, `tests/family.cjs` 탭 숨김. 버전 `20261018-12`, 캐시 v21(11/v20은 같은 날 병행 작업용으로 비움). Worker 재배포 필요.
 
-## 18. 전반 점검 보완 — 작은 결함 4건 (2026-10-18)
+## 18. 문제 물어보기 — 문제지 사진으로 AI 선생님에게 묻기 (2026-10-18)
+
+배경: EBS 독해·어법 복습 테스트처럼 지문·어법·요지 문제를 풀다 막히면 앱 밖에서 답을 찾아야 했다. 사용자 요청: 사진으로 묻고 AI가 도와주기. 결정(사용자 확인): **정답은 접어 두고 풀이 먼저**, **질문 요약은 보호자에게도** 보이게.
+
+- **Worker `POST /tutor`**: `{image, mediaType, kind(explain|translate|grammar|check|ask), question?, child?:{id}}` → `TUTOR_SYSTEM`(인내심 있는 중학생 영어 선생님, 쉬운 존댓말, 답을 바로 주지 않고 단계별로) + `TUTOR_REQUESTS[kind]` + 학생 질문 → `TUTOR_SCHEMA` `{problem, summary, translation, steps, grammar, answer, checked, words, note}`. 모델 `TUTOR_MODEL`(기본 sonnet, effort medium, max_tokens 4096), 사진 8MB 상한(recognize 와 같음). 결과는 길이 제한으로 정리하고 `translation`만 줄바꿈을 보존한다.
+- **질문 요약 저장**: `child.id`가 오고 FAMILY 가 있으면 Worker 가 DO `/question`에 `{id, kind, question, problem, summary, askedAt}`을 남긴다(키 `q:<childId>:<askedAt>:<id>`, 아이당 300개, 아이 항목에 `questionCount/lastQuestionAt`). 저장 실패는 답변에 영향 없음. 사진은 저장하지 않는다. `GET /family/<id>`가 `questions`(최신 100)를 돌려주고 아이 삭제 시 함께 지운다.
+- **앱(sets.js, 찾기 탭 📷 카드)**: 사진 고르기/촬영(한 장, `preparePhoto`·`canvasToBase64Jpeg` 재사용) → 도움 종류 버튼(`.tutor-kinds .kind`, quiz 의 `.mode`와 분리) + 직접 질문(있고 종류가 explain 이면 `ask`) → `askTutor`(120초, 취소) → `renderTutorAnswer`: 요약·해석(있을 때)·풀이 단계·기억할 포인트·내 답 확인(있을 때)·**정답 `<details>` 접힘**·단어 후보 칩(누르면 `addToLookupSet` → ‘찾아본 단어’ 세트, 이미 있으면 ✓ 비활성)·메모. 기록은 `daily_vocab_tutor_v1`(최근 100, 기기만)에 남고 📒 물어본 문제에서 다시 볼 수 있다. 연결된 기기는 `child.id`를 보낸다.
+- **보호자(family.js)**: 아이 카드에 ‘📷 물어본 문제 N개 · 마지막 …’, 상세에 📷 물어본 문제 목록(문제·종류·질문·시각·요약). 어떤 유형을 자주 묻는지 보는 용도.
+- 시험 중에는 찾기 탭이 숨어 쓸 수 없다. 보호자가 끄는 스위치는 다음 단계. 테스트: `tests/worker.cjs` tutor 절(+ 질문 요약 저장·삭제), `tests/ai-recognition.cjs` 물어보기 흐름, `tests/family.cjs` 보호자 목록. 버전 `20261018-15`, 캐시 v24(13·14/v22·v23은 병행 PR #28·#29용). Worker 재배포 필요.
+
+## 19. 전반 점검 보완 — 작은 결함 4건 (2026-10-18)
 
 점검에서 나온 작은 결함 네 가지를 한 PR로 고쳤다. 버전 `20261018-13`, 캐시 v22(11/v20은 17절의 단어 찾기가 먼저 머지되어 건너뜀), 갤럭시 앱 v1.3(versionCode 4). Worker 재배포 필요(`/sync`의 빈 앵커 삭제·지운 아이 묘비).
 

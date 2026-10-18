@@ -41,6 +41,15 @@ const { chromium } = require("playwright");
     if (mode === "notfound") return reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
     if (mode === "slow") await new Promise((r) => setTimeout(r, 1500));
     if (url.pathname === "/ping") return reply(route, 200, { ok: true, model: "claude-opus-5-5" });
+    if (url.pathname === "/tutor") {
+      // 문제 물어보기 가짜 응답
+      return reply(route, 200, {
+        kind: body.kind, problem: "1번 3) 요지 고르기", summary: "아기 마사지가 체중 증가를 돕는다는 글이에요.", translation: body.kind === "translate" ? "첫 줄 해석\n둘째 줄 해석" : "",
+        steps: ["질문이 무엇을 묻는지 봐요.", "글 전체의 중심 생각을 찾아요.", "너무 좁거나 넓은 선택지를 지워요."], grammar: ["주어가 3인칭 단수이면 동사에 -s"],
+        answer: "③ — 접촉이 아기 성장에 도움이 된다는 글이에요", checked: body.kind === "check" ? "✓한 ①은 지나친 일반화예요. 정답은 ③" : "",
+        words: [{ en: "gauge", ko: "측정하다" }, { en: "absorption", ko: "흡수" }], note: "", model: "claude-sonnet-5-5", usage: { input: 1, output: 1 },
+      });
+    }
     if (url.pathname === "/lookup") {
       // 단어 찾기 가짜 응답: weight 만 안다. recieve 는 철자 제안.
       const w = String(body.word || "").toLowerCase();
@@ -54,7 +63,8 @@ const { chromium } = require("playwright");
       return reply(route, 200, { accept, reason: accept ? "같은 뜻으로 인정" : "다른 뜻이에요", model: "claude-haiku-5-5", usage: { input: 1, output: 1 } });
     }
     if (url.pathname === "/define") {
-      // AI 사전 가짜 응답: 아는 단어만 돌려주고 모르는 단어(zzz)는 메모로 알린다
+      // AI 사전 가짜 응답: 아는 단어만 돌려주고 모르는 단어(zzz)는 메모로 알린다. 버튼 잠금 확인이 응답보다 먼저 되도록 잠깐 기다린다.
+      await new Promise((r) => setTimeout(r, 300));
       const dict = {
         apple: { ko: "사과", ipa: "ˈæpəl", aliases: ["사과", "애플"] },
         run: { ko: "달리다 · 뛰다", ipa: "rʌn", aliases: ["달리다", "뛰다"] },
@@ -220,6 +230,28 @@ const { chromium } = require("playwright");
   await page.click("#lookupQuiz");
   assert((await page.isVisible("#home")) && (await page.textContent("#setSelect option:checked")).startsWith("찾아본 단어"), "quiz button selects the lookup set");
   assert((await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_lookups_v1")).length)) === 1, "lookups persisted on the device");
+
+  // 📷 문제 물어보기: 사진 + 도움 종류 + 직접 질문 → /tutor → 요약·풀이·어법·내 답 확인, 정답은 접힘, 단어 후보 → 찾아본 단어 세트, 질문 기록
+  await page.click("#tabLookup");
+  await page.click("#tutorAsk");
+  assert((await page.textContent("#tutorStatus")).includes("사진을 고르거나"), "tutor needs a photo first");
+  await page.setInputFiles("#tutorPhoto", { name: "q1.png", mimeType: "image/png", buffer: shot });
+  assert((await page.textContent("#tutorStatus")).includes("사진을 선택했어요") && (await page.$$eval("#tutorPreview img", (i) => i.length)) === 1, "tutor photo preview");
+  await page.click('.tutor-kinds .kind[data-kind="check"]');
+  await page.fill("#tutorQuestion", "3번이 왜 3번이에요?");
+  await page.click("#tutorAsk");
+  await page.waitForFunction(() => !document.getElementById("tutorAnswer").classList.contains("hidden"));
+  const tutors = () => requests.filter((r) => r.path === "/tutor");
+  assert(tutors().length === 1 && tutors()[0].body.kind === "check" && tutors()[0].body.question === "3번이 왜 3번이에요?" && tutors()[0].body.mediaType === "image/jpeg" && tutors()[0].body.image.length > 100 && tutors()[0].body.child === undefined, "tutor request: " + JSON.stringify({ ...tutors()[0].body, image: "…" }));
+  assert((await page.textContent("#tutorProblem")).includes("1번 3)") && (await page.textContent("#tutorProblem")).includes("내 답 확인") && (await page.$$eval("#tutorSteps li", (l) => l.length)) === 3 && (await page.textContent("#tutorGrammar")).includes("3인칭") && (await page.textContent("#tutorChecked")).includes("정답은 ③") && (await page.isHidden("#tutorTranslationBox")), "tutor answer sections");
+  assert(!(await page.evaluate(() => document.getElementById("tutorAnswerBox").open)) && (await page.textContent("#tutorAnswerText")).startsWith("③"), "answer stays folded until opened");
+  assert((await page.$$eval("#tutorWords button.chip", (b) => b.length)) === 2, "word candidates as chips");
+  await page.locator('#tutorWords button.chip:has-text("gauge")').evaluate((b) => b.click()); // 고정 하단 탭 바에 가려질 수 있어 직접 클릭
+  assert(await page.evaluate(() => sets.find((x) => x.id === "lookup").words.some((w) => w.en === "gauge")), "candidate added to the lookup set");
+  assert((await page.isDisabled('#tutorWords button.chip:has-text("gauge")')) && (await page.textContent("#lookupCount")) === "2개", "chip marked and lookup count updated");
+  assert((await page.textContent("#tutorCount")) === "1개" && (await page.textContent("#tutorHistory")).includes("1번 3)") && (await page.textContent("#tutorHistory")).includes("내 답 확인"), "tutor history");
+  assert((await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_tutor_v1")).length)) === 1 && (await page.isDisabled("#tutorCancel")) && !(await page.isDisabled("#tutorAsk")), "tutor history persisted, buttons reset");
+  await page.click("#tabHome");
   await page.click("#createSet");
 
   // 영어만 적은 단어의 뜻·발음을 AI 사전으로 채우기: 빈 칸만 채우고 노란 칸으로 표시, 못 찾은 단어 안내
