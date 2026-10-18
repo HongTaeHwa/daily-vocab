@@ -9,8 +9,10 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.LinearLayout
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -23,6 +25,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.File
@@ -80,9 +86,29 @@ class MainActivity : AppCompatActivity() {
         // 화면 캡처 금지: 스크린샷·화면 녹화·서클 투 서치가 이 앱 화면을 읽지 못한다.
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
 
+        // Android 15(targetSdk 35)부터 창이 상태 표시줄·내비게이션 바 아래까지 그려진다(edge-to-edge). 모든 버전에서 같은 방식으로
+        // 처리하기 위해 직접 여백을 둔다: 위 여백(상태 표시줄 높이)은 웹앱 상단 바 색, 아래 여백(내비게이션 바 또는 키보드 높이)은 흰색.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         webView = WebView(this)
-        webView.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        setContentView(webView)
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val topSpacer = View(this).apply { setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.navy)) }
+        val bottomSpacer = View(this).apply { setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.white)) }
+        root.addView(topSpacer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0))
+        root.addView(webView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(bottomSpacer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0))
+        setContentView(root)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            topSpacer.layoutParams = topSpacer.layoutParams.apply { height = bars.top }
+            bottomSpacer.layoutParams = bottomSpacer.layoutParams.apply { height = maxOf(bars.bottom, ime.bottom) }
+            root.setPadding(bars.left, 0, bars.right, 0)
+            WindowInsetsCompat.CONSUMED
+        }
+        WindowInsetsControllerCompat(window, root).apply {
+            isAppearanceLightStatusBars = false // 남색 위 흰 아이콘
+            isAppearanceLightNavigationBars = true // 흰 바 위 검은 아이콘
+        }
         with(webView.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true

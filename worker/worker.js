@@ -20,7 +20,8 @@
 //   POST /family/children        보호자 코드, JSON {name} → { ok, child }   (아이 만들기: 6자리 아이 코드 발급)
 //   POST /family/<childId>/code  보호자 코드 → 아이 코드 새로 발급 { ok, child }  (옛 코드는 무효)
 //   POST /family/<childId>/name  보호자 코드, JSON {name} → 이름 바꾸기 { ok, child }
-//   POST /join                   가족·보호자 코드, JSON {code, device:{id,label}} → { ok, childId, name }   (아이 기기 연결)
+//   POST /join                   가족·보호자 코드, JSON {code, device:{id,label}} → { ok, childId, name, timeLimitSec }   (아이 기기 연결)
+//   GET  /settings/<childId>     가족·보호자 코드 → { childId, name, timeLimitSec }   (아이 기기가 보호자 설정을 받아 감)
 //   (크론, 매시) scheduled() → FamilyStore /cron: 계획 시각이 지난 아이의 그날 단어를 만든다
 //
 // 비밀값: ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE(선택: 보호자 폰에서 아이들 기록 보기)   (wrangler secret put ...)
@@ -69,7 +70,10 @@ const MAX_DEVICE_LABEL = 40;
 const DAILY_PATH = /^\/daily\/([A-Za-z0-9-]{8,64})$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DAILY_MODEL_DEFAULT = "claude-sonnet-5-5";
-const DAILY_DEFAULTS = { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16 }; // hour는 한국 시각
+const DAILY_DEFAULTS = { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0 }; // hour는 한국 시각, timeLimitSec 0 = 제한 없음(모든 시험에 적용)
+const SETTINGS_PATH = /^\/settings\/([A-Za-z0-9-]{8,64})$/; // 아이 기기가 보호자 설정(제한 시간 등)을 받아 가는 경로
+const TIME_LIMIT_MIN = 5;
+const TIME_LIMIT_MAX = 120;
 const DAILY_COUNT_MIN = 5;
 const DAILY_COUNT_MAX = 20;
 const DAILY_REVIEW_MAX = 3; // 하루치 중 복습(최근 틀린 단어) 수
@@ -322,6 +326,8 @@ export class FamilyStore {
       if (action[2] === "code") return this.regenerateCode(action[1]);
       return this.rename(action[1], body);
     }
+    const settings = SETTINGS_PATH.exec(url.pathname);
+    if (settings && method === "GET") return this.settings(settings[1]);
     const daily = DAILY_PATH.exec(url.pathname);
     if (daily && method === "GET") return this.getDaily(daily[1], url.searchParams.get("date"));
     if (daily && method === "POST") return this.generateDaily(daily[1], (await readBody())?.date);
@@ -473,7 +479,13 @@ export class FamilyStore {
       return json(404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요. 보호자 폰의 아이들 탭에서 코드를 다시 확인해 주세요." });
     const now = new Date().toISOString();
     await this.storage.put("child:" + c.id, { ...c, devices: registerDevice(c.devices, parseDevice(body?.device), now), updatedAt: now });
-    return json(200, { ok: true, childId: c.id, name: c.name });
+    return json(200, { ok: true, childId: c.id, name: c.name, timeLimitSec: this.planOf(c).timeLimitSec });
+  }
+  // 아이 기기용 보호자 설정(이름·문제당 제한 시간). 가족 코드로 읽는다.
+  async settings(childId) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
+    return json(200, { childId, name: c.name, timeLimitSec: this.planOf(c).timeLimitSec });
   }
   // ---- 오늘의 단어 ----
   async savePlan(childId, body) {
@@ -620,6 +632,12 @@ function parsePlan(body, current) {
     if (!Number.isInteger(body.hour) || body.hour < 0 || body.hour > 23) return { error: "만드는 시각은 0~23시여야 합니다." };
     plan.hour = body.hour;
   }
+  if (body?.timeLimitSec !== undefined) {
+    const s = body.timeLimitSec;
+    if (!Number.isInteger(s) || s < 0 || (s > 0 && s < TIME_LIMIT_MIN) || s > TIME_LIMIT_MAX)
+      return { error: `문제당 제한 시간은 0(없음) 또는 ${TIME_LIMIT_MIN}~${TIME_LIMIT_MAX}초여야 합니다.` };
+    plan.timeLimitSec = s;
+  }
   plan.updatedAt = new Date().toISOString();
   return { plan };
 }
@@ -687,6 +705,7 @@ function parseSync(body) {
       ...(Number.isInteger(r.awayCount) && r.awayCount > 0
         ? { awayCount: Math.min(r.awayCount, 10000), awayMs: Number.isInteger(r.awayMs) && r.awayMs >= 0 ? Math.min(r.awayMs, 86400000) : 0 }
         : {}),
+      ...(Number.isInteger(r.timeouts) && r.timeouts > 0 ? { timeouts: Math.min(r.timeouts, 2000) } : {}), // 제한 시간 초과로 모름 처리된 문제 수
     });
   }
   let sets;
@@ -710,7 +729,7 @@ function parseSync(body) {
 async function family(request, env, path, cors) {
   if (!env.APP_PASSCODE)
     return json(500, { error: "misconfigured", message: "AI 서버에 비밀값(APP_PASSCODE)이 설정되지 않았습니다." }, cors);
-  const kind = path === "/sync" ? "sync" : path === "/join" ? "join" : DAILY_PATH.test(path) ? "daily" : "view";
+  const kind = path === "/sync" ? "sync" : path === "/join" ? "join" : DAILY_PATH.test(path) ? "daily" : SETTINGS_PATH.test(path) ? "settings" : "view";
   if (kind === "view" && !env.PARENT_PASSCODE)
     return json(500, {
       error: "misconfigured",
@@ -1043,7 +1062,8 @@ export default {
       (CHILDREN_PATH.test(path) && request.method === "POST") ||
       (CHILD_ACTION_PATH.test(path) && request.method === "POST") ||
       (path === "/join" && request.method === "POST") ||
-      (DAILY_PATH.test(path) && ["GET", "POST"].includes(request.method));
+      (DAILY_PATH.test(path) && ["GET", "POST"].includes(request.method)) ||
+      (SETTINGS_PATH.test(path) && request.method === "GET");
     const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define"].includes(path);
     if (!familyRoute && !aiRoute)
       return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." }, cors);

@@ -42,9 +42,41 @@ function readFamily() {
     lastError: typeof f.lastError === "string" ? f.lastError : "",
     pending: Array.isArray(f.pending) ? f.pending.filter((x) => typeof x === "string").slice(0, 5000) : [],
     parentCode: typeof f.parentCode === "string" ? f.parentCode : "",
+    // 보호자가 정한 아이 설정(서버 plan에서 받아 둠). timeLimitSec 0 = 제한 없음
+    settings: {
+      timeLimitSec: Number.isInteger(f.settings?.timeLimitSec) && f.settings.timeLimitSec >= 0 ? f.settings.timeLimitSec : 0,
+      fetchedAt: typeof f.settings?.fetchedAt === "string" ? f.settings.fetchedAt : "",
+    },
   };
 }
 let family = readFamily();
+// quiz.js 가 문제마다 부른다: 보호자가 정한 문제당 제한 시간(초). 연결되지 않은 기기는 0.
+function childTimeLimitSec() {
+  return isLinked() ? family.settings.timeLimitSec : 0;
+}
+let settingsFetching = false;
+function applySettings(data) {
+  family.settings = {
+    timeLimitSec: Number.isInteger(data?.timeLimitSec) && data.timeLimitSec >= 0 ? data.timeLimitSec : 0,
+    fetchedAt: new Date().toISOString(),
+  };
+  if (typeof data?.name === "string" && tidy(data.name)) family.childName = tidy(data.name).slice(0, 20); // 보호자가 이름을 바꿨으면 반영
+  writeFamily();
+}
+// 앱 시작·화면 복귀 때 보호자 설정을 받아 둔다(10분 간격, 시작 때는 바로). 실패하면 조용히 다음 기회에.
+async function fetchSettings(options = {}) {
+  if (settingsFetching || !isLinked() || !syncPasscode()) return;
+  if (!options.force && family.settings.fetchedAt && Date.now() - Date.parse(family.settings.fetchedAt) < DAILY_CHECK_MS) return;
+  settingsFetching = true;
+  try {
+    applySettings(await familyRequest("/settings/" + encodeURIComponent(family.childId), { method: "GET", passcode: syncPasscode() }));
+    renderFamilySettings();
+  } catch (e) {
+    // 옛 Worker(404)·일시 오류: 기존 설정 유지
+  } finally {
+    settingsFetching = false;
+  }
+}
 function writeFamily() {
   try {
     localStorage.setItem(FAMILY_KEY, JSON.stringify(family));
@@ -136,6 +168,7 @@ function compactRecord(r) {
     activeMs: Number.isInteger(r.activeMs) && r.activeMs >= 0 ? r.activeMs : null,
     ...(typeof r.daily === "string" ? { daily: r.daily } : {}),
     ...(Number.isInteger(r.awayCount) && r.awayCount > 0 ? { awayCount: r.awayCount, awayMs: Number.isInteger(r.awayMs) ? r.awayMs : 0 } : {}),
+    ...(Number.isInteger(r.timeouts) && r.timeouts > 0 ? { timeouts: r.timeouts } : {}),
     missed: r.results
       .filter((x) => !x.pass)
       .slice(0, FAMILY_MISSED_LIMIT)
@@ -261,6 +294,7 @@ async function joinChild(code) {
     family.lastError = "";
     family.pending = [...new Set([...historyRecords.map((r) => r.id), ...family.pending])]; // 연결하면 지금까지의 기록도 함께 보낸다
     writeFamily();
+    applySettings(data); // 연결 응답에 제한 시간 등 보호자 설정이 함께 온다
     if (switching || daily.childId !== family.childId) {
       daily = emptyDaily();
       writeDaily();
@@ -306,7 +340,7 @@ $("childCode").addEventListener("keydown", (e) => {
 $("unlinkChild").onclick = () => {
   if (!isLinked()) return;
   if (!confirm(`이 기기를 ‘${family.childName}’에서 연결 해제할까요? 이 기기의 세트와 기록은 그대로 남고, 서버에 보낸 기록도 지워지지 않아요.`)) return;
-  family = { ...family, childId: "", childName: "", joinCode: "", pendingCode: "", sendEnabled: false, pending: [], lastError: "" };
+  family = { ...family, childId: "", childName: "", joinCode: "", pendingCode: "", sendEnabled: false, pending: [], lastError: "", settings: { timeLimitSec: 0, fetchedAt: "" } };
   writeFamily();
   daily = emptyDaily();
   writeDaily();
@@ -612,8 +646,10 @@ function durationText(ms) {
   return `${Math.floor(s / 60)}분 ${s % 60}초`;
 }
 function planOf(child) {
-  return { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, ...(child?.plan || {}) };
+  return { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, ...(child?.plan || {}) };
 }
+const TIME_LIMIT_CHOICES = [0, 10, 15, 20, 30, 45, 60];
+const timeLimitLabel = (s) => (s ? `${s}초` : "없음");
 function dailyStatusText(c) {
   const plan = planOf(c);
   if (!plan.enabled) return "오늘의 단어: 꺼짐";
@@ -845,7 +881,7 @@ function renderChildRecords(note) {
     head.className = "history-head";
     const score = document.createElement("span");
     score.className = "history-score";
-    score.textContent = `${r.correct} / ${r.total} · ${pctOf(r)}점${r.partial ? " · 중단" : ""}${r.daily ? " · 📬 오늘의 단어" : ""}`;
+    score.textContent = `${r.correct} / ${r.total} · ${pctOf(r)}점${r.partial ? " · 중단" : ""}${r.daily ? " · 📬 오늘의 단어" : ""}${r.timeouts ? ` · ⏱ 시간 초과 ${r.timeouts}개` : ""}`;
     head.append(score);
     const meta = document.createElement("p");
     meta.className = "history-meta";
@@ -904,6 +940,14 @@ function fillPlanSelects() {
     o.textContent = hourLabel(h);
     hour.append(o);
   }
+  const limit = $("planTimeLimit");
+  limit.textContent = "";
+  for (const s of TIME_LIMIT_CHOICES) {
+    const o = document.createElement("option");
+    o.value = String(s);
+    o.textContent = timeLimitLabel(s);
+    limit.append(o);
+  }
 }
 function renderPlan(child, today) {
   const plan = planOf(child);
@@ -914,6 +958,14 @@ function renderPlan(child, today) {
   $("planLevelCustom").value = known ? "" : plan.level;
   $("planCount").value = String(plan.dailyCount);
   $("planHour").value = String(plan.hour);
+  const limitSelect = $("planTimeLimit");
+  if (!TIME_LIMIT_CHOICES.includes(plan.timeLimitSec)) {
+    const o = document.createElement("option");
+    o.value = String(plan.timeLimitSec);
+    o.textContent = timeLimitLabel(plan.timeLimitSec);
+    limitSelect.append(o);
+  }
+  limitSelect.value = String(plan.timeLimitSec);
   const anchor = child.anchor;
   $("planAnchor").textContent = anchor?.words?.length
     ? `수준 기준 세트: ${anchor.setName || "(이름 없음)"} · ${anchor.words.length}단어 (아이 기기가 기록을 보낼 때 최근 세트에서 가져와요)`
@@ -948,7 +1000,7 @@ $("savePlan").onclick = async () => {
     setFeedback($("planStatus"), "bad", "수준을 고르거나 적어 주세요.");
     return;
   }
-  const body = { enabled: $("planEnabled").checked, level, dailyCount: Number($("planCount").value), hour: Number($("planHour").value) };
+  const body = { enabled: $("planEnabled").checked, level, dailyCount: Number($("planCount").value), hour: Number($("planHour").value), timeLimitSec: Number($("planTimeLimit").value) };
   $("savePlan").disabled = true;
   setFeedback($("planStatus"), "info", "저장하는 중…");
   try {
@@ -957,7 +1009,8 @@ $("savePlan").onclick = async () => {
     updateCachedChild(familyDetail.child);
     renderPlan(familyDetail.child, familyDetail.today);
     renderChildren();
-    setFeedback($("planStatus"), "good", body.enabled ? `저장했어요. 매일 ${hourLabel(body.hour)}에 ${body.dailyCount}개를 만들어요.` : "저장했어요. 오늘의 단어를 만들지 않아요.");
+    const limitNote = body.timeLimitSec ? ` 문제당 제한 시간 ${body.timeLimitSec}초는 아이 기기가 다음에 앱을 열 때부터 적용돼요.` : "";
+    setFeedback($("planStatus"), "good", (body.enabled ? `저장했어요. 매일 ${hourLabel(body.hour)}에 ${body.dailyCount}개를 만들어요.` : "저장했어요. 오늘의 단어를 만들지 않아요.") + limitNote);
   } catch (e) {
     setFeedback($("planStatus"), "bad", "저장 실패: " + e.message);
   } finally {
@@ -1014,15 +1067,18 @@ function initFamily() {
   if (linkCode) handleLinkCode(linkCode);
   else {
     if (family.pending.length) flushFamilySync();
+    fetchSettings({ force: true }); // 보호자가 바꾼 제한 시간 등을 앱을 열 때 받아 둔다
     checkDaily({ ignoreThrottle: true }); // 앱을 새로 열 때는 10분 제한 없이 확인한다(보호자가 방금 켰을 수 있다)
   }
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
     if (family.pending.length) flushFamilySync();
+    fetchSettings();
     checkDaily();
   });
   window.addEventListener("online", () => {
     if (family.pending.length) flushFamilySync();
+    fetchSettings();
     checkDaily();
   });
 }

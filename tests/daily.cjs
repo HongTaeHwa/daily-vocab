@@ -34,7 +34,7 @@ const { chromium } = require("playwright");
     const d = new Date();
     return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
   };
-  const planOf = (c) => ({ enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, ...(c.plan || {}) });
+  const planOf = (c) => ({ enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, ...(c.plan || {}) });
   const todayOf = (c, date) => {
     const d = dailies.get(c.id + ":" + date);
     return { date, exists: Boolean(d), count: d ? d.words.length : 0, completed: d?.completed || null };
@@ -67,7 +67,14 @@ const { chromium } = require("playwright");
       const c = [...children.values()].find((x) => x.joinCode === String(body.code || "").replace(/\D/g, ""));
       if (!c) return reply(route, 404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요." });
       if (body.device?.id) c.devices[body.device.id] = { label: body.device.label, joinedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() };
-      return reply(route, 200, { ok: true, childId: c.id, name: c.name });
+      return reply(route, 200, { ok: true, childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec });
+    }
+    const sm = /^\/settings\/([A-Za-z0-9-]+)$/.exec(url.pathname);
+    if (sm && req.method() === "GET") {
+      if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
+      const c = children.get(sm[1]);
+      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
+      return reply(route, 200, { childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec });
     }
     if (url.pathname === "/sync" && req.method() === "POST") {
       if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
@@ -215,7 +222,7 @@ const { chromium } = require("playwright");
   await waitFor(() => statusHas("planStatus", "저장했어요"), "plan saved");
   const planReq = paths("/family/" + childId + "/plan", "POST")[0];
   assert(planReq && planReq.passcode === PARENT_CODE, "plan saved with the parent code");
-  assert(JSON.stringify(planReq.body) === JSON.stringify({ enabled: true, level: "고1·수능 기초", dailyCount: 15, hour: 16 }), "plan body: " + JSON.stringify(planReq.body));
+  assert(JSON.stringify(planReq.body) === JSON.stringify({ enabled: true, level: "고1·수능 기초", dailyCount: 15, hour: 16, timeLimitSec: 0 }), "plan body: " + JSON.stringify(planReq.body));
   assert((await page.textContent("#planStatus")).includes("15개"), "status mentions the count");
   await page.selectOption("#planLevel", "__custom");
   assert(await page.isVisible("#planLevelCustom"), "custom level input appears");
@@ -227,9 +234,47 @@ const { chromium } = require("playwright");
   await waitFor(() => statusHas("planStatus", "준비됐어요"), "make now reports the existing set");
   assert(paths("/daily/" + childId, "POST").length === 2 && paths("/daily/" + childId, "POST")[1].passcode === PARENT_CODE, "make-now uses the parent code");
   await page.uncheck("#planEnabled");
+  await page.selectOption("#planTimeLimit", "20");
   await page.click("#savePlan");
   await waitFor(() => statusHas("planStatus", "만들지 않아요"), "plan disabled message");
   assert((await page.textContent("#dailyPreview")).includes("꺼져 있어요"), "preview reflects the disabled plan");
+  const limitReq = paths("/family/" + childId + "/plan", "POST").slice(-1)[0];
+  assert(limitReq.body.timeLimitSec === 20 && limitReq.body.enabled === false, "time limit sent with the plan: " + JSON.stringify(limitReq.body));
+  assert((await page.textContent("#planStatus")).includes("제한 시간 20초"), "status mentions the time limit");
+
+  // 문제당 제한 시간: 아이 기기는 앱을 열 때 설정을 받아 두고, 시간이 지나면 그 문제를 모름 처리한다(앱 밖에 있어도 시간은 흐른다)
+  children.get(childId).plan.timeLimitSec = 10;
+  await page.reload();
+  await waitFor(() => paths("/settings/" + childId, "GET").length >= 1, "settings fetched on launch");
+  await waitFor(() => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).settings.timeLimitSec === 10), "time limit stored");
+  await page.click("#tabHome");
+  await page.selectOption("#range", "0");
+  await page.click("#start");
+  await waitFor(() => page.isVisible("#timeLeft"), "timer shown");
+  assert(/⏱ (10|9)초/.test(await page.textContent("#timeLeft")), "timer counts down from the limit: " + (await page.textContent("#timeLeft")));
+  await page.waitForFunction(() => question.unknown === true, null, { timeout: 15000 });
+  assert((await page.textContent("#answerFeedback")).includes("시간이 다 됐어요"), "timeout feedback");
+  assert((await page.textContent("#timeLeft")) === "⏱ 0초", "timer shows zero");
+  assert(!(await page.isDisabled("#next")), "next enabled after timeout");
+  await page.click("#next");
+  assert(/⏱ (10|9)초/.test(await page.textContent("#timeLeft")), "timer restarts on the next question");
+  await page.click("#unknown");
+  assert(await page.isHidden("#timeLeft"), "timer hidden once the question is answered");
+  await page.click("#next");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#backSettings");
+  assert(await page.isVisible("#finish"), "stopped after two questions");
+  const timed = await page.evaluate(() => ({ timeouts: historyRecords[0].timeouts, first: historyRecords[0].results[0].timeout, second: historyRecords[0].results[1].timeout }));
+  assert(timed.timeouts === 1 && timed.first === true && timed.second === undefined, "timeout recorded per question: " + JSON.stringify(timed));
+  await waitFor(() => paths("/sync").some((r) => r.body.records.some((x) => x.timeouts === 1)), "timeouts synced");
+  assert((await page.textContent("#historyList")) !== null, "history exists");
+  await page.click("#tabHistory");
+  assert((await page.textContent("#historyList")).includes("⏱ 시간 초과 1개"), "child history shows the timeout");
+  await page.click("#tabFamily");
+  await waitFor(() => statusHas("familyLoadStatus", "방금 확인했어요"), "family reloaded");
+  await page.click("#childrenList button");
+  await waitFor(() => page.evaluate(() => document.getElementById("childRecords").textContent.includes("⏱ 시간 초과 1개")), "parent record shows the timeout");
+  assert((await page.inputValue("#planTimeLimit")) === "10", "plan form shows the current limit");
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
   console.log("PASS: daily words — child card/generation/quiz/record flag/completion, parent plan form/preview/make-now");

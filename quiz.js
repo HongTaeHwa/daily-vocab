@@ -344,6 +344,7 @@ function accumulateActive() {
 }
 function pauseQuiz() {
   if (!sessionRunning) return;
+  stopQuestionTimer();
   stopRec();
   // 채점까지 끝난 문제는 쉬기 전에 결과로 넣어 두어 이어서 할 때 다시 풀 수 없게 한다.
   if (question.w && question.answerChecked && (mode !== "read_meaning" || question.readChecked)) {
@@ -378,6 +379,7 @@ function abandonSavedSession() {
   clearSessionState();
 }
 function stopQuiz() {
+  stopQuestionTimer();
   if (!sessionRunning) return;
   const graded = Boolean(question.w && question.answerChecked && (mode !== "read_meaning" || question.readChecked));
   const answered = results.length + (graded ? 1 : 0);
@@ -532,6 +534,39 @@ function awayEnd() {
 document.addEventListener("visibilitychange", () => (document.hidden ? awayStart() : awayEnd()));
 window.addEventListener("blur", awayStart);
 window.addEventListener("focus", awayEnd);
+
+// ---- 문제당 제한 시간: 보호자가 아이들 탭에서 정한 초(family.js의 childTimeLimitSec, 0이면 없음). 시간이 지나면 모름 처리. ----
+// 마감은 절대 시각이라 앱 밖에 나가 있어도 시간이 흐른다(인터넷 검색 방지). 채점이 끝나면 멈춘다.
+let questionTimer = null;
+function stopQuestionTimer() {
+  if (questionTimer) { clearInterval(questionTimer); questionTimer = null; }
+  $("timeLeft").classList.add("hidden");
+}
+function startQuestionTimer() {
+  stopQuestionTimer();
+  const limit = typeof childTimeLimitSec === "function" ? childTimeLimitSec() : 0;
+  if (!limit || !sessionRunning || !question.w) return;
+  question.deadline = Date.now() + limit * 1000;
+  const el = $("timeLeft");
+  el.classList.remove("hidden");
+  const tick = () => {
+    if (!sessionRunning || question.answerChecked || !question.deadline) { stopQuestionTimer(); return; }
+    const left = Math.max(0, Math.ceil((question.deadline - Date.now()) / 1000));
+    el.textContent = "⏱ " + left + "초";
+    el.classList.toggle("urgent", left <= 5);
+    if (left > 0) return;
+    const timedOut = question;
+    question.timedOut = true;
+    sessionMeta.timeouts = (sessionMeta.timeouts || 0) + 1;
+    markUnknown();
+    if (question === timedOut) {
+      el.classList.remove("hidden"); el.textContent = "⏱ 0초"; el.classList.add("urgent");
+      setFeedback($("answerFeedback"), "bad", "⏱ 시간이 다 됐어요. 모르는 단어로 기록돼요. 정답을 보고 다음으로 넘어가세요.");
+    }
+  };
+  tick();
+  questionTimer = setInterval(tick, 250);
+}
 // 시험 화면의 글자는 선택·복사·길게 누르기 메뉴(선택 → 번역)를 막는다. CSS의 user-select:none 과 함께 동작한다.
 for (const type of ["contextmenu", "copy", "cut", "dragstart"]) document.querySelector(".word-box").addEventListener(type, (e) => e.preventDefault());
 
@@ -540,6 +575,7 @@ function displayQuestion() {
   $("sessionScope").textContent = sessionMeta.setName + " · " + sessionMeta.range;
   const w = queue[position];
   question = { w, unknown: false, readChecked: false, readPass: false, readSkipped: false, answerChecked: false, answerPass: false, voiceRecognized: "" };
+  startQuestionTimer();
   $("progressText").textContent = `${position + 1} / ${queue.length}`;
   $("scoreText").textContent = `정답 ${results.filter((x) => x.pass).length} · 오답 ${results.filter((x) => !x.pass).length}`;
   $("progressBar").style.width = `${(position / queue.length) * 100}%`;
@@ -625,6 +661,7 @@ function grade(input, origin = "type") {
   if (!value) { setFeedback($("answerFeedback"), "bad", "답을 먼저 입력하거나 말해 주세요."); return; }
   const pass = mode === "ko_en" ? normalizeSpelling(value) === normalizeSpelling(w.en) : correctKo(value, w);
   question.answerChecked = true; question.answerPass = pass;
+  stopQuestionTimer();
   setFeedback($("answerFeedback"), pass ? "good" : "bad", `${pass ? "✓ 정답!" : "✕ 아쉬워요"} · 내 답${origin === "speech" ? "(음성)" : ""}: ${value}${!pass ? " · 아래 정답을 확인하세요." : ""}${!pass && mode === "ko_en" ? " · 틀린 위치: " + Array.from(w.en).map((c, i) => (normalizeSpelling(value)[i] === c ? "✓" : c)).join(" ") + (value.length > w.en.length ? " (추가 글자 있음)" : "") : ""}`);
   $("answerInput").value = value; $("answerInput").disabled = true; $("check").disabled = true; $("micSpelling").disabled = true; $("penInput").disabled = true;
   $("unknown").disabled = true;
@@ -634,6 +671,7 @@ function grade(input, origin = "type") {
 function markUnknown() {
   if (!question.w || question.unknown) return;
   stopRec();
+  stopQuestionTimer();
   question.unknown = true; question.answerChecked = true; question.answerPass = false; question.readChecked = true; question.readPass = false;
   $("unknown").disabled = true;
   ["answerInput", "check", "readInput", "checkRead", "micEnglish", "micKorean", "micSpelling", "penInput", "parentConfirm"].forEach((id) => ($(id).disabled = true));
@@ -683,7 +721,7 @@ function speak() {
 function recordCurrentResult() {
   const spokenCount = mode === "ko_en" ? !question.readChecked || question.readSkipped || question.readPass : question.readPass;
   const pass = question.answerPass && (mode !== "read_meaning" || spokenCount);
-  results.push({ id: question.w.id, word: structuredClone(question.w), pass: question.unknown ? false : pass, unknown: question.unknown, ...(question.readSelf ? { self: true } : {}), ...(question.away ? { away: question.away, awayMs: question.awayMs || 0 } : {}) });
+  results.push({ id: question.w.id, word: structuredClone(question.w), pass: question.unknown ? false : pass, unknown: question.unknown, ...(question.readSelf ? { self: true } : {}), ...(question.away ? { away: question.away, awayMs: question.awayMs || 0 } : {}), ...(question.timedOut ? { timeout: true } : {}) });
   question = { ...question, answerChecked: false };
 }
 function advance() {
@@ -716,6 +754,7 @@ function finishRecords(partial) {
   return missed;
 }
 function complete() {
+  stopQuestionTimer();
   accumulateActive();
   sessionRunning = false;
   setSettingsLocked(false);
@@ -769,7 +808,7 @@ function persistHistory(next) {
 function saveSession(partial = false) {
   if (!sessionMeta || sessionMeta.saved) return;
   sessionMeta.saved = true;
-  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), ...(sessionMeta.daily ? { daily: sessionMeta.daily } : {}), ...(sessionMeta.awayCount ? { awayCount: sessionMeta.awayCount, awayMs: sessionMeta.awayMs || 0 } : {}), results: results.map((x) => ({ ...x })) };
+  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), ...(sessionMeta.daily ? { daily: sessionMeta.daily } : {}), ...(sessionMeta.awayCount ? { awayCount: sessionMeta.awayCount, awayMs: sessionMeta.awayMs || 0 } : {}), ...(sessionMeta.timeouts ? { timeouts: sessionMeta.timeouts } : {}), results: results.map((x) => ({ ...x })) };
   if (partial) record.partial = true;
   const next = [record, ...historyRecords];
   if (!persistHistory(next)) { historyRecords = next; renderHistory(); }
@@ -814,7 +853,7 @@ function renderHistory() {
     meta.className = "history-meta";
     meta.textContent = new Date(record.completedAt).toLocaleString("ko-KR") + " · " + record.setName + " · " + modeLabels[record.mode] + " · " + record.range;
     const counts = document.createElement("p");
-    counts.textContent = "정답 " + correct + " · 오답 " + (total - correct) + " (모름 " + unknown + "개 포함)" + (record.awayCount ? " · ⚠️ 화면 이탈 " + record.awayCount + "회" : "");
+    counts.textContent = "정답 " + correct + " · 오답 " + (total - correct) + " (모름 " + unknown + "개 포함)" + (record.awayCount ? " · ⚠️ 화면 이탈 " + record.awayCount + "회" : "") + (record.timeouts ? " · ⏱ 시간 초과 " + record.timeouts + "개" : "");
     entry.append(head, meta, counts);
     const missed = record.results.filter((x) => !x.pass);
     if (missed.length) {

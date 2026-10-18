@@ -12,7 +12,7 @@
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:var(--ink);font-size:16px;line-height:1.5}
 button{touch-action:manipulation;font:inherit}
-.topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 16px;background:linear-gradient(118deg,#123466,#2359b0);color:#fff;box-shadow:0 4px 16px #1c4b9230}
+.topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;background:linear-gradient(118deg,#123466,#2359b0);color:#fff;box-shadow:0 4px 16px #1c4b9230}
 .brand{font-weight:900;font-size:18px;letter-spacing:-.01em}
 .brand small{display:block;font-weight:500;font-size:12px;color:#dfebff}
 .icon-btn{border:0;background:#ffffff22;color:#fff;border-radius:12px;width:44px;height:44px;font-size:20px;cursor:pointer}
@@ -71,6 +71,8 @@ textarea{width:100%;padding:12px;font-size:14px}
 /* 시험 */
 .quizbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:#4e6785;font-size:14px;font-weight:800;margin-top:14px}
 .quizbar .spacer{flex:1}
+.time-left{font-weight:900;color:#1c55a5;min-width:60px}
+.time-left.urgent{color:#b83a48;animation:pulse 1.1s infinite}
 .progress{height:10px;background:#e4eaf4;border-radius:50px;overflow:hidden;margin:10px 0 6px}
 .progress span{display:block;height:100%;width:0;background:linear-gradient(90deg,#2f67cb,#71adff);transition:width .25s}
 .word-box{background:linear-gradient(175deg,#f3f8ff,#fff);border:1px solid #d9e7fa;border-radius:20px;text-align:center;padding:26px 18px 22px;margin-top:10px}
@@ -218,7 +220,7 @@ body.in-quiz main{padding-bottom:30px}
 
 <!-- 시험 -->
 <section class="view" id="quiz" tabindex="-1" aria-label="단어 시험">
-  <div class="quizbar"><span id="progressText">1 / 40</span><span>·</span><span id="scoreText">정답 0 · 오답 0</span><span class="spacer"></span><button type="button" class="btn outline small" id="pauseQuiz">⏸ 쉬기</button><button type="button" class="btn outline small" id="backSettings">그만하기</button></div>
+  <div class="quizbar"><span id="progressText">1 / 40</span><span>·</span><span id="scoreText">정답 0 · 오답 0</span><span id="timeLeft" class="time-left hidden" aria-live="polite">⏱ 15초</span><span class="spacer"></span><button type="button" class="btn outline small" id="pauseQuiz">⏸ 쉬기</button><button type="button" class="btn outline small" id="backSettings">그만하기</button></div>
   <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
   <p class="muted" id="sessionScope" style="margin:0"></p>
   <div class="word-box" id="promptBox"><span class="number" id="wordNum">121</span><div class="word" id="promptWord">authority</div><div class="hint" id="promptHint">먼저 영어로 읽어 보세요</div></div>
@@ -340,6 +342,8 @@ body.in-quiz main{padding-bottom:30px}
       <div class="controls"><label class="check"><input type="checkbox" id="planEnabled"> 매일 오늘의 단어 만들기</label></div>
       <div class="controls"><label for="planLevel">수준</label><select id="planLevel"></select><input id="planLevelCustom" type="text" maxlength="40" autocomplete="off" placeholder="예: 중3 상위권" class="hidden"></div>
       <div class="controls"><label for="planCount">하루 단어 수</label><select id="planCount"></select><label for="planHour">만드는 시각</label><select id="planHour"></select></div>
+      <div class="controls"><label for="planTimeLimit">문제당 제한 시간</label><select id="planTimeLimit"></select></div>
+      <p class="muted">제한 시간은 이 아이의 <b>모든 시험</b>에 적용돼요(오늘의 단어가 꺼져 있어도). 시간이 지나면 그 문제는 ‘모름’으로 기록되고, 앱 밖에 나가 있어도 시간은 흐릅니다. 아이 기기가 다음에 앱을 열 때부터 적용돼요.</p>
       <div class="actionbar"><button type="button" class="btn primary" id="savePlan">저장</button><button type="button" class="btn outline" id="makeDailyNow">오늘 것 지금 만들기</button></div>
       <p id="planAnchor" class="muted"></p>
       <div id="planStatus" class="feedback info" role="status"></div>
@@ -406,7 +410,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-5 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-6 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -421,7 +425,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-5';
+  var release = '20261018-6';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -457,8 +461,8 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./quiz.js?v=20261018-5" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-5" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-5" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-6" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-6" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-6" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

@@ -541,7 +541,7 @@ const { pathToFileURL } = require("url");
   data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
   assert.deepEqual(data.child.anchor.words, ["authority", "devote", "evident"], "anchor cleaned and deduped");
   assert.equal(data.child.anchor.setName, "중등 DAY05");
-  assert.deepEqual(data.child.plan, { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16 }, "default plan");
+  assert.deepEqual(data.child.plan, { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0 }, "default plan");
   assert.equal(data.today.exists, false);
   await familyCase("/sync", { body: { child: kid, anchor: { words: "nope" } } }, 400, "anchor");
   // 계획이 꺼져 있으면 409
@@ -556,6 +556,22 @@ const { pathToFileURL } = require("url");
   await familyCase("/family/99999999-aaaa-4bbb-8ccc-dddddddddddd/plan", { ...PARENT, body: { enabled: true } }, 404, "unknown_child");
   data = await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { enabled: true, dailyCount: 5, level: " 고1·수능 기초 " } }, 200);
   assert.deepEqual([data.child.plan.enabled, data.child.plan.dailyCount, data.child.plan.level, data.child.plan.hour], [true, 5, "고1·수능 기초", 16]);
+  // 문제당 제한 시간: 0(없음) 또는 5~120초. 아이 기기는 GET /settings 로 받아 간다(가족 코드).
+  await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { timeLimitSec: 3 } }, 400, "5~120");
+  await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { timeLimitSec: 200 } }, 400, "5~120");
+  await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { timeLimitSec: "15" } }, 400, "5~120");
+  data = await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { timeLimitSec: 15 } }, 200);
+  assert.equal(data.child.plan.timeLimitSec, 15);
+  assert.equal(data.child.plan.dailyCount, 5, "other plan fields kept");
+  data = await familyCase("/settings/" + kid.id, { method: "GET" }, 200);
+  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15 }, "settings for the device");
+  await familyCase("/settings/99999999-aaaa-4bbb-8ccc-dddddddddddd", { method: "GET" }, 404, "unknown_child");
+  await familyCase("/settings/" + kid.id, { method: "GET", passcode: "nope" }, 401);
+  await familyCase("/settings/" + kid.id, { method: "POST", body: {} }, 404);
+  await familyCase("/sync", { body: { child: kid, records: [rec("kt", hoursAgo(0.2), { total: 4, correct: 2, timeouts: 2, missed: [] })] } }, 200);
+  data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.records.find((r) => r.id === "kt").timeouts, 2, "timeouts kept on the record");
+  await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { timeLimitSec: 0 } }, 200);
   assert.equal(anthropicCalls.length, 0, "no Claude call so far");
   // 아직 없음 → 404 no_daily (옛 Worker의 not_found 와 구분)
   await familyCase("/daily/" + kid.id, { method: "GET" }, 404, "no_daily");
@@ -662,7 +678,7 @@ const { pathToFileURL } = require("url");
   const phone = { id: "aaaaaaaa-1111-4222-8333-444444444444", label: "iPhone" };
   const tablet = { id: "bbbbbbbb-1111-4222-8333-444444444444", label: " Android 태블릿 " };
   data = await familyCase("/join", { body: { code: made.joinCode.slice(0, 3) + " " + made.joinCode.slice(3), device: phone } }, 200);
-  assert.deepEqual([data.childId, data.name], [made.id, "하늘"], "join returns the child id and the server name (space in the code tolerated)");
+  assert.deepEqual([data.childId, data.name, data.timeLimitSec], [made.id, "하늘", 0], "join returns the child id, the server name and the time limit (space in the code tolerated)");
   await familyCase("/join", { ...PARENT, body: { code: made.joinCode, device: tablet } }, 200); // 보호자 코드로도 연결된다
   await familyCase("/join", { body: { code: made.joinCode, device: { id: "bad id", label: "x" } } }, 200); // 잘못된 기기 정보는 무시
   data = await familyCase("/family/" + made.id, { method: "GET", ...PARENT }, 200);
