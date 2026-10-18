@@ -78,7 +78,7 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 
 | 항목 | 방법 |
 |---|---|
-| 모델 | `wrangler.jsonc`의 `CLAUDE_MODEL` (`claude-opus-5-5` 기본 / `claude-sonnet-5-5` / `claude-haiku-5-5`) 수정 후 `npm run deploy`. 2차 채점 모델은 `GRADE_MODEL`(기본 `claude-haiku-5-5`), 오늘의 단어는 `DAILY_MODEL` |
+| 모델 | `wrangler.jsonc`의 `CLAUDE_MODEL` (`claude-opus-5-5` 기본 / `claude-sonnet-5-5` / `claude-haiku-5-5`) 수정 후 `npm run deploy`. 2차 채점 모델은 `GRADE_MODEL`(기본 `claude-haiku-5-5`), 단어 찾기는 `LOOKUP_MODEL`(기본 `claude-sonnet-5-5`), 오늘의 단어는 `DAILY_MODEL` |
 | 오늘의 단어 모델 | `wrangler.jsonc`의 `DAILY_MODEL` (기본 `claude-sonnet-5-5`) 수정 후 `npm run deploy` |
 | 오늘의 단어 크론 | `wrangler.jsonc`의 `triggers.crons` (기본 매시 0분; 생성 시각은 아이별 계획의 `hour`) |
 | 허용 주소 | `wrangler.jsonc`의 `ALLOWED_ORIGINS` (쉼표로 여러 개). 앱 주소가 바뀌면 여기도 바꿉니다 |
@@ -105,6 +105,7 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 |---|---|
 | `POST /ping` · 헤더 `X-App-Passcode` | 접속 코드와 Anthropic 연결을 확인. `{ ok: true, model }` |
 | `POST /recognize` · 헤더 `X-App-Passcode` · JSON `{ image: base64, mediaType }` | 사진 한 장에서 단어 추출. `{ words: [{ number, en, ko, ipa, aliases, generated }], note, model, usage }`. 사진에 뜻이 인쇄되지 않은 단어(영어만 있는 목록·시험지)는 AI가 뜻·발음을 채우고 `generated: true`로 표시합니다 |
+| `POST /lookup` · 헤더 `X-App-Passcode` · JSON `{ word }` | 단어 찾기(아이 기기의 🔍 찾기 탭). 영어 단어·짧은 구 하나 → `{ found, en, suggestion, pos, ko, ipa, aliases, examples: [{ en, ko }], similar, note, model, usage }`. 모르는 단어·철자 오류는 `found: false`와 철자 제안 `suggestion`. 모델은 `LOOKUP_MODEL`(기본 `claude-sonnet-5-5`) |
 | `POST /grade` · 헤더 `X-App-Passcode` · JSON `{ en, ko, aliases?, answer }` | AI 2차 채점. 앱이 책의 뜻·허용 답안과 글자 그대로 맞지 않는 답만 보내면 ‘같은 뜻인지’ 판정 → `{ accept, reason, model, usage }`. 모델은 `GRADE_MODEL`(기본 `claude-haiku-5-5`, 빠르고 저렴). 동의어·조사/어미 차이·합성어·한 글자 오타는 인정, 다른 뜻·막연한 답·여러 뜻 나열은 거절 |
 | `POST /define` · 헤더 `X-App-Passcode` · JSON `{ words: ["apple", …] }` | AI 사전. 영어 단어·짧은 구 최대 60개(영문자·공백·.'’- 40자 이하) → `{ words: [{ en, ko, ipa, aliases }], note, model, usage }`. 요청한 철자 그대로 한 번씩 돌려주고 모르는 단어는 빠집니다(전부 모르면 422). 앱의 ‘빈 뜻 AI로 채우기’가 40개씩 보냅니다 |
 | `POST /sync` · 헤더 `X-App-Passcode`(가족 또는 보호자 코드) · JSON `{ child: { id, name }, records: [{ id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, daily?, awayCount?, awayMs?, timeouts?, missed: [{ en, ko, unknown? }] }], sets: [{ name, count }] }` | 아이 기기의 시험 기록 저장(기록 최대 100개, 같은 id는 덮어씀). `{ ok, stored, trimmed, syncedAt }` |

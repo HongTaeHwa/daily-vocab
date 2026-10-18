@@ -154,6 +154,13 @@ body.parent-mode .child-only{display:none!important}
 .chip{display:inline-flex;align-items:baseline;gap:6px;background:#fff7f0;border:1px solid #f3d2a4;border-radius:999px;padding:4px 11px;font-size:14px;color:#4e3a1c}
 .chip b{color:#b83a48}.chip small{color:#88541f}
 .plan-box{margin:12px 0 16px;padding:12px;border:1px dashed var(--border);border-radius:12px;background:#f8fbff}
+.lookup-result{margin-top:12px;border:1px solid var(--border);border-radius:14px;padding:14px;background:#fbfdff}
+.lookup-word{font-size:28px;color:var(--navy);font-weight:900;overflow-wrap:anywhere}
+.lookup-meaning{font-size:18px;font-weight:700;margin:6px 0}
+.lookup-examples{margin:8px 0;padding-left:18px}.lookup-examples li{margin:6px 0}.lookup-examples small{display:block;color:var(--muted)}
+.lookup-recent .lookup-row{border-top:1px solid var(--border);padding:10px 0}.lookup-recent .lookup-row:first-child{border-top:0}
+.lookup-row .row-main{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;cursor:pointer}.lookup-row .row-main strong{font-size:17px;color:var(--navy)}.lookup-row small{color:var(--muted)}
+.lookup-row details{margin-top:4px}.lookup-row summary{cursor:pointer;color:var(--blue);font-weight:700;font-size:13px}.lookup-row details p{margin:4px 0;font-size:14px}
 .empty-sets{border:1px dashed var(--border);border-radius:14px;padding:16px;background:#fbfdff;text-align:center;margin:6px 0 10px}
 .empty-sets strong{display:block;font-size:17px;color:var(--navy)}.empty-sets p{margin:6px 0 0;color:var(--muted);font-size:14px}
 .set-list .set-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border)}
@@ -329,6 +336,30 @@ body.in-quiz main{padding-bottom:30px}
 </section>
 
 <!-- 아이들 (보호자 폰: 보호자 코드를 저장했을 때만 탭이 보인다) -->
+<!-- 단어 찾기 (아이 기기): AI 사전으로 뜻·발음·예문을 보고, 찾은 단어는 ‘찾아본 단어’ 세트에 자동 저장되어 시험으로 이어진다 -->
+<section class="view" id="lookup" tabindex="-1" aria-label="단어 찾기">
+  <div class="card">
+    <h2 class="section-title">🔍 모르는 단어 찾기</h2>
+    <p class="muted">공부하다 모르는 영어 단어가 나오면 여기서 찾아보세요. 뜻·발음·예문을 AI 사전이 알려 주고, 찾은 단어는 ‘찾아본 단어’ 세트에 저장되어 시험으로 볼 수 있어요.</p>
+    <div class="answerline"><input type="text" id="lookupInput" lang="en" enterkeyhint="search" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="영어 단어 입력 (예: weight)" aria-label="찾을 영어 단어" /><button type="button" class="btn primary" id="lookupGo">찾기</button></div>
+    <div class="actionbar"><button type="button" class="btn mic" id="lookupMic">🎙️ 영어로 말하기</button></div>
+    <div id="lookupStatus" class="feedback info" role="status">단어를 입력하거나 말해 보세요.</div>
+    <div id="lookupResult" class="lookup-result hidden">
+      <div class="row-between"><strong id="lookupWord" class="lookup-word"></strong><button type="button" class="btn outline small" id="lookupHear">🔊 발음 듣기</button></div>
+      <p class="ipa" id="lookupIpa"></p>
+      <p class="lookup-meaning" id="lookupMeaning"></p>
+      <ul class="lookup-examples" id="lookupExamples"></ul>
+      <p class="muted" id="lookupSimilar"></p>
+      <p class="muted" id="lookupNote"></p>
+      <div class="feedback good" id="lookupSaved" role="status"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="row-between"><h2 class="section-title" style="margin:0">📒 찾아본 단어 <span class="pill" id="lookupCount">0개</span></h2><button type="button" class="btn small" id="lookupQuiz" disabled>이 단어들로 시험 보기</button></div>
+    <div id="lookupRecent" class="lookup-recent"></div>
+  </div>
+</section>
+
 <section class="view" id="family" tabindex="-1" aria-label="아이들 관리">
   <div class="card hidden" id="parentSetup">
     <h2 class="section-title">👨‍👩‍👧 보호자 모드</h2>
@@ -454,7 +485,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-11 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-13 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -462,6 +493,7 @@ body.in-quiz main{padding-bottom:30px}
 </main>
 <nav class="tabbar" aria-label="메뉴">
   <button type="button" class="tab active" id="tabHome" aria-current="page"><span class="ico">🏠</span>홈</button>
+  <button type="button" class="tab" id="tabLookup" aria-current="false"><span class="ico">🔍</span>찾기</button>
   <button type="button" class="tab" id="tabHistory" aria-current="false"><span class="ico">🕒</span>기록</button>
   <button type="button" class="tab hidden" id="tabFamily" aria-current="false"><span class="ico">👨‍👩‍👧</span>아이들</button>
   <button type="button" class="tab" id="tabSettings" aria-current="false"><span class="ico">⚙️</span>설정</button>
@@ -469,7 +501,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-11';
+  var release = '20261018-13';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -505,8 +537,8 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./quiz.js?v=20261018-11" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-11" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-11" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-13" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-13" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-13" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>
