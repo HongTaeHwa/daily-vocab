@@ -259,6 +259,7 @@ $("shuffle").addEventListener("change", () => savePrefs({ shuffle: $("shuffle").
 // ---- 홈 ----
 function renderHome() {
   renderResumeCard();
+  if (typeof renderDailyCard === "function") renderDailyCard(); // family.js: 오늘의 단어 카드
   renderSetSummary();
   $("resumeEditor").classList.toggle("hidden", !window.editorOpen || currentView === "editor");
   const recent = historyRecords.filter((r) => r.setId === activeSetId).slice(0, 3);
@@ -419,6 +420,7 @@ function newSession(missedOnly = false, snapshot = null, source = null, options 
     id: crypto.randomUUID(), setId: source?.setId || activeSetId,
     setName: source?.setName || sets.find((s) => s.id === activeSetId)?.name || "이력 복습",
     mode, range: rangeLabel, rangeValue: missedOnly ? "missed" : startNum, shuffle,
+    daily: typeof options.daily === "string" ? options.daily : null, // 오늘의 단어(family.js)로 시작한 시험이면 그 날짜
     startedAt: new Date().toISOString(), saved: false, activeMs: 0, resumedAt: Date.now(),
   };
   clearSessionState();
@@ -739,7 +741,7 @@ function persistHistory(next) {
 function saveSession(partial = false) {
   if (!sessionMeta || sessionMeta.saved) return;
   sessionMeta.saved = true;
-  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), results: results.map((x) => ({ ...x })) };
+  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), ...(sessionMeta.daily ? { daily: sessionMeta.daily } : {}), results: results.map((x) => ({ ...x })) };
   if (partial) record.partial = true;
   const next = [record, ...historyRecords];
   if (!persistHistory(next)) { historyRecords = next; renderHistory(); }

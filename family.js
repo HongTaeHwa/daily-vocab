@@ -1,16 +1,24 @@
 "use strict";
-// family.js — 가족 기록함. 아이 기기는 시험을 마칠 때마다 압축 기록(점수·틀린 단어·세트 이름)을 가족 서버(Worker)에 보내고,
-// 보호자 폰은 보호자 코드를 저장하면 생기는 ‘아이들’ 탭에서 아이별 기록을 본다.
+// family.js — 가족 기록함 + 오늘의 단어.
+// 아이 기기는 시험을 마칠 때마다 압축 기록(점수·틀린 단어·세트 이름)을 가족 서버(Worker)에 보내고, 매일 ‘오늘의 단어’를 받아 홈 카드로 보여 준다.
+// 보호자 폰은 보호자 코드를 저장하면 생기는 ‘아이들’ 탭에서 아이별 기록을 보고 오늘의 단어 계획(켜기·수준·개수·시각)을 정한다.
 // quiz.js(기록·뷰 전환) 다음, sets.js(AI 서버 주소·접속 코드) 앞에 불러온다. sets.js가 마지막에 initFamily()를 부른다.
 // 저장 키 daily_vocab_family_v1 = {childId, childName, sendEnabled, lastSyncAt, lastError, pending:[기록 id], parentCode}
+//        daily_vocab_daily_v1  = {childId, date, words, level, note, fetchedAt, result?, disabled?, lastCheckedAt, lastError?}
 // 보호자 코드·아이 이름은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다.
 const FAMILY_KEY = "daily_vocab_family_v1";
 const FAMILY_CACHE_KEY = "daily_vocab_family_cache_v1";
+const DAILY_KEY = "daily_vocab_daily_v1";
 const FAMILY_BATCH = 50; // 한 번에 보내는 기록 수 (Worker 상한 100)
 const FAMILY_TIMEOUT_MS = 20000;
+const DAILY_TIMEOUT_MS = 90000; // 오늘의 단어 생성은 Claude 호출이라 더 기다린다
 const FAMILY_MISSED_LIMIT = 200; // 기록 하나에 담는 틀린 단어 수 (Worker 상한과 같음)
+const ANCHOR_LIMIT = 60; // 교재 앵커: 최근 세트에서 보내는 영어 단어 수 (Worker 상한과 같음)
+const DAILY_CHECK_MS = 10 * 60 * 1000; // 오늘 것이 없거나 꺼져 있을 때 다시 물어보는 간격
+const PLAN_LEVELS = ["초등 고학년 상위권", "중1", "중2 상위권", "중3·고1", "고1·수능 기초", "고2·수능 실전"];
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const tidy = (s) => String(s ?? "").replace(/[\t\r\n]+/g, " ").trim();
+const hourLabel = (h) => (h < 12 ? "오전 " : "오후 ") + (h % 12 || 12) + "시";
 
 function readFamily() {
   let saved = null;
@@ -42,15 +50,15 @@ function writeFamily() {
 function familyServer() {
   return normalizeServer(savedAi()?.server || AI_SERVER_DEFAULT);
 }
-// 기록 보내기는 가족 코드(AI 접속 코드)로, 없으면 보호자 코드로 보낸다.
+// 기록 보내기·오늘의 단어 받기는 가족 코드(AI 접속 코드)로, 없으면 보호자 코드로 보낸다.
 function syncPasscode() {
   return aiConfig()?.passcode || family.parentCode || "";
 }
-async function familyRequest(path, { method = "POST", body, passcode } = {}) {
+async function familyRequest(path, { method = "POST", body, passcode, timeout = FAMILY_TIMEOUT_MS } = {}) {
   const server = familyServer();
   if (!server) throw Object.assign(Error("AI 서버 주소가 올바르지 않아요. 보호자 설정 · AI 연결을 확인하세요."), { status: 0 });
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FAMILY_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeout);
   let response;
   try {
     response = await fetch(server + path, {
@@ -73,15 +81,16 @@ async function familyRequest(path, { method = "POST", body, passcode } = {}) {
   } catch {}
   if (response.status === 200 && payload) return payload;
   const viewing = path.startsWith("/family");
+  const code = payload?.error;
   let message;
   if (response.status === 401) message = viewing ? "보호자 코드가 맞지 않아요. 다시 입력해 주세요." : "접속 코드가 맞지 않아요. 보호자 설정 · AI 연결에서 다시 입력하세요.";
-  else if (response.status === 404 && payload?.error !== "unknown_child")
-    message = "AI 서버가 아직 가족 기록함을 지원하지 않아요. 보호자가 Worker를 새 버전으로 다시 배포해 주세요.";
+  else if (response.status === 404 && !["unknown_child", "no_daily"].includes(code))
+    message = "AI 서버가 아직 이 기능을 지원하지 않아요. 보호자가 Worker를 새 버전으로 다시 배포해 주세요.";
   else if (response.status === 403) message = "이 주소에서는 가족 서버를 쓸 수 없어요. 보호자가 ALLOWED_ORIGINS를 확인해 주세요.";
   else if (typeof payload?.message === "string" && payload.message) message = payload.message;
   else if (response.status === 429) message = "요청이 너무 많아요. 잠시 후 다시 시도하세요.";
   else message = `가족 서버 오류 ${response.status}`;
-  throw Object.assign(Error(message), { status: response.status, code: payload?.error });
+  throw Object.assign(Error(message), { status: response.status, code });
 }
 
 // ---- 아이 기기: 기록 보내기 ----
@@ -99,17 +108,26 @@ function compactRecord(r) {
     correct,
     partial: r.partial === true,
     activeMs: Number.isInteger(r.activeMs) && r.activeMs >= 0 ? r.activeMs : null,
+    ...(typeof r.daily === "string" ? { daily: r.daily } : {}),
     missed: r.results
       .filter((x) => !x.pass)
       .slice(0, FAMILY_MISSED_LIMIT)
       .map((x) => ({ en: x.word.en, ko: x.word.ko, ...(x.unknown ? { unknown: true } : {}) })),
   };
 }
+// 교재 앵커: 가장 최근에 고친 세트의 영어 단어. 오늘의 단어 수준 기준으로 쓴다.
+function anchorPayload() {
+  const set = sets.slice().sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0];
+  if (!set) return undefined;
+  const words = [...new Set(set.words.map((w) => tidy(w.en)).filter((w) => WORD_PATTERN.test(w)))].slice(0, ANCHOR_LIMIT);
+  return { setName: set.name, words };
+}
 function syncReady() {
   return family.sendEnabled && Boolean(family.childName && family.childId && syncPasscode());
 }
 // quiz.js 의 saveSession 이 기록을 확정할 때(완료·중단) 부른다.
 function queueFamilySync(record) {
+  if (record.daily) noteDailyResult(record);
   if (!family.sendEnabled) return;
   if (!family.pending.includes(record.id)) family.pending.push(record.id);
   writeFamily();
@@ -127,7 +145,7 @@ async function flushFamilySync(options = {}) {
     return;
   }
   family.pending = family.pending.filter((id) => historyRecords.some((r) => r.id === id)); // 기기에서 지운 기록은 보내지 않는다
-  let force = options.force === true; // 기록이 없어도 아이 이름·세트 목록을 한 번 보낸다
+  let force = options.force === true; // 기록이 없어도 아이 이름·세트 목록·앵커를 한 번 보낸다
   if (!family.pending.length && !force) {
     writeFamily();
     renderFamilySettings();
@@ -145,6 +163,7 @@ async function flushFamilySync(options = {}) {
           child: { id: family.childId, name: family.childName },
           records,
           sets: sets.map((s) => ({ name: s.name, count: s.words.length })),
+          anchor: anchorPayload(),
         },
         passcode: syncPasscode(),
       });
@@ -165,6 +184,129 @@ async function flushFamilySync(options = {}) {
     }
   }
 }
+
+// ---- 아이 기기: 오늘의 단어 ----
+function emptyDaily() {
+  return { childId: "", date: "", words: [], level: "", note: "", fetchedAt: "", result: null, disabled: false, lastCheckedAt: "", lastError: "" };
+}
+function readDaily() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(DAILY_KEY) || "null");
+  } catch {}
+  const d = { ...emptyDaily(), ...(saved && typeof saved === "object" ? saved : {}) };
+  d.words = Array.isArray(d.words) ? d.words.filter((w) => w && typeof w.en === "string" && typeof w.ko === "string") : [];
+  return d;
+}
+let daily = readDaily();
+let dailyChecking = false;
+function writeDaily() {
+  try {
+    localStorage.setItem(DAILY_KEY, JSON.stringify(daily));
+  } catch {}
+}
+const todayKey = () => {
+  const d = new Date();
+  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
+};
+const dailyLabel = (date) => `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
+// 앱 시작·화면 복귀·보내기 켤 때. 오늘 것이 기기에 있으면 서버에 묻지 않고, 없으면 받고, 아직 없으면 만들어 달라고 한다.
+async function checkDaily(options = {}) {
+  const today = todayKey();
+  if (dailyChecking || !syncReady()) {
+    renderDailyCard();
+    return;
+  }
+  const fresh = daily.childId === family.childId && daily.date === today;
+  if (fresh && daily.words.length && !options.force) {
+    renderDailyCard();
+    return;
+  }
+  if (fresh && !options.force && !options.ignoreThrottle && daily.lastCheckedAt && Date.now() - Date.parse(daily.lastCheckedAt) < DAILY_CHECK_MS) {
+    renderDailyCard();
+    return;
+  }
+  dailyChecking = true;
+  const now = new Date().toISOString();
+  try {
+    let data;
+    try {
+      data = await familyRequest("/daily/" + encodeURIComponent(family.childId) + "?date=" + today, { method: "GET", passcode: syncPasscode() });
+    } catch (e) {
+      if (e.code === "no_daily")
+        data = await familyRequest("/daily/" + encodeURIComponent(family.childId), { method: "POST", body: { date: today }, passcode: syncPasscode(), timeout: DAILY_TIMEOUT_MS });
+      else if (e.code === "plan_disabled") {
+        daily = { ...emptyDaily(), childId: family.childId, date: today, disabled: true, lastCheckedAt: now };
+        writeDaily();
+        return;
+      } else if (e.code === "unknown_child") {
+        // 보호자가 서버에서 지운 뒤 다시 등록하는 경우
+        daily = { ...emptyDaily(), childId: family.childId, date: today, lastCheckedAt: now, lastError: e.message };
+        writeDaily();
+        flushFamilySync({ force: true });
+        return;
+      } else throw e;
+    }
+    const words = (Array.isArray(data?.words) ? data.words : []).filter((w) => w && typeof w.en === "string" && typeof w.ko === "string");
+    const keepResult = fresh && daily.result;
+    daily = {
+      ...emptyDaily(),
+      childId: family.childId,
+      date: typeof data.date === "string" ? data.date : today,
+      words,
+      level: typeof data.level === "string" ? data.level : "",
+      note: typeof data.note === "string" ? data.note : "",
+      fetchedAt: now,
+      lastCheckedAt: now,
+      result: keepResult ? daily.result : data.completed ? { id: data.completed.recordId, correct: data.completed.correct, total: data.completed.total, completedAt: data.completed.completedAt } : null,
+    };
+    writeDaily();
+  } catch (e) {
+    daily = { ...daily, childId: family.childId, date: fresh ? daily.date : today, lastCheckedAt: now, lastError: e?.message || String(e) };
+    writeDaily();
+  } finally {
+    dailyChecking = false;
+    renderDailyCard();
+  }
+}
+function noteDailyResult(record) {
+  if (record.partial || record.daily !== daily.date) return;
+  const correct = record.results.filter((x) => x.pass).length;
+  daily.result = { id: record.id, correct, total: record.results.length, completedAt: record.completedAt };
+  writeDaily();
+  renderDailyCard();
+}
+function renderDailyCard() {
+  const card = $("dailyCard");
+  const show = family.sendEnabled && !daily.disabled && daily.date === todayKey() && daily.words.length > 0;
+  card.classList.toggle("hidden", !show);
+  if (!show) return;
+  const total = daily.words.length, review = daily.words.filter((w) => w.kind === "review").length;
+  const label = dailyLabel(daily.date);
+  if (daily.result) {
+    const wrong = daily.result.total - daily.result.correct;
+    $("dailyTitle").textContent = `✅ 오늘의 단어 ${label} 끝!`;
+    $("dailyText").textContent = `${daily.result.correct} / ${daily.result.total} 맞았어요` + (wrong ? ` · 틀린 단어 ${wrong}개는 내일 복습에 나와요` : " · 모두 정답 🎉");
+    $("startDaily").textContent = "한 번 더 풀기";
+  } else {
+    $("dailyTitle").textContent = `📬 오늘의 단어 ${label}`;
+    $("dailyText").textContent = `새 단어 ${total - review}개` + (review ? ` + 복습 ${review}개` : "") + (daily.level ? ` · ${daily.level}` : "");
+    $("startDaily").textContent = "▶ 풀기";
+  }
+  $("startDaily").disabled = sessionRunning;
+}
+$("startDaily").onclick = () => {
+  if (!daily.words.length || sessionRunning) return;
+  const words = daily.words.map((w, i) => ({
+    id: Number.isInteger(w.id) ? w.id : i + 1,
+    en: w.en,
+    ko: w.ko,
+    ipa: typeof w.ipa === "string" ? w.ipa : "",
+    hangul: "",
+    aliases: Array.isArray(w.aliases) ? w.aliases.filter((a) => typeof a === "string") : [],
+  }));
+  newSession(false, words, { setId: "daily:" + daily.date, setName: "오늘의 단어 " + dailyLabel(daily.date) }, { rangeLabel: "오늘의 단어", daily: daily.date });
+};
 
 // ---- 설정 화면(아이 기기 + 보호자 폰) ----
 function renderFamilySettings(progress) {
@@ -214,8 +356,13 @@ $("saveFamily").onclick = () => {
     return;
   }
   $("childName").value = family.childName;
-  if (enable) flushFamilySync({ force: true });
-  else renderFamilySettings("저장했어요. 이제 기록을 보내지 않아요.");
+  if (enable) {
+    flushFamilySync({ force: true });
+    checkDaily({ force: true });
+  } else {
+    renderFamilySettings("저장했어요. 이제 기록을 보내지 않아요.");
+    renderDailyCard();
+  }
 };
 $("syncNow").onclick = () => flushFamilySync({ force: true });
 $("saveParent").onclick = async () => {
@@ -257,7 +404,7 @@ $("clearParent").onclick = () => {
 
 // ---- 보호자 폰: 아이들 화면 ----
 let familyData = null; // 마지막 /family 응답 {children, serverTime, fetchedAt}
-let familyDetail = null; // 열어 둔 아이 {child, records}
+let familyDetail = null; // 열어 둔 아이 {child, records, today}
 let familyLoading = false;
 function cacheFamily(data) {
   familyData = { children: Array.isArray(data?.children) ? data.children : [], serverTime: data?.serverTime || "", fetchedAt: new Date().toISOString() };
@@ -296,7 +443,7 @@ function renderFamily() {
   renderChildren();
   refreshFamily();
 }
-// 오늘·최근 7일은 이 폰의 현지 날짜로 센다(서버는 UTC로 저장).
+// 오늘·최근 7일은 이 폰의 현지 날짜로 센다(서버는 한국 시각으로 저장).
 const dayKey = (value) => {
   const d = value instanceof Date ? value : new Date(value);
   return Number.isNaN(d.getTime()) ? "" : [d.getFullYear(), d.getMonth() + 1, d.getDate()].join("-");
@@ -318,6 +465,17 @@ function durationText(ms) {
   if (!Number.isInteger(ms) || ms < 0) return "";
   const s = Math.round(ms / 1000);
   return `${Math.floor(s / 60)}분 ${s % 60}초`;
+}
+function planOf(child) {
+  return { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, ...(child?.plan || {}) };
+}
+function dailyStatusText(c) {
+  const plan = planOf(c);
+  if (!plan.enabled) return "오늘의 단어: 꺼짐";
+  const t = c.today;
+  if (t?.completed) return `오늘의 단어 ✅ ${t.completed.correct} / ${t.completed.total}`;
+  if (t?.exists) return "오늘의 단어 📬 도착 · 아직 안 풀었어요";
+  return `오늘의 단어: 아직 없음 (${hourLabel(plan.hour)}에 만들어요)`;
 }
 function describeChild(c) {
   const records = (Array.isArray(c.records) ? c.records : []).slice().sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)));
@@ -369,6 +527,9 @@ function renderChildren() {
     last.textContent = info.latest
       ? `마지막 시험: ${relativeTime(info.latest.completedAt)} · ${info.latest.setName} · ${pctOf(info.latest)}점${info.latest.partial ? " (중단)" : ""}`
       : "아직 시험 기록이 없어요.";
+    const dailyLine = document.createElement("p");
+    dailyLine.className = "muted daily-line";
+    dailyLine.textContent = dailyStatusText(c);
     const dots = document.createElement("div");
     dots.className = "week-dots";
     dots.setAttribute("aria-label", "최근 7일 시험");
@@ -394,20 +555,24 @@ function renderChildren() {
     detail.textContent = "기록 자세히 보기";
     detail.addEventListener("click", () => openChild(c));
     actions.append(detail);
-    card.append(head, last, dots, week, actions);
+    card.append(head, last, dailyLine, dots, week, actions);
     list.append(card);
   }
 }
 async function openChild(c) {
-  familyDetail = { child: c, records: Array.isArray(c.records) ? c.records : [] };
+  const summaryToday = c.today ? { date: c.today.date, exists: c.today.exists, words: [], note: "", completed: c.today.completed || null } : null;
+  familyDetail = { child: c, records: Array.isArray(c.records) ? c.records : [], today: summaryToday };
   $("childDetail").classList.remove("hidden");
   $("childDetailTitle").textContent = "🧒 " + c.name;
+  renderPlan(c, summaryToday);
+  setFeedback($("planStatus"), "info", "");
   renderChildRecords("전체 기록을 불러오는 중…");
   $("childDetail").scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     const data = await familyRequest("/family/" + encodeURIComponent(c.id), { method: "GET", passcode: family.parentCode });
     if (familyDetail?.child.id !== c.id) return;
-    familyDetail = { child: data.child || c, records: Array.isArray(data.records) ? data.records : [] };
+    familyDetail = { child: data.child || c, records: Array.isArray(data.records) ? data.records : [], today: data.today || summaryToday };
+    renderPlan(familyDetail.child, familyDetail.today);
     renderChildRecords();
   } catch (e) {
     if (familyDetail?.child.id === c.id) renderChildRecords("전체 기록을 불러오지 못했어요: " + e.message + " · 최근 기록만 보여 줘요.");
@@ -433,7 +598,7 @@ function renderChildRecords(note) {
     head.className = "history-head";
     const score = document.createElement("span");
     score.className = "history-score";
-    score.textContent = `${r.correct} / ${r.total} · ${pctOf(r)}점${r.partial ? " · 중단" : ""}`;
+    score.textContent = `${r.correct} / ${r.total} · ${pctOf(r)}점${r.partial ? " · 중단" : ""}${r.daily ? " · 📬 오늘의 단어" : ""}`;
     head.append(score);
     const meta = document.createElement("p");
     meta.className = "history-meta";
@@ -456,6 +621,110 @@ function renderChildRecords(note) {
     list.append(entry);
   }
 }
+// ---- 보호자 폰: 오늘의 단어 계획 ----
+function fillPlanSelects() {
+  const level = $("planLevel");
+  level.textContent = "";
+  for (const l of PLAN_LEVELS) {
+    const o = document.createElement("option");
+    o.value = l;
+    o.textContent = l;
+    level.append(o);
+  }
+  const custom = document.createElement("option");
+  custom.value = "__custom";
+  custom.textContent = "직접 입력…";
+  level.append(custom);
+  const count = $("planCount");
+  count.textContent = "";
+  for (const n of [5, 10, 15, 20]) {
+    const o = document.createElement("option");
+    o.value = String(n);
+    o.textContent = n + "개";
+    count.append(o);
+  }
+  const hour = $("planHour");
+  hour.textContent = "";
+  for (let h = 0; h < 24; h++) {
+    const o = document.createElement("option");
+    o.value = String(h);
+    o.textContent = hourLabel(h);
+    hour.append(o);
+  }
+}
+function renderPlan(child, today) {
+  const plan = planOf(child);
+  $("planEnabled").checked = plan.enabled;
+  const known = PLAN_LEVELS.includes(plan.level);
+  $("planLevel").value = known ? plan.level : "__custom";
+  $("planLevelCustom").classList.toggle("hidden", known);
+  $("planLevelCustom").value = known ? "" : plan.level;
+  $("planCount").value = String(plan.dailyCount);
+  $("planHour").value = String(plan.hour);
+  const anchor = child.anchor;
+  $("planAnchor").textContent = anchor?.words?.length
+    ? `수준 기준 세트: ${anchor.setName || "(이름 없음)"} · ${anchor.words.length}단어 (아이 기기가 기록을 보낼 때 최근 세트에서 가져와요)`
+    : "수준 기준 세트가 아직 없어요. 아이 기기가 기록을 한 번 보내면 최근 세트의 단어를 수준 기준으로 삼아요.";
+  const box = $("dailyPreview");
+  box.textContent = "";
+  const head = document.createElement("p");
+  head.className = "muted";
+  if (!plan.enabled) head.textContent = `오늘의 단어가 꺼져 있어요. 켜고 저장하면 매일 ${hourLabel(plan.hour)}에 만들어요.`;
+  else if (!today?.exists) head.textContent = `오늘 것은 아직 없어요. ${hourLabel(plan.hour)}에 만들거나 아이가 앱을 열면 바로 만들어요.`;
+  else head.textContent = `오늘의 단어 ${today.words.length ? today.words.length + "개" : ""}` + (today.completed ? ` · ✅ ${today.completed.correct} / ${today.completed.total} 맞았어요` : " · 아직 안 풀었어요");
+  box.append(head);
+  for (const w of today?.words || []) {
+    const row = document.createElement("div");
+    row.className = "daily-word";
+    const tag = document.createElement("span");
+    tag.className = "tag" + (w.kind === "review" ? " review" : "");
+    tag.textContent = w.kind === "review" ? "복습" : "새";
+    const text = document.createElement("span");
+    text.textContent = `${w.en} — ${w.ko}`;
+    row.append(tag, text);
+    box.append(row);
+  }
+}
+$("planLevel").onchange = () => $("planLevelCustom").classList.toggle("hidden", $("planLevel").value !== "__custom");
+$("savePlan").onclick = async () => {
+  const c = familyDetail?.child;
+  if (!c) return;
+  const choice = $("planLevel").value;
+  const level = choice === "__custom" ? tidy($("planLevelCustom").value).slice(0, 40) : choice;
+  if (!level) {
+    setFeedback($("planStatus"), "bad", "수준을 고르거나 적어 주세요.");
+    return;
+  }
+  const body = { enabled: $("planEnabled").checked, level, dailyCount: Number($("planCount").value), hour: Number($("planHour").value) };
+  $("savePlan").disabled = true;
+  setFeedback($("planStatus"), "info", "저장하는 중…");
+  try {
+    const data = await familyRequest("/family/" + encodeURIComponent(c.id) + "/plan", { method: "POST", body, passcode: family.parentCode });
+    familyDetail.child = { ...c, ...(data.child || {}), plan: data.child?.plan || body };
+    renderPlan(familyDetail.child, familyDetail.today);
+    setFeedback($("planStatus"), "good", body.enabled ? `저장했어요. 매일 ${hourLabel(body.hour)}에 ${body.dailyCount}개를 만들어요.` : "저장했어요. 오늘의 단어를 만들지 않아요.");
+  } catch (e) {
+    setFeedback($("planStatus"), "bad", "저장 실패: " + e.message);
+  } finally {
+    $("savePlan").disabled = false;
+  }
+};
+$("makeDailyNow").onclick = async () => {
+  const c = familyDetail?.child;
+  if (!c) return;
+  $("makeDailyNow").disabled = true;
+  setFeedback($("planStatus"), "info", "오늘의 단어를 만드는 중… (10초쯤 걸려요)");
+  try {
+    const d = await familyRequest("/daily/" + encodeURIComponent(c.id), { method: "POST", body: {}, passcode: family.parentCode, timeout: DAILY_TIMEOUT_MS });
+    familyDetail.today = { date: d.date, exists: true, words: Array.isArray(d.words) ? d.words : [], note: d.note || "", completed: d.completed || null };
+    renderPlan(familyDetail.child, familyDetail.today);
+    setFeedback($("planStatus"), "good", `오늘의 단어 ${familyDetail.today.words.length}개가 준비됐어요.` + (d.note ? " " + d.note : ""));
+  } catch (e) {
+    setFeedback($("planStatus"), "bad", "만들지 못했어요: " + e.message);
+  } finally {
+    $("makeDailyNow").disabled = false;
+  }
+};
 $("closeChildDetail").onclick = () => {
   $("childDetail").classList.add("hidden");
   familyDetail = null;
@@ -484,12 +753,18 @@ $("deleteChild").onclick = async () => {
 function initFamily() {
   $("childName").value = family.childName;
   $("familySend").checked = family.sendEnabled;
+  fillPlanSelects();
   renderFamilySettings();
+  renderDailyCard();
   if (family.sendEnabled && family.pending.length) flushFamilySync();
+  checkDaily({ ignoreThrottle: true }); // 앱을 새로 열 때는 10분 제한 없이 확인한다(보호자가 방금 켰을 수 있다)
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && family.pending.length) flushFamilySync();
+    if (document.hidden) return;
+    if (family.pending.length) flushFamilySync();
+    checkDaily();
   });
   window.addEventListener("online", () => {
     if (family.pending.length) flushFamilySync();
+    checkDaily();
   });
 }

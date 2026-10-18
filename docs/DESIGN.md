@@ -172,7 +172,46 @@
 - `tests/family.cjs`: 아이 기기 — 켜기(기존 기록 전송) → 시험 완료 → 보낸 내용 검증 → 연결 실패 → 대기 → 새로고침 후 재전송 → 끄기; 보호자 폰 — 코드 오류·옛 Worker 안내 → 저장·탭 등장 → 카드(오늘·7일·이번 주) → 상세·틀린 단어 → 삭제 → 코드 삭제로 탭 숨김.
 - README(사용법·개인정보 절), worker/README(보호자 코드·마이그레이션·API), CLAUDE.md(파일·ID·문구·키·버전 체크리스트). 버전 `20261018-2`, 캐시 v11, `family.js?v=` 추가.
 
-### 10.7 이후 단계(미구현)
-- 2단계 숙제: 부모가 ‘오늘 DAY05 1~20’을 지정하면 아이 홈에 카드로 뜨고 완료되면 표시. 부모 한마디(‘잘했어!’). 같은 DO에 `task:` 키, 아이 앱이 열릴 때 `GET /tasks`.
-- 3단계 세트 보내기: 부모 폰에서 만든 세트를 아이 기기로 전송(JSON 수동 전달 대체).
+### 10.7 이후 단계
+- 2단계는 11절의 ‘오늘의 단어’(2A)로 구체화했다(2026-10-18). 부모 한마디는 보류.
+- 3단계 세트 보내기: 부모 폰에서 만든 세트를 아이 기기로 전송(JSON 수동 전달 대체). 미구현.
 - 하지 않는 것: 푸시 알림, 계정·로그인, 외부 서비스. 기기를 바꾸면 새 childId로 새 아이처럼 보이므로 옛 항목을 삭제한다(이름 합치기는 2단계 검토).
+
+## 11. 오늘의 단어 — 매일 자동 생성 퀴즈 (2026-10-18 설계, 2A 구현)
+
+배경: 아이에게 매일 그날의 단어 퀴즈를 자동으로 주고(2A), 푸시로 알리고(2B), 부모가 풀었는지 확인하게 한다. 단어 출처는 “웹에서 임의로 가져오기” 대신 **가족 Worker의 Claude 생성 + 교재 수준 앵커**로 결정했다(저작권·수준 통제·형식 일관성). 사용자 결정(2026-10-18): 생성 방식 AI + 교재 앵커, 기본 하루 10개·오후 4시(아이별로 보호자가 변경).
+
+### 11.1 생성 규칙 (Worker `FamilyStore.buildDaily`)
+- 하루 구성 = 복습 최대 3개 + 새 단어(나머지). 복습은 가족 기록함의 최근 14일 기록에서 틀린 단어를 최신순·중복 제거로 고른다. 복습 단어도 같은 요청에 “그대로 정의”로 넣어 뜻·발음·허용 답안을 채운다.
+- 수준: ① 보호자가 고른 수준 라벨(`plan.level`, 기본 ‘중2 상위권’, 직접 입력 가능 40자) ② **교재 앵커** `child.anchor` — 아이 기기가 `/sync`마다 가장 최근에 고친 세트의 영어 단어 최대 60개를 보내고, 요청에 “지금 공부 중인 단어(수준 기준, 제외)”로 넣는다 ③ 점수 기반 자동 조절은 2C.
+- 중복 방지: `served:<childId>` = `{단어(소문자): 날짜}`(최대 5,000개, 오래된 것부터 정리). 요청은 필요한 수의 2배를 받아 앵커·이미 낸 단어·철자 규칙 위반·중복을 걸러 채우고, 모자라면 한 번 더(최대 2회) 요청한다. 최근 200개는 요청에 “최근에 이미 낸 단어(제외)”로도 넣는다.
+- 형식: `DEFINE_SCHEMA`(english, ipa, korean, aliases) 그대로 → 앱 시험 엔진이 그대로 채점. 결과 `daily:<childId>:<YYYY-MM-DD>` = `{childId, date, level, model, createdAt, words:[{id,en,ko,ipa,aliases,kind:"review"|"new"}], note, completed?:{recordId,correct,total,completedAt}}`.
+- 모델: `DAILY_MODEL`(wrangler vars, 기본 `claude-sonnet-5-5`). 사진 인식 모델과 별개.
+- 같은 날짜 생성이 겹치면(크론·기기 동시 요청) DO 안의 `generating` 맵으로 Claude 호출을 한 번만 한다.
+
+### 11.2 Worker 엔드포인트·크론
+- `POST /family/<childId>/plan`(보호자 코드) `{enabled, level, dailyCount(5~20), hour(0~23, KST)}` → `{ok, child}`. 계획은 `child.plan`에 저장, 기본값 `{enabled:false, level:"중2 상위권", dailyCount:10, hour:16}`.
+- `GET /daily/<childId>?date=`(가족·보호자 코드) → 그날 것(200) / 계획 꺼짐 409 `plan_disabled` / 아직 없음 404 `no_daily`(옛 Worker의 404 `not_found`와 구분). `POST /daily/<childId>` `{date?}` → 있으면 그대로, 없으면 생성.
+- `/sync` 확장: `anchor:{setName, words}` 저장, 기록의 `daily:"YYYY-MM-DD"`가 있으면 그날 것에 `completed` 표시(더 최근 기록으로 갱신).
+- `GET /family`: 아이별 `plan`, `today:{date, exists, count, completed}` 추가. `GET /family/<childId>`: `plan`, `anchor`, `today:{date, exists, words, note, completed}` 추가. `DELETE /family/<childId>`는 `daily:`·`served:`도 지운다.
+- 크론: `wrangler.jsonc` `triggers.crons = ["0 * * * *"]`(매시). `scheduled()`가 KST 날짜·시각을 DO `POST /cron`에 넘기고, DO는 `plan.enabled && plan.hour <= hour`이면서 그날 것이 없는 아이에게 생성한다. 기기가 먼저 열면 즉시 생성(`POST /daily`)되므로 비는 날이 없다. 서버 시간은 KST 고정(가족이 한국).
+
+### 11.3 아이 기기 (`family.js`)
+- 저장 키 `daily_vocab_daily_v1` = `{childId, date, words, level, note, fetchedAt, result?:{id,correct,total,completedAt}, disabled?, lastCheckedAt, lastError?}`. 하루치만 보관한다.
+- `checkDaily()`: 앱 시작·화면 복귀·보내기 켤 때. 조건은 기록 보내기 켜짐 + childId + 접속 코드. 오늘 것이 기기에 있으면 서버에 묻지 않는다. 없으면 `GET /daily` → `no_daily`면 `POST /daily`로 생성 → 저장. `plan_disabled`면 카드 숨김(10분간 재조회 안 함). 오류는 조용히(카드 숨김, 설정 문구 없음).
+- 홈 카드 `#dailyCard`(이어서 하기 카드 아래): ‘📬 오늘의 단어 10/19 · 새 단어 7개 + 복습 3개 · 중2 상위권’ + `▶ 풀기`. 풀면 `newSession(false, words, {setId:"daily:<date>", setName:"오늘의 단어 M/D"}, {rangeLabel:"오늘의 단어", daily:date})`로 기존 엔진 실행(방식은 아이가 고른 대로, 섞기 설정 그대로). `sessionMeta.daily` → 기록 `daily` → `compactRecord` → 서버 `completed`. 끝나면 카드가 ‘✅ 오늘의 단어 끝! 9 / 10’ + `한 번 더 풀기`로 바뀐다.
+- 세트로는 남기지 않는다(홈 선택 목록 오염 방지). 틀린 단어는 `daily:` setId가 세트 목록에 없어 `daily_vocab_missed_*`를 만들지 않고, 기록의 틀린 단어와 서버 복습 풀에 남는다. ‘오늘의 단어 모음’ 세트는 필요해지면 별도.
+
+### 11.4 보호자 폰 (`family.js` 아이들 탭)
+- 아이 카드에 ‘오늘의 단어 ✅ 9/10’ / ‘📬 도착, 아직 안 풀었어요’ / ‘아직 없음 (16시에 만들어요)’ / ‘꺼짐’ 한 줄.
+- 상세 화면 `#planBox`: 켜기 스위치, 수준(목록 + 직접 입력), 하루 단어 수(5·10·15·20), 만드는 시각(0~23시), `저장`(→ `POST /family/<id>/plan`), `오늘 것 지금 만들기`(→ `POST /daily/<id>`, 보호자 코드), 수준 기준 세트(앵커) 안내, 오늘 단어 미리보기(복습/새 표시, 완료 점수).
+
+### 11.5 테스트·문서·배포
+- `tests/worker.cjs`: 계획 검증·권한, 앵커 저장, 생성(복습 포함·앵커/이미 낸 단어 제외·2회 재요청·같은 날 중복 생성 없음), 완료 표시, 요약·상세 필드, 거부/빈 결과, 크론(시각 도달 시 1회), 삭제 정리.
+- `tests/daily.cjs`: 아이 — 계획 꺼짐이면 카드 없음 → 켜진 뒤 새로고침 시 GET→POST 생성 → 카드 문구 → 풀기 → 기록 `daily` 전송 → ✅ 카드 → 새로고침 후 재생성 없음; 보호자 — 카드의 오늘 상태, 상세 계획 저장 요청 본문, 미리보기.
+- README(아이·보호자 사용법, 개인정보: 앵커 단어 전송), worker/README(엔드포인트·크론·DAILY_MODEL), CLAUDE.md. 버전 `20261018-3`, 캐시 v12.
+- 배포 순서: Worker 먼저(`npm run deploy`, 크론 등록 포함) → 앱. 보호자가 아이들 탭에서 계획을 켜야 생성이 시작된다.
+
+### 11.6 2B·2C (미구현)
+- 2B 푸시: VAPID 키(비밀값)·`POST /push/subscribe`(가족 코드, 구독을 `child.push`에 저장)·`sw.js` push/notificationclick·크론 생성 직후 전송·부모 완료 알림. Android Chrome은 바로, iOS는 홈 화면 설치 앱에서만(16.4+) 되므로 ‘알림 켜기’ 버튼과 설치 안내 필요. 아이들 기기 OS 확인 뒤 설계 확정.
+- 2C 수준 피드백: 더 쉽게·더 어렵게, 최근 평균 90%↑/60%↓ 자동 조절, 틀린 단어 1·3·7일 재출제.
