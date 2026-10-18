@@ -49,6 +49,10 @@ bash android/scripts/setup-signing.sh
 | `app/src/main/AndroidManifest.xml` | 권한(INTERNET, RECORD_AUDIO), 패키지 가시성(음성 인식·카메라), 링크 인텐트 필터, FileProvider |
 | `scripts/setup-signing.sh` | 서명 키 생성 + Secrets 등록 |
 
+## 버전
+- v1.1 (versionCode 2): 상태 표시줄·내비게이션 바·키보드 여백 처리(Android 15에서 상단 시계가 가려지던 문제).
+- v1.0 (versionCode 1): 첫 버전.
+
 ## 문제가 생기면
 
 - 음성 인식이 “서비스가 차단됐습니다”로 나오면 태블릿에 Google 앱(음성 서비스)이 꺼져 있는 것입니다. 설정 → 일반 → 키보드 목록 및 기본값 → 음성 입력에서 Google 음성 인식을 켜세요.

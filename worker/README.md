@@ -105,15 +105,16 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 | `POST /ping` · 헤더 `X-App-Passcode` | 접속 코드와 Anthropic 연결을 확인. `{ ok: true, model }` |
 | `POST /recognize` · 헤더 `X-App-Passcode` · JSON `{ image: base64, mediaType }` | 사진 한 장에서 단어 추출. `{ words: [{ number, en, ko, ipa, aliases, generated }], note, model, usage }`. 사진에 뜻이 인쇄되지 않은 단어(영어만 있는 목록·시험지)는 AI가 뜻·발음을 채우고 `generated: true`로 표시합니다 |
 | `POST /define` · 헤더 `X-App-Passcode` · JSON `{ words: ["apple", …] }` | AI 사전. 영어 단어·짧은 구 최대 60개(영문자·공백·.'’- 40자 이하) → `{ words: [{ en, ko, ipa, aliases }], note, model, usage }`. 요청한 철자 그대로 한 번씩 돌려주고 모르는 단어는 빠집니다(전부 모르면 422). 앱의 ‘빈 뜻 AI로 채우기’가 40개씩 보냅니다 |
-| `POST /sync` · 헤더 `X-App-Passcode`(가족 또는 보호자 코드) · JSON `{ child: { id, name }, records: [{ id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, daily?, awayCount?, awayMs?, missed: [{ en, ko, unknown? }] }], sets: [{ name, count }] }` | 아이 기기의 시험 기록 저장(기록 최대 100개, 같은 id는 덮어씀). `{ ok, stored, trimmed, syncedAt }` |
+| `POST /sync` · 헤더 `X-App-Passcode`(가족 또는 보호자 코드) · JSON `{ child: { id, name }, records: [{ id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, daily?, awayCount?, awayMs?, timeouts?, missed: [{ en, ko, unknown? }] }], sets: [{ name, count }] }` | 아이 기기의 시험 기록 저장(기록 최대 100개, 같은 id는 덮어씀). `{ ok, stored, trimmed, syncedAt }` |
 | `GET /family` · 헤더 `X-App-Passcode`(보호자 코드만) | 아이별 요약 `{ children: [{ id, name, sets, lastTestAt, updatedAt, records }], serverTime }`. `records`는 최근 14일(20개 미만이면 최근 20개), 최신순 |
 | `GET /family/<childId>` · 보호자 코드 | 한 아이의 전체 기록 `{ child, records }`(최신순). 모르는 아이는 404 `unknown_child` |
 | `DELETE /family/<childId>` · 보호자 코드 | 아이 항목과 기록·오늘의 단어 삭제. `{ ok, deleted }` |
-| `POST /family/<childId>/plan` · 보호자 코드 · JSON `{ enabled, level, dailyCount, hour }` | 오늘의 단어 계획 저장(빠진 항목은 유지). `{ ok, child }` |
+| `POST /family/<childId>/plan` · 보호자 코드 · JSON `{ enabled, level, dailyCount, hour, timeLimitSec }` | 오늘의 단어 계획과 문제당 제한 시간(0 또는 5~120초, 모든 시험에 적용) 저장(빠진 항목은 유지). `{ ok, child }` |
+| `GET /settings/<childId>` · 가족 또는 보호자 코드 | 아이 기기가 받아 가는 보호자 설정 `{ childId, name, timeLimitSec }` |
 | `POST /family/children` · 보호자 코드 · JSON `{ name }` | 아이 만들기. 6자리 `joinCode`가 든 `{ ok, child }` |
 | `POST /family/<childId>/code` · 보호자 코드 | 아이 코드 새로 발급(옛 코드 무효). `{ ok, child }` |
 | `POST /family/<childId>/name` · 보호자 코드 · JSON `{ name }` | 이름 바꾸기. `{ ok, child }` |
-| `POST /join` · 가족 또는 보호자 코드 · JSON `{ code, device: { id, label } }` | 아이 기기 연결. `{ ok, childId, name }`. 모르는 코드는 404 `unknown_code` |
+| `POST /join` · 가족 또는 보호자 코드 · JSON `{ code, device: { id, label } }` | 아이 기기 연결. `{ ok, childId, name, timeLimitSec }`. 모르는 코드는 404 `unknown_code` |
 | `GET /daily/<childId>?date=YYYY-MM-DD` · 가족 또는 보호자 코드 | 그날의 단어 `{ date, level, words: [{ id, en, ko, ipa, aliases, kind: "review"\|"new" }], note, completed? }`. 없으면 404 `no_daily`, 계획이 꺼져 있으면 409 `plan_disabled` |
 | `POST /daily/<childId>` · 가족 또는 보호자 코드 · JSON `{ date? }` | 그날 것이 없으면 Claude로 만들어 저장하고 돌려줍니다(있으면 그대로) |
 
