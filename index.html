@@ -154,6 +154,10 @@ body.parent-mode .child-only{display:none!important}
 .chip{display:inline-flex;align-items:baseline;gap:6px;background:#fff7f0;border:1px solid #f3d2a4;border-radius:999px;padding:4px 11px;font-size:14px;color:#4e3a1c}
 .chip b{color:#b83a48}.chip small{color:#88541f}
 .plan-box{margin:12px 0 16px;padding:12px;border:1px dashed var(--border);border-radius:12px;background:#f8fbff}
+.empty-sets{border:1px dashed var(--border);border-radius:14px;padding:16px;background:#fbfdff;text-align:center;margin:6px 0 10px}
+.empty-sets strong{display:block;font-size:17px;color:var(--navy)}.empty-sets p{margin:6px 0 0;color:var(--muted);font-size:14px}
+.set-list .set-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border)}
+.set-list .set-row:last-child{border-bottom:0}.set-row .set-name{flex:1 1 160px;font-weight:700;min-width:0;overflow-wrap:anywhere}
 .plan-box .controls select{flex:0 1 auto;min-width:120px}
 .plan-box h3{margin:0 0 6px}
 .daily-word{display:flex;gap:8px;padding:6px 0;border-top:1px solid #eef2f8;font-size:14px;align-items:center}
@@ -201,8 +205,11 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">📚 학습할 세트</h2>
-    <select id="setSelect" aria-label="학습할 세트"></select>
-    <p id="setSummary" class="muted"></p>
+    <div id="noSets" class="empty-sets hidden"><strong>아직 세트가 없어요</strong><p>보호자가 보내 준 세트가 여기에 나타나요. 교재 사진으로 직접 만들 수도 있어요.</p></div>
+    <div id="setPicker">
+      <select id="setSelect" aria-label="학습할 세트"></select>
+      <p id="setSummary" class="muted"></p>
+    </div>
     <div class="actionbar">
       <button type="button" class="btn" id="editSet">📖 단어 보기·수정</button>
       <button type="button" class="btn outline" id="createSet">➕ 새 세트 (사진)</button>
@@ -358,6 +365,13 @@ body.in-quiz main{padding-bottom:30px}
       <div class="controls"><label for="renameChild">이름</label><input id="renameChild" type="text" maxlength="20" autocomplete="off"><button type="button" class="btn small" id="saveChildName">이름 저장</button></div>
       <div id="linkStatus" class="feedback info" role="status"></div>
     </div>
+    <div class="plan-box" id="setsBox">
+      <h3 class="section-title">📚 세트</h3>
+      <p class="muted">여기 있는 세트가 이 아이의 모든 기기(아이폰·태블릿)에 똑같이 들어가요. 아이 기기에서 만들거나 고친 세트도 여기로 올라와요. 보호자가 만들어 보내면 아이 기기가 다음에 앱을 열 때 들어가요.</p>
+      <div id="childSets" class="set-list"></div>
+      <div class="actionbar"><button type="button" class="btn primary" id="sendNewSet">➕ 세트 만들어 보내기 (사진)</button></div>
+      <div id="setsStatus" class="feedback info" role="status"></div>
+    </div>
     <div class="plan-box" id="planBox">
       <h3 class="section-title">📬 오늘의 단어 설정</h3>
       <p class="muted">켜 두면 매일 정한 시각에 아이 수준에 맞는 단어를 만들어 아이 홈에 ‘오늘의 단어’ 카드로 보여 줘요. 복습(최근 틀린 단어) 최대 3개 + 새 단어로 채우고, 새 단어는 아이의 최근 세트(교재) 수준을 기준으로 AI가 고릅니다.</p>
@@ -395,12 +409,13 @@ body.in-quiz main{padding-bottom:30px}
     <details id="familySettings" class="settings-section">
       <summary>👨‍👩‍👧 가족 기록함 <span id="familyState" class="pill child-only">꺼짐</span></summary>
       <div id="familyChildPart" class="child-only">
-      <p class="muted"><b>아이 기기:</b> 보호자 폰의 ‘아이들’ 탭에서 만든 <b>아이 코드 6자리</b>를 넣거나 아이 전용 링크를 열면 이 기기가 그 아이로 연결돼요. 연결되면 시험을 마칠 때마다 점수·틀린 단어·세트 이름이 가족용 AI 서버에 저장되어 보호자 폰에서 볼 수 있고, 오늘의 단어도 받아요. 단어별 전체 답안은 보내지 않아요. 위의 AI 연결(접속 코드)이 먼저 필요해요. 같은 아이의 아이폰·태블릿에는 같은 코드를 넣으세요.</p>
+      <p class="muted"><b>아이 기기:</b> 보호자 폰의 ‘아이들’ 탭에서 만든 <b>아이 코드 6자리</b>를 넣거나 아이 전용 링크를 열면 이 기기가 그 아이로 연결돼요. 연결되면 시험을 마칠 때마다 점수·틀린 단어가 가족용 AI 서버에 저장되어 보호자 폰에서 볼 수 있고, 오늘의 단어도 받아요. <b>세트도 아이 단위로 맞춰져요</b>: 이 기기에서 만든 세트는 같은 아이의 다른 기기와 보호자 폰에 올라가고, 보호자가 보낸 세트는 여기에 들어와요(기본 예제 세트는 연결 뒤 사라져요). 단어별 전체 답안은 보내지 않아요. 위의 AI 연결(접속 코드)이 먼저 필요해요. 같은 아이의 아이폰·태블릿에는 같은 코드를 넣으세요.</p>
       <div id="joinBox">
         <div class="controls"><label for="childCode">아이 코드</label> <input id="childCode" type="text" inputmode="numeric" maxlength="7" autocomplete="off" placeholder="예: 483921"> <button type="button" class="btn primary" id="joinChild">연결</button></div>
       </div>
       <div id="linkedBox" class="hidden">
         <p class="muted">연결됨: 🧒 <strong id="childName"></strong> <span id="deviceLabelText" class="pill"></span></p>
+        <p id="setsSyncText" class="muted"></p>
         <div class="controls"><label class="check"><input type="checkbox" id="familySend"> 시험 기록을 보호자에게 보내기</label></div>
         <div class="actionbar"><button type="button" class="btn primary" id="saveFamily">저장</button><button type="button" class="btn outline" id="syncNow" disabled>지금 보내기</button><button type="button" class="btn outline danger" id="unlinkChild">연결 해제</button></div>
       </div>
@@ -438,7 +453,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-8 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-9 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -453,7 +468,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-8';
+  var release = '20261018-9';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -489,8 +504,8 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./quiz.js?v=20261018-8" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-8" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-8" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-9" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-9" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-9" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

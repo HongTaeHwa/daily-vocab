@@ -66,8 +66,9 @@ try {
   const raw = localStorage.getItem(setsKey);
   if (raw) {
     const parsed = JSON.parse(raw);
+    // 세트가 하나도 없는 빈 배열도 정상이다(가족 기록함에 연결된 기기는 보호자가 보낸 세트만 쓴다).
     if (
-      !Array.isArray(parsed) || !parsed.length ||
+      !Array.isArray(parsed) ||
       !parsed.every((s) => s && typeof s.id === "string" && typeof s.name === "string" && Array.isArray(s.words) && s.words.length &&
         s.words.every((w) => w && typeof w.en === "string" && typeof w.ko === "string" && Array.isArray(w.aliases)))
     )
@@ -102,8 +103,9 @@ try {
 } catch {}
 if (!modeLabels[prefs.mode]) prefs.mode = "read_meaning";
 mode = prefs.mode;
-activeSetId = sets.some((s) => s.id === prefs.setId) ? prefs.setId : sets[0].id;
-WORDS = sets.find((s) => s.id === activeSetId).words;
+// 세트가 없으면 activeSetId = null, WORDS = [] 이고 홈은 ‘아직 세트가 없어요’를 보여 준다.
+activeSetId = sets.some((s) => s.id === prefs.setId) ? prefs.setId : sets[0]?.id ?? null;
+WORDS = sets.find((s) => s.id === activeSetId)?.words || [];
 cacheKey = "daily_vocab_missed_" + activeSetId;
 function savePrefs(patch) {
   prefs = { ...prefs, ...patch };
@@ -123,7 +125,9 @@ let currentView = "home";
 function showView(name, options = {}) {
   if (!VIEWS.includes(name)) name = "home";
   // 보호자 모드(family.js): 아이용 화면(홈·시험·결과·편집·기록) 대신 아이들 화면을 보여 준다.
-  if (typeof isParentMode === "function" && isParentMode() && !sessionRunning && ["home", "quiz", "finish", "editor", "history"].includes(name)) name = "family";
+  // 보호자가 아이에게 보낼 세트를 만들거나 고칠 때(family.js 의 editorForChild)만 편집 화면을 허용한다.
+  if (typeof isParentMode === "function" && isParentMode() && !sessionRunning && ["home", "quiz", "finish", "editor", "history"].includes(name) && !(name === "editor" && window.editorForChild))
+    name = "family";
   if (sessionRunning && name !== "quiz") {
     pauseQuiz();
     return;
@@ -169,6 +173,10 @@ function wordNumberLabel(words) {
   return lo === hi ? lo + "번" : lo + "~" + hi + "번";
 }
 function populateSets() {
+  const empty = !sets.length;
+  $("noSets").classList.toggle("hidden", !empty);
+  $("setPicker").classList.toggle("hidden", empty);
+  $("editSet").classList.toggle("hidden", empty);
   const select = $("setSelect");
   select.textContent = "";
   for (const set of sets) {
@@ -177,7 +185,7 @@ function populateSets() {
     o.textContent = set.name + " · " + set.words.length + "단어";
     select.append(o);
   }
-  select.value = activeSetId;
+  select.value = activeSetId ?? "";
   const filter = $("historyFilter");
   const keep = filter.value || activeSetId;
   filter.textContent = "";
@@ -191,7 +199,7 @@ function populateSets() {
     o.textContent = set.name;
     filter.append(o);
   }
-  filter.value = [...filter.options].some((o) => o.value === keep) ? keep : activeSetId;
+  filter.value = [...filter.options].some((o) => o.value === keep) ? keep : activeSetId || "all";
   const range = $("range");
   const previous = range.value;
   range.textContent = "";
@@ -212,13 +220,13 @@ function populateSets() {
   renderSetSummary();
 }
 function selectSet(id) {
-  if (!sets.some((s) => s.id === id)) id = sets[0].id;
+  if (!sets.some((s) => s.id === id)) id = sets[0]?.id ?? null;
   activeSetId = id;
-  WORDS = sets.find((s) => s.id === id).words;
+  WORDS = sets.find((s) => s.id === id)?.words || [];
   cacheKey = "daily_vocab_missed_" + id;
   loadMissed();
   savePrefs({ setId: id });
-  $("historyFilter").value = id;
+  $("historyFilter").value = id || "all";
   populateSets();
   renderHistory();
   renderHome();
@@ -236,6 +244,7 @@ function renderSetSummary() {
   el.textContent = `최근 ${last.pct}점 (${last.correct}/${last.total}${mine[0].partial ? " · 중단" : ""}) · 시험 ${mine.length}회 · 틀린 단어 ${lastMissed.length}개`;
 }
 function refreshReview() {
+  $("start").disabled = sessionRunning || !WORDS.length; // 세트가 없으면 시작할 수 없다
   $("review").disabled = sessionRunning || lastMissed.length === 0;
   $("reviewCount").textContent = lastMissed.length ? `틀린 단어 ${lastMissed.length}개` : "틀린 단어 없음";
 }
