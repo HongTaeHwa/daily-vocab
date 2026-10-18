@@ -9,3 +9,13 @@ claude key.txt
 *.key
 *.pem
 .claude/scheduled_tasks.lock
+
+# 갤럭시용 앱(android/) 빌드 산출물·로컬 설정·서명 키 (서명 키는 GitHub Secrets에만)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/keystore/
+android/*.p12
+*.jks
+*.keystore
