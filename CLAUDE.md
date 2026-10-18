@@ -75,7 +75,7 @@
 - **코드 역할**: 가족 코드 `APP_PASSCODE`(AI + `/sync`), 보호자 코드 `PARENT_PASSCODE`(`/family…` 읽기·삭제, 가족 코드가 통하는 곳에도 통함). 아이 기기에는 가족 코드만 두므로 ‘아이들’ 탭이 생기지 않는다. 이 분리를 없애면 안 된다.
 - **아이 코드(2026-10-18, `docs/DESIGN.md` 12절)**: 아이 한 명이 아이폰·태블릿 여러 대를 쓰므로 아이 = 서버가 만든 항목, 기기 = `devices`. 보호자가 `POST /family/children {name}`으로 만들면 6자리 `joinCode`(`code:<코드>` 키). 아이 기기는 `POST /join {code, device}`로 `childId`를 받아 저장하고 이후 `/sync`에 `child.id`·`device`를 보낸다(서버 이름이 기준). 전용 링크 `…/?child=<코드>`는 `initFamily`에서 읽어 자동 연결하고 주소에서 지운다. iOS는 Safari와 홈 화면 앱의 저장 공간이 달라 설치한 앱에서 코드를 넣어야 한다(README에 안내). 기기별 identity(이름 입력)로 만들던 옛 흐름은 없앴다.
 - **부정행위 대응(2026-10-18, `docs/DESIGN.md` 13절)**: 시험 화면 `.word-box`는 `user-select:none`·`-webkit-touch-callout:none` + contextmenu/copy 차단(선택 → 번역 방지). 화면 이탈 기록은 quiz.js의 `awayStart/awayEnd`(visibilitychange·blur/focus, 1초 미만과 마이크 버튼 직후 2초는 제외, 채점 전 문제만) → `question.away/awayMs`, `sessionMeta.awayCount/awayMs` → 기록 → `compactRecord` → Worker → 보호자 기록에 `.away-flag`. OS의 서클 투 서치·Apple Intelligence는 웹앱이 막을 수 없다: 갤럭시는 `android/` 래퍼 앱(FLAG_SECURE, 준비 중)으로, 아이폰은 스크린 타임 안내로 대응한다.
-- **보호자 모드(2026-10-18, `docs/DESIGN.md` 14절)**: 보호자 폰은 문제를 풀 일이 없으므로 관리 전용 화면으로 시작한다. `family.js`의 `isParentMode`/`applyParentMode`(탭·문구·`.child-only` 토글, 화면 이동은 모드가 바뀌는 곳에서만), `saveParentCode`(설정 칸과 첫 화면 `#parentSetup`이 공용, 저장 시 `showView("family")`), `renderFamily`(코드 없으면 설정 카드만), `renderOverview`(오늘 한눈에: 오늘 시험·오늘의 단어·이번 주·⚠️/⏱ 경고), `missedTop`/`renderMissedTop`(최근 2주 틀린 단어 상위 10). `initFamily`가 `?mode=` 를 읽고 보호자 모드면 `showView("family")`. 아이 기기 동작은 바뀌지 않는다.
+- **보호자 모드(2026-10-18, `docs/DESIGN.md` 14절)**: 보호자 폰은 문제를 풀 일이 없으므로 관리 전용 화면으로 시작한다. `family.js`의 `isParentMode`/`applyParentMode`(탭·문구·`.child-only` 토글, 화면 이동은 모드가 바뀌는 곳에서만), `saveParentCode`(설정의 `#parentBox`와 첫 화면 `#parentSetup`이 공용, 저장 시 `showView("family")`; `#parentBox`·`#parentModeRow`는 보호자 기기(`?mode=parent`로 열었거나 코드가 저장된 기기)에서만 보이고 아이 기기에는 없다), `renderFamily`(코드 없으면 설정 카드만), `renderOverview`(오늘 한눈에: 오늘 시험·오늘의 단어·이번 주·⚠️/⏱ 경고), `missedTop`/`renderMissedTop`(최근 2주 틀린 단어 상위 10). `initFamily`가 `?mode=` 를 읽고 보호자 모드면 `showView("family")`. 아이 기기 동작은 바뀌지 않는다.
 - **문제당 제한 시간(2026-10-18)**: 보호자가 `POST /family/<id>/plan {timeLimitSec}`(0 또는 5~120)로 정하면 아이 기기가 앱을 열 때 `GET /settings/<childId>`(가족 코드, `fetchSettings`, 10분 간격·시작 때 즉시)로 받아 `family.settings.timeLimitSec`에 둔다(`/join` 응답에도 포함). quiz.js `startQuestionTimer`(displayQuestion마다, 절대 마감 시각이라 앱 밖에 있어도 흐름) → `#timeLeft` 카운트다운(5초 이하 `.urgent`) → 0이면 `question.timedOut`·`sessionMeta.timeouts++`·`markUnknown()`·"시간이 다 됐어요". 채점·모름·쉬기·그만하기·완료에서 `stopQuestionTimer`. 기록 `timeouts`·`results[i].timeout` → 아이 기록 탭·보호자 기록에 "⏱ 시간 초과 N개". 오늘의 단어 계획과 같은 `plan` 객체지만 `enabled`와 무관하게 모든 시험에 적용.
 - **아이 기기**: `saveSession`(완료·중단) → `queueFamilySync(record)` → `compactRecord`(id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed[{en,ko,unknown?}] 최대 200) → `POST /sync {child:{id,name}, records(≤50), sets:[{name,count}]}`. 처음 켤 때 기존 기록 전체를 대기 목록에 넣는다. 기기에서 지운 기록은 보내지 않지만 서버 사본은 지우지 않는다. 단어별 전체 결과·세트 단어·사진은 보내지 않는다.
 - **Worker**: `FamilyStore`(SQLite 기반 DO, `idFromName("family")`)의 키-값 저장소. 키 `child:<id>`(이름·세트·lastTestAt·recordCount), `rec:<childId>:<completedAt ISO>:<recordId>`(압축 기록 + receivedAt, 같은 키는 덮어씀). `GET /family`는 아이별 최근 14일(20개 미만이면 최근 20개) 기록, `GET /family/<id>`는 전체, 아이당 5,000개 초과분은 오래된 것부터 삭제. 검증은 `parseSync`(하나라도 틀리면 전체 400). 모르는 아이는 404 `unknown_child`(옛 Worker 404 `not_found`와 앱이 구분해 ‘다시 배포’ 안내).
@@ -92,13 +92,13 @@
 - 테스트: 자동 테스트 없음(실기기·CI 빌드로 확인). 브리지 이벤트 형식(`{type:"start"|"result"|"error"|"end", text|code}`)을 바꾸면 `bridge.js`와 `SpeechBridge.kt`를 함께 고친다.
 
 ## 버전·캐시 올리기 (앱 셸을 바꿀 때 반드시)
-릴리스 문자열 `20261018-7` 와 캐시 이름 `daily-vocab-shell-v16` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
+릴리스 문자열 `20261018-8` 와 캐시 이름 `daily-vocab-shell-v17` 가 여러 곳에 있다. **한 곳만 바꾸면 테스트가 깨지거나 사용자에게 옛 캐시가 남는다.**
 1. `index.html` `#appStatus` 초기 텍스트의 버전
 2. `index.html` `var release = '...'`
 3. `index.html` 마지막 `<script src="./quiz.js?v=...">`, `./family.js?v=...`, `./sets.js?v=...` (셋 다)
-4. `sw.js` — `CACHE` 상수(`-v16` → `-v17`)와 `SHELL` 배열의 `./quiz.js?v=...`, `./family.js?v=...`, `./sets.js?v=...`
+4. `sw.js` — `CACHE` 상수(`-v17` → `-v18`)와 `SHELL` 배열의 `./quiz.js?v=...`, `./family.js?v=...`, `./sets.js?v=...`
 5. `tests/app-update.cjs` — 버전 문자열 검사
-확인: `grep -rn "20261018-7\|daily-vocab-shell-v" index.html sw.js tests/`
+확인: `grep -rn "20261018-8\|daily-vocab-shell-v" index.html sw.js tests/`
 
 ## 로컬 실행
 ```bash
@@ -124,7 +124,7 @@ node tests/worker.cjs                 # Worker 단위 테스트만 (서버·Play
 | `ten-photos.cjs` | 사진 10장 순차 전송·결과 보존, 11장 거부, 10단어 세트 시험 |
 | `ai-recognition.cjs` | v1 키 제거, 보호자 설정 검증·저장·삭제(설정 뷰), 연결 확인, 편집 복귀, 사진 2장 인식과 번호 병합·표 표시, `generated` 뜻 노란 칸 표시·수정 시 해제, 저장·시험, 빈 뜻·발음 AI 채우기(빈 칸만, 두 번째 호출 범위, 옛 Worker 404 안내), 401/503/연결 실패 안내, 취소 |
 | `session.cjs` | 탭 전환, 시험 글자 선택 차단(`user-select:none`), 책 번호 기준 범위 라벨, 쉬기 → 새로고침 → 이어서 하기 → 완료(틀린 단어 목록·같은 범위 다시), 그만하기 중단 기록, 세트 이름 바꾸기(기록 반영·유지), 표 편집기 ↔ 텍스트 동기화·행 삭제·저장, 마지막 선택 기억, 편집 중 설정 다녀오기 |
-| `family.cjs` | 가족 기록함 + 아이 코드 + 보호자 모드: `parent.html` 안내 페이지, `?mode=parent`로 보호자 모드 시작(코드 입력 카드·탭·문구)과 `?mode=child` 해제, 전용 링크(`?child=`)로 열면 접속 코드 대기·주소 정리 → AI 연결 저장 시 자동 연결(`/join` 기기 정보)·등록 전송(기기·세트·앵커), 문제 중 화면 이탈(깜빡임 제외·1.2초 가림 1회 집계·기록·전송·보호자 카드/기록 ⚠️), 시험 완료 → 압축 기록 내용, 연결 실패 → ‘못 보낸 기록 1개’ → 새로고침 후 재전송(재연결 없음), 끄기 후 미전송, 연결 해제 → 코드 길이·모르는 코드 안내 → 재연결·기록 재전송, 보호자 코드 길이·오류·옛 Worker 안내, 저장 → 연결 성공 → 보호자 모드 자동 전환(아이들 화면·탭 숨김) → 오늘 한눈에(3회·이탈 경고)·카드(오늘 3회·최근 7일·연결 기기)·상세(코드 ‘483 921’·링크·기기 목록·자주 틀린 단어 10개·틀린 단어)·한눈에 줄로 상세 열기·‘아이 기기처럼 보기’ 켜고 끄기, 아이 추가(이름 검증·코드 ‘777 777’·상세 자동 열림·카드에 코드 표시)·이름 바꾸기·코드 새로 만들기(링크 갱신)·삭제, 코드 삭제 → 탭·캐시 제거 |
+| `family.cjs` | 가족 기록함 + 아이 코드 + 보호자 모드: `parent.html` 안내 페이지, `?mode=parent`로 보호자 모드 시작(코드 입력 카드·탭·문구)과 `?mode=child` 해제, 전용 링크(`?child=`)로 열면 접속 코드 대기·주소 정리 → AI 연결 저장 시 자동 연결(`/join` 기기 정보)·등록 전송(기기·세트·앵커), 문제 중 화면 이탈(깜빡임 제외·1.2초 가림 1회 집계·기록·전송·보호자 카드/기록 ⚠️), 시험 완료 → 압축 기록 내용, 연결 실패 → ‘못 보낸 기록 1개’ → 새로고침 후 재전송(재연결 없음), 끄기 후 미전송, 연결 해제 → 코드 길이·모르는 코드 안내 → 재연결·기록 재전송, 보호자 코드 길이·오류·옛 Worker 안내, 아이 기기에는 보호자 코드 칸 없음 → 보호자 화면(`?mode=parent`)에서 저장 → 연결 성공 → 보호자 모드 자동 전환(아이들 화면·탭 숨김) → 오늘 한눈에(3회·이탈 경고)·카드(오늘 3회·최근 7일·연결 기기)·상세(코드 ‘483 921’·링크·기기 목록·자주 틀린 단어 10개·틀린 단어)·한눈에 줄로 상세 열기·‘아이 기기처럼 보기’ 켜고 끄기, 아이 추가(이름 검증·코드 ‘777 777’·상세 자동 열림·카드에 코드 표시)·이름 바꾸기·코드 새로 만들기(링크 갱신)·삭제, 코드 삭제 → 탭·캐시 제거 |
 | `daily.cjs` | 오늘의 단어: 계획 꺼짐이면 GET만 하고 카드 없음·앵커 전송, 켠 뒤 새로고침 → GET(no_daily)→POST 생성 1회 → 카드 문구(새 단어 7 + 복습 3·수준) → 풀기(세션 범위·10문제) → 기록 `daily`·setId `daily:<date>`·missed 키 없음 → 전송 → ✅ 카드(한 번 더 풀기) → 새로고침 후 재생성 없음; 보호자 — 아이 카드 ‘오늘의 단어 ✅ 0 / 10’, 상세 계획 필드·앵커 안내·미리보기(복습 태그 3)·저장 본문·직접 입력 수준·지금 만들기(보호자 코드)·끄기 문구·제한 시간 저장(20초); 제한 시간 10초 — 앱 시작 시 `/settings` 수신 → 타이머 표시·카운트다운 → 시간 초과 시 모름·안내·다음 문제에서 재시작·채점 후 숨김 → 기록 `timeouts`·전송·아이 기록 탭·보호자 기록 표시·계획 폼 값 |
 UI 요소를 바꾸면 위 ID 목록과 상태 문구를 테스트와 함께 맞춘다. 표 편집기 기본 화면에서는 `#wordDraft`가 숨겨져 있으므로 테스트에서 텍스트를 채우려면 먼저 `#toggleDraftText`를 누른다.
 
