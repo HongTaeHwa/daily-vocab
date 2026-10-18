@@ -952,8 +952,48 @@ const { pathToFileURL } = require("url");
   assert.equal([...(await familyObject.storage.list({ prefix: "set:" + sid + ":" })).keys()].length, 0, "set keys removed with the child");
   assert.equal([...(await familyObject.storage.list({ prefix: "q:" + sid + ":" })).keys()].length, 0, "question keys removed with the child");
 
+  // ---- 기록 복원: 아이 기기가 GET /records/<childId>(가족 코드)로 서버 사본을 내려받는다(since 이후 오름차순 또는 최신순, 최대 500개) ----
+  const rid = (await familyCase("/family/children", { ...PARENT, body: { name: "복원아이" } }, 200)).child.id;
+  const rchild = { id: rid, name: "복원아이" };
+  const at = (h) => new Date(Date.parse("2026-10-01T00:00:00Z") + h * 3600000).toISOString();
+  await familyCase("/sync", { body: { child: rchild, records: [rec("x3", at(3)), rec("x1", at(1), { daily: "2026-10-01", aiPass: 1, awayCount: 1, awayMs: 2000 }), rec("x2", at(2), { partial: true, timeouts: 1 })] } }, 200);
+  await familyCase("/records/" + rid, { method: "GET", passcode: "nope" }, 401);
+  await familyCase("/records/" + rid, { body: {} }, 404, "not_found"); // POST는 없다
+  await familyCase("/records/short", { method: "GET" }, 404, "not_found");
+  await familyCase("/records/99999999-aaaa-4bbb-8ccc-dddddddddddd", { method: "GET" }, 404, "unknown_child");
+  await familyCase("/records/" + rid + "?since=nope", { method: "GET" }, 400, "since");
+  await familyCase("/records/" + rid, { method: "GET", env: { ...fenv, APP_PASSCODE: "" } }, 500, "APP_PASSCODE");
+  await familyCase("/records/" + rid, { method: "GET", origin: "https://evil.example" }, 403);
+  let rr = await familyCase("/records/" + rid, { method: "GET" }, 200);
+  assert.deepEqual(rr.records.map((r) => r.id), ["x3", "x2", "x1"], "newest first without since");
+  assert.equal(rr.more, false);
+  assert(typeof rr.serverTime === "string" && Number.isFinite(Date.parse(rr.serverTime)), "serverTime");
+  assert.deepEqual(
+    [rr.records[2].daily, rr.records[2].aiPass, rr.records[2].awayCount, rr.records[1].partial, rr.records[1].timeouts, rr.records[0].missed, rr.records[0].total, rr.records[0].correct],
+    ["2026-10-01", 1, 1, true, 1, [{ en: "authority", ko: "권위", unknown: true }, { en: "devote", ko: "바치다" }], 10, 7],
+    "compact records returned as stored: " + JSON.stringify(rr.records),
+  );
+  rr = await familyCase("/records/" + rid + "?limit=2", { method: "GET" }, 200);
+  assert.deepEqual([rr.records.map((r) => r.id), rr.more], [["x3", "x2"], true], "limit with more");
+  rr = await familyCase("/records/" + rid + "?since=" + encodeURIComponent(at(1)) + "&limit=2", { method: "GET" }, 200);
+  assert.deepEqual([rr.records.map((r) => r.id), rr.more], [["x1", "x2"], true], "ascending from since (inclusive)");
+  rr = await familyCase("/records/" + rid + "?since=" + encodeURIComponent(at(2)) + "&limit=2", { method: "GET" }, 200);
+  assert.deepEqual([rr.records.map((r) => r.id), rr.more], [["x2", "x3"], false], "next page from the last completedAt");
+  rr = await familyCase("/records/" + rid + "?since=" + encodeURIComponent("2026-10-01T09:00:00+09:00") + "&limit=9999", { method: "GET" }, 200); // 09:00 KST = 00:00Z → 전부, limit 상한 500
+  assert.deepEqual(rr.records.map((r) => r.id), ["x1", "x2", "x3"], "since normalized to ISO, limit capped");
+  rr = await familyCase("/records/" + rid + "?since=" + encodeURIComponent(at(4)), { method: "GET" }, 200);
+  assert.deepEqual([rr.records, rr.more], [[], false], "nothing after the newest record");
+  rr = await familyCase("/records/" + rid, { method: "GET", ...PARENT }, 200); // 보호자 코드로도 읽을 수 있다
+  assert.equal(rr.records.length, 3);
+  limiter.keys.length = 0;
+  limiter.allow = true;
+  await familyCase("/records/" + rid, { method: "GET", env: { ...fenv, RATE_LIMITER: limiter } }, 200);
+  assert(limiter.keys[0].startsWith("/records:"), "records has its own rate-limit bucket: " + limiter.keys[0]);
+  await familyCase("/family/" + rid, { method: "DELETE", ...PARENT }, 200);
+  await familyCase("/records/" + rid, { method: "GET" }, 404, "unknown_child");
+
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/tutor help/fallback retry/upstream error mapping/family store/daily words/child codes/set sync",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/tutor help/fallback retry/upstream error mapping/family store/daily words/child codes/set sync/record restore",
   );
 })().catch((e) => {
   console.error(e);

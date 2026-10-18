@@ -5,6 +5,7 @@
 // 시험 중 AI가 인정한 답을 허용 답안에 학습하면 시험 중에는 /sets 를 보내지 않고 시험이 끝난 직후 한 번 올린다.
 // 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보내고, 동기화된 세트가 있으면 그 단어가 앵커가 되어 보호자 계획 상자에 보인다.
 // 보호자가 서버에서 아이를 지우면(404 unknown_child) 기기는 안내·연결 해제 강조 뒤 요청을 멈추고, 연결 해제 → 새 코드로 다시 연결한다.
+// 기록 복원: 연결하면 서버에 있던 이 아이의 기록이 요약 기록으로 기록 탭에 들어오고(다시 보내지 않음, 틀린 단어 다시 풀기), ‘서버 기록 다시 가져오기’는 겹치지 않게 여러 페이지를 받으며, 기록 전체 삭제 뒤에는 자동 복원하지 않는다.
 // Worker는 라우트로 가짜 응답을 준다.
 const { chromium } = require("playwright");
 (async () => {
@@ -62,7 +63,7 @@ const { chromium } = require("playwright");
     const url = new URL(req.url());
     const body = req.postData() ? JSON.parse(req.postData()) : null;
     const passcode = req.headers()["x-app-passcode"];
-    requests.push({ method: req.method(), path: url.pathname, passcode, body });
+    requests.push({ method: req.method(), path: url.pathname, search: url.search, passcode, body });
     if (mode === "abort") return route.abort("connectionrefused");
     if (mode === "notfound") return reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
     const familyOk = [FAMILY_CODE, PARENT_CODE].includes(passcode);
@@ -79,6 +80,16 @@ const { chromium } = require("playwright");
       const c = children.get(sm[1]);
       if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
       return reply(route, 200, { childId: c.id, name: c.name, timeLimitSec: 0 });
+    }
+    const rm = /^\/records\/([A-Za-z0-9-]+)$/.exec(url.pathname);
+    if (rm && req.method() === "GET") {
+      if (!familyOk) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
+      const c = children.get(rm[1]);
+      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
+      const since = url.searchParams.get("since") || "";
+      const pageSize = Math.min(Number(url.searchParams.get("limit")) || 500, 2); // 페이지 넘김을 시험하려고 한 번에 2개만
+      const all = [...c.records.values()].filter((r) => r.completedAt >= since).sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+      return reply(route, 200, { records: all.slice(0, pageSize), more: all.length > pageSize, serverTime: now() });
     }
     if (url.pathname === "/sync" && req.method() === "POST") {
       if (!familyOk) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
@@ -193,6 +204,16 @@ const { chromium } = require("playwright");
   // 하늘에게는 서버에 세트가 하나 있다(예제와 같은 단어, 이름만 다름). 연결하면 예제 대신 이 세트를 받는다.
   const exampleWords = await page.evaluate(() => defaultWords);
   children.get(HANEUL).setStore.set("haneul-day04", { id: "haneul-day04", name: "하늘 DAY04", words: exampleWords, updatedAt: "2026-10-01T00:00:00.000Z" });
+  // 하늘의 다른 기기(또는 다시 설치하기 전 기기)가 보낸 기록 두 개가 서버에 있다(2주 넘게 전이라 보호자 화면의 오늘·7일·자주 틀린 단어에는 들어가지 않음). 연결하면 기록 탭에 요약 기록으로 들어온다.
+  const daysAgo = (d) => new Date(Date.now() - d * 86400000).toISOString();
+  const serverRecord = (id, completedAt, extra = {}) => ({
+    id, setName: "하늘 DAY04", mode: "en_ko", range: "121~130번", startedAt: completedAt, completedAt, total: 10, correct: 7, partial: false, activeMs: 65000, receivedAt: completedAt,
+    missed: [{ en: "authority", ko: "권위 · 권한 · 당국", unknown: true }, { en: "devote", ko: "바치다" }, { en: "indicate", ko: "나타내다" }],
+    ...extra,
+  });
+  const srvA = serverRecord("srv-a", daysAgo(20));
+  children.get(HANEUL).records.set("srv-a", srvA);
+  children.get(HANEUL).records.set("srv-b", serverRecord("srv-b", daysAgo(30), { setName: "옛 세트", mode: "read_meaning", range: "전체 5단어", total: 5, correct: 5, missed: [] }));
   assert(!page.url().includes("mode="), "mode removed from the address: " + page.url());
   assert(await page.isVisible("#family") && (await page.isVisible("#parentSetup")) && (await page.isHidden("#familyMain")), "setup card only");
   assert((await page.isHidden("#tabHome")) && (await page.isHidden("#tabLookup")) && (await page.isHidden("#tabHistory")) && (await page.isVisible("#tabFamily")), "parent tabs");
@@ -236,6 +257,61 @@ const { chromium } = require("playwright");
   assert((await page.textContent("#setsSyncText")).includes("세트 1개"), "sets line in the settings: " + (await page.textContent("#setsSyncText")));
   assert((await page.textContent("#setSelect option:checked")).startsWith("하늘 DAY04"), "home shows the synced set");
   assert(JSON.parse(await page.evaluate(() => localStorage.getItem("daily_vocab_family_v1"))).setsAcked["haneul-day04"] === "2026-10-01T00:00:00.000Z", "server summary remembered as acked");
+
+  // 기록 복원: 연결 직후(기록을 올리고 세트를 받은 뒤) 서버에 있던 이 아이의 기록이 요약 기록(restored)으로 들어온다. 다시 서버로 보내지는 않는다.
+  const restoreReqs = () => requests.filter((r) => r.path === "/records/" + HANEUL);
+  await waitFor(() => page.evaluate(() => historyRecords.length === 2 && historyRecords.every((r) => r.restored === true)), "two restored records on the device");
+  assert(restoreReqs().length === 1 && restoreReqs()[0].method === "GET" && restoreReqs()[0].passcode === FAMILY_CODE && decodeURIComponent(restoreReqs()[0].search) === "?since=1970-01-01T00:00:00.000Z&limit=500", "records fetched once with the family code: " + JSON.stringify(restoreReqs()));
+  const restored = await page.evaluate(() => historyRecords.map((r) => ({ id: r.id, setId: r.setId, total: r.total, correct: r.correct, results: r.results.length, wordId: r.results[0]?.word.id, aliases: r.results[0]?.word.aliases.length, unknown: r.results[0]?.unknown, mode: r.mode })));
+  assert(restored[0].id === "srv-a" && restored[0].setId === "haneul-day04" && restored[0].total === 10 && restored[0].correct === 7 && restored[0].results === 3 && restored[0].wordId === 121 && restored[0].aliases > 0 && restored[0].unknown === true, "restored record linked to the synced set with enriched words: " + JSON.stringify(restored[0]));
+  assert(restored[1].id === "srv-b" && restored[1].setId === "restored:옛 세트" && restored[1].results === 0 && restored[1].correct === 5 && restored[1].mode === "read_meaning", "perfect-score record without missed words: " + JSON.stringify(restored[1]));
+  assert(JSON.parse(await page.evaluate(() => localStorage.getItem("daily_vocab_family_v1"))).pending.length === 0 && syncs().length === 1, "restored records are neither queued nor sent back");
+  assert((await page.textContent("#restoreText")).includes("기록 2개 복원"), "restore status line: " + (await page.textContent("#restoreText")));
+  // 기록 탭: 세트 필터는 이름이 같은 세트에 연결된 기록만, 항목에 점수·‘서버에서 복원’·틀린 단어(세트의 번호·뜻)·다시 풀기
+  await page.click("#tabHistory");
+  assert((await page.evaluate(() => document.getElementById("historyFilter").value)) === "haneul-day04", "history filter on the synced set");
+  let historyText = await page.textContent("#historyList");
+  assert((await page.locator("#historyList .history-entry").count()) === 1 && historyText.includes("7 / 10 · 70점") && historyText.includes("서버에서 복원") && historyText.includes("틀린 단어 3개 보기") && historyText.includes("모름 1개 포함"), "restored entry rendered: " + historyText);
+  assert((await page.textContent("#historyStatus")).includes("기록 2개를 서버에서 가져왔어요"), "history status explains the restore: " + (await page.textContent("#historyStatus")));
+  await page.selectOption("#historyFilter", "all");
+  historyText = await page.textContent("#historyList");
+  assert((await page.locator("#historyList .history-entry").count()) === 2 && historyText.includes("5 / 5 · 100점") && (await page.textContent("#historySummary")).includes("시험 2회"), "all sets lists both restored records: " + historyText);
+  await page.selectOption("#historyFilter", "haneul-day04");
+  await page.click("#historyList details summary");
+  assert((await page.textContent("#historyList")).includes("121. authority — 권위"), "missed words shown with the set's numbers");
+  await page.click("#historyList .history-retry");
+  await waitFor(() => page.isVisible("#quiz"), "retry starts a quiz from the restored record");
+  assert((await page.evaluate(() => [queue.length, sessionMeta.setId, sessionMeta.range, mode].join("|"))) === "3|haneul-day04|오답 복습|en_ko", "retry queue built from the restored missed words: " + (await page.evaluate(() => [queue.length, sessionMeta.setId, sessionMeta.range, mode].join("|"))));
+  page.once("dialog", (d) => d.accept());
+  await page.click("#backSettings"); // 아무 문제도 풀지 않았으니 기록 없이 홈으로
+  await waitFor(() => page.isVisible("#home"), "back home without a record");
+  assert((await page.evaluate(() => historyRecords.length)) === 2, "abandoned retry leaves no record");
+  // ‘서버 기록 다시 가져오기’: 그사이 다른 기기가 보낸 기록을 여러 페이지로 받되 겹치지 않게 합친다. 기록 전체 삭제 뒤에는 앱을 다시 열어도 자동으로 되살리지 않고 버튼으로만 가져온다.
+  children.get(HANEUL).records.set("srv-c", serverRecord("srv-c", daysAgo(16), { total: 8, correct: 6, missed: [{ en: "function", ko: "기능" }, { en: "strike", ko: "치다" }] }));
+  await page.click("#tabSettings");
+  await openFamilySettings();
+  const fetchedBefore = restoreReqs().length;
+  await page.click("#restoreRecords");
+  await waitFor(() => page.evaluate(() => historyRecords.length === 3), "manual restore adds the new server record");
+  await waitFor(() => statusHas("restoreText", "기록 3개 복원"), "status line counts three restored records");
+  assert(restoreReqs().length === fetchedBefore + 2 && decodeURIComponent(restoreReqs()[fetchedBefore + 1].search).startsWith("?since=" + srvA.completedAt), "second page starts at the last completedAt of the first: " + JSON.stringify(restoreReqs().slice(fetchedBefore).map((r) => r.search)));
+  assert((await page.evaluate(() => new Set(historyRecords.map((r) => r.id)).size)) === 3 && (await page.evaluate(() => historyRecords[0].id)) === "srv-c", "no duplicates after paging, newest first");
+  assert((await page.textContent("#familyStatus")).includes("기록 1개를 가져왔어요"), "manual restore reports how many were new: " + (await page.textContent("#familyStatus")));
+  page.once("dialog", (d) => d.accept());
+  await page.click("#clearHistory");
+  await waitFor(() => page.evaluate(() => historyRecords.length === 0), "history cleared on the device");
+  assert(children.get(HANEUL).records.size === 3, "server copies stay after clearing the device");
+  await page.reload();
+  await waitFor(() => page.evaluate(() => typeof sets !== "undefined" && document.getElementById("appStatus").textContent.includes("준비")), "app ready after the reload");
+  await waitFor(() => requests.filter((r) => r.path === "/sets/" + HANEUL).length >= 2, "set sync ran on launch");
+  await new Promise((r) => setTimeout(r, 400));
+  assert((await page.evaluate(() => historyRecords.length)) === 0 && restoreReqs().length === fetchedBefore + 2, "cleared history is not restored automatically on launch");
+  await page.click("#tabSettings");
+  await openFamilySettings();
+  assert((await page.textContent("#restoreText")).includes("서버 기록 다시 가져오기"), "status line points to the button after clearing: " + (await page.textContent("#restoreText")));
+  await page.click("#restoreRecords");
+  await waitFor(() => page.evaluate(() => historyRecords.length === 3 && historyRecords.every((r) => r.restored)), "manual restore after clearing brings the records back");
+  assert(syncs().length === 1 && JSON.parse(await page.evaluate(() => localStorage.getItem("daily_vocab_family_v1"))).pending.length === 0, "still nothing sent back");
 
   // 시험 완료 → 압축 기록 전송(점수·틀린 단어만, 단어별 전체 결과 없음)
   await page.click("#tabHome");
@@ -406,7 +482,7 @@ const { chromium } = require("playwright");
   assert((await page.$$eval("#childrenList .day.done", (d) => d.length)) === 1, "today marked done");
   await page.click("#childrenList button");
   await waitFor(() => requests.some((r) => r.path === "/family/" + HANEUL && r.method === "GET"), "detail requested");
-  await waitFor(() => page.evaluate(() => document.querySelectorAll("#childRecords .history-entry").length === 4), "four records in detail");
+  await waitFor(() => page.evaluate(() => document.querySelectorAll("#childRecords .history-entry").length === 7), "seven records in detail (four from this device, three restored from the server)");
   assert((await page.textContent("#childCodeText")) === "483 921", "code shown in the detail");
   assert((await page.textContent("#childLinkText")) === url + "?child=" + HANEUL_CODE, "child link shown: " + (await page.textContent("#childLinkText")));
   assert((await page.textContent("#deviceList")).includes("연결된 기기: "), "device list shown");
@@ -414,7 +490,7 @@ const { chromium } = require("playwright");
   assert(missedTop.includes("authority") && missedTop.includes("3회") && missedTop.includes("권위"), "most-missed words: " + missedTop);
   assert((await page.$$eval("#missedTop .chip", (c) => c.length)) === 10, "top ten chips");
   const detail = await page.textContent("#childDetail");
-  assert(detail.includes("시험 4회") && detail.includes("중단") && detail.includes("0 / 10") && detail.includes("세트 1개"), "detail summary: " + detail);
+  assert(detail.includes("시험 7회") && detail.includes("중단") && detail.includes("0 / 10") && detail.includes("세트 1개"), "detail summary: " + detail);
   assert(detail.includes("⚠️ 문제 중 화면 이탈 1회"), "record shows the away flag: " + detail.slice(0, 200));
   assert((await page.textContent("#planAnchor")).includes("하늘 DAY04") && (await page.textContent("#planAnchor")).includes("40단어"), "level anchor shown from the child's synced set: " + (await page.textContent("#planAnchor")));
   await page.click("#childRecords .history-entry:nth-child(2) summary");
@@ -576,7 +652,7 @@ const { chromium } = require("playwright");
   assert(syncs().slice(-1)[0].body.child.id === HANEUL2 && syncs().slice(-1)[0].body.records.length >= 1 || syncs().some((r) => r.body.child.id === HANEUL2 && r.body.records.length >= 1), "history resent to the new child");
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + set sync (pull on join, parent send/edit/delete, device delete, empty state) + parent dashboard (add child, code/link, rename, regen, cards/detail/delete) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin");
+  console.log("PASS: child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, no auto-restore after clearing) + set sync (pull on join, parent send/edit/delete, device delete, empty state) + parent dashboard (add child, code/link, rename, regen, cards/detail/delete) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin");
   await browser.close();
 })().catch((e) => {
   console.error(e);

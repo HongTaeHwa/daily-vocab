@@ -234,9 +234,11 @@ function selectSet(id) {
   renderHome();
 }
 $("setSelect").addEventListener("change", () => selectSet($("setSelect").value));
+// 점수. 서버에서 복원한 요약 기록(restored)은 단어별 결과가 없어 total/correct 필드를 쓴다(results 에는 틀린 단어만 있다).
 function recordScore(record) {
-  const correct = record.results.filter((x) => x.pass).length;
-  return { correct, total: record.results.length, pct: Math.round((correct / record.results.length) * 100) };
+  const total = record.restored ? record.total : record.results.length;
+  const correct = record.restored ? record.correct : record.results.filter((x) => x.pass).length;
+  return { correct, total, pct: total ? Math.round((correct / total) * 100) : 0 };
 }
 function renderSetSummary() {
   const mine = historyRecords.filter((r) => r.setId === activeSetId);
@@ -853,9 +855,12 @@ function showResult(missed, partial) {
 }
 
 // ---- 기록 ----
+// 기록 형식. 보통 기록은 results 에 단어별 결과가 있고, 서버에서 복원한 요약 기록(restored: true, family.js)은 total/correct 로 점수를 두고 results 에는 틀린 단어만 둔다(비어 있을 수 있음).
 function validRecord(r) {
-  return r && typeof r.id === "string" && Number.isFinite(Date.parse(r.completedAt)) && modeLabels[r.mode] && typeof r.range === "string" && Array.isArray(r.results) && r.results.length > 0 && r.results.length <= 2000 &&
-    r.results.every((x) => x.word && typeof x.word.en === "string" && typeof x.word.ko === "string" && Array.isArray(x.word.aliases) && typeof x.pass === "boolean" && typeof x.unknown === "boolean");
+  if (!(r && typeof r.id === "string" && Number.isFinite(Date.parse(r.completedAt)) && modeLabels[r.mode] && typeof r.range === "string" && Array.isArray(r.results) && r.results.length <= 2000)) return false;
+  if (!r.results.every((x) => x.word && typeof x.word.en === "string" && typeof x.word.ko === "string" && Array.isArray(x.word.aliases) && typeof x.pass === "boolean" && typeof x.unknown === "boolean")) return false;
+  if (r.restored === true) return Number.isInteger(r.total) && r.total >= 1 && r.total <= 2000 && Number.isInteger(r.correct) && r.correct >= 0 && r.correct <= r.total;
+  return r.results.length > 0;
 }
 try {
   const saved = JSON.parse(localStorage.getItem(historyKey) || "[]");
@@ -917,7 +922,7 @@ function renderHistory() {
     head.append(score, remove);
     const meta = document.createElement("p");
     meta.className = "history-meta";
-    meta.textContent = new Date(record.completedAt).toLocaleString("ko-KR") + " · " + record.setName + " · " + modeLabels[record.mode] + " · " + record.range;
+    meta.textContent = new Date(record.completedAt).toLocaleString("ko-KR") + " · " + record.setName + " · " + modeLabels[record.mode] + " · " + record.range + (record.restored ? " · ☁️ 서버에서 복원" : "");
     const counts = document.createElement("p");
     counts.textContent = "정답 " + correct + " · 오답 " + (total - correct) + " (모름 " + unknown + "개 포함)" + (record.awayCount ? " · ⚠️ 화면 이탈 " + record.awayCount + "회" : "") + (record.timeouts ? " · ⏱ 시간 초과 " + record.timeouts + "개" : "") + (record.aiPass ? " · 🤖 AI 인정 " + record.aiPass + "개" : "");
     entry.append(head, meta, counts);
@@ -949,9 +954,9 @@ function setSettingsLocked(locked) {
 }
 function exportHistory() {
   if (!historyRecords.length) return;
-  const rows = [["완료 날짜", "세트", "시험 방식", "범위", "정답", "전체", "점수", "모름 개수", "오답 번호", "모름 번호", "중단"], ...historyRecords.map((r) => {
-    const correct = r.results.filter((x) => x.pass).length;
-    return [new Date(r.completedAt).toLocaleString("ko-KR"), r.setName, modeLabels[r.mode], r.range, correct, r.results.length, Math.round((correct / r.results.length) * 100), r.results.filter((x) => x.unknown).length, r.results.filter((x) => !x.pass).map((x) => x.id).join(" "), r.results.filter((x) => x.unknown).map((x) => x.id).join(" "), r.partial ? "중단" : ""];
+  const rows = [["완료 날짜", "세트", "시험 방식", "범위", "정답", "전체", "점수", "모름 개수", "오답 번호", "모름 번호", "중단", "비고"], ...historyRecords.map((r) => {
+    const s = recordScore(r);
+    return [new Date(r.completedAt).toLocaleString("ko-KR"), r.setName, modeLabels[r.mode], r.range, s.correct, s.total, s.pct, r.results.filter((x) => x.unknown).length, r.results.filter((x) => !x.pass).map((x) => x.id).join(" "), r.results.filter((x) => x.unknown).map((x) => x.id).join(" "), r.partial ? "중단" : "", r.restored ? "서버에서 복원" : ""];
   })];
   const csv = "﻿" + rows.map((row) => row.map((value) => '"' + String(value).replace(/"/g, '""') + '"').join(",")).join("\r\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -960,7 +965,11 @@ function exportHistory() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 $("exportHistory").addEventListener("click", exportHistory);
-$("clearHistory").addEventListener("click", () => { if (confirm("전체 시험 기록을 삭제할까요? 삭제 전에 CSV로 내려받을 수 있습니다.")) persistHistory([]); });
+$("clearHistory").addEventListener("click", () => {
+  const linked = typeof isLinked === "function" && isLinked(); // family.js: 가족 기록함에 연결된 기기
+  if (!confirm("전체 시험 기록을 삭제할까요? 삭제 전에 CSV로 내려받을 수 있습니다." + (linked ? " 보호자에게 보낸 서버 사본은 남고, 설정 → 가족 기록함의 ‘서버 기록 다시 가져오기’로 되살릴 수 있어요." : ""))) return;
+  if (persistHistory([]) && typeof noteHistoryCleared === "function") noteHistoryCleared(); // 일부러 지운 기록을 다음 실행 때 자동으로 되살리지 않는다
+});
 
 // ---- 버튼 연결 ----
 $("start").addEventListener("click", () => newSession());

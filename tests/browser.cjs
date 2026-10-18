@@ -133,6 +133,17 @@ const { chromium } = require("playwright");
     "migration backup",
   );
   assert((await page.evaluate(() => lastMissed[0])) === 121, "migrate missed");
+  // 서버에서 복원한 요약 기록(restored: 점수는 total/correct, results 는 틀린 단어만)도 저장·새로고침·백업 왕복을 지난다(같은 id는 한 번만 가져옴)
+  await page.evaluate(() =>
+    persistHistory([
+      { id: "restored-1", setId: "day04", setName: "기본 예제 DAY04", mode: "en_ko", range: "121~130번", startedAt: "2026-10-01T00:00:00.000Z", completedAt: "2026-10-01T00:05:00.000Z", activeMs: 1000, restored: true, restoredAt: "2026-10-02T00:00:00.000Z", total: 10, correct: 9, results: [{ id: 121, word: { id: 121, en: "authority", ko: "권위", ipa: "", hangul: "", aliases: [] }, pass: false, unknown: true }] },
+      ...historyRecords,
+    ]),
+  );
+  await page.reload();
+  assert((await page.evaluate(() => [historyRecords.length, historyRecords.filter((r) => r.restored).length, recordScore(historyRecords.find((r) => r.restored)).pct])).join() === "2,1,90", "restored summary record survives a reload with its own score");
+  await page.click("#tabHistory");
+  assert((await page.textContent("#historyList")).includes("9 / 10 · 90점") && (await page.textContent("#historyList")).includes("서버에서 복원"), "restored record rendered from total/correct");
   await page.click("#tabSettings");
   const downloadPromise = page.waitForEvent("download");
   await page.click("#exportSets");
@@ -141,6 +152,7 @@ const { chromium } = require("playwright");
   await page.setInputFiles("#importSets", path);
   await page.waitForTimeout(200);
   assert((await page.evaluate(() => sets.length)) === 2, "JSON import");
+  assert((await page.evaluate(() => [historyRecords.length, historyRecords.filter((r) => r.restored).length])).join() === "3,1", "import copies normal records and keeps a single copy of the restored record");
   await page.evaluate(() => {
     Storage.prototype.setItem = function () {
       throw Error("quota");
@@ -159,7 +171,7 @@ const { chromium } = require("playwright");
   );
   assert(errors.length === 0, "browser errors " + errors.join(","));
   console.log(
-    "PASS: 3 modes, 40-word default, editing, strict grading, set isolation, deleted history retry, migration backup, JSON round trip, quota failure",
+    "PASS: 3 modes, 40-word default, editing, strict grading, set isolation, deleted history retry, migration backup, restored record format, JSON round trip, quota failure",
   );
   await browser.close();
 })().catch((e) => {

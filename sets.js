@@ -476,7 +476,11 @@ $("importSets").onchange = async () => {
     const imported = data.sets.map((s) => ({ ...s, id: idMap.get(s.id), updatedAt: importedAt })); // 새 수정 시각: 연결된 아이의 다른 기기에도 올라가도록
     if (!persistSets([...sets, ...imported])) return;
     if (typeof queueSetsSync === "function") queueSetsSync(); // family.js
-    const records = (data.history || []).map((r) => ({ ...r, id: crypto.randomUUID(), setId: idMap.get(r.setId) || "import-deleted-" + r.setId }));
+    // 보통 기록은 복사본이라 새 id를 받는다. 서버에서 복원한 요약 기록(restored)은 id를 그대로 두고 이미 있으면 건너뛰어, 뒤에 다시 복원해도 같은 시험이 두 번 생기지 않게 한다.
+    const existing = new Set(historyRecords.map((r) => r.id));
+    const records = (data.history || [])
+      .filter((r) => !(r.restored === true && existing.has(r.id)))
+      .map((r) => ({ ...r, id: r.restored === true ? r.id : crypto.randomUUID(), setId: idMap.get(r.setId) || "import-deleted-" + r.setId }));
     const merged = [...records, ...historyRecords].sort((a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt));
     if (!persistHistory(merged)) status("세트는 가져왔지만 이력 저장에 실패했습니다. 원본 JSON을 보관하세요.");
     let missedFailed = 0;

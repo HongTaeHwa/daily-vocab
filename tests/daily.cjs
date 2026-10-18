@@ -77,6 +77,15 @@ const { chromium } = require("playwright");
       if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
       return reply(route, 200, { childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec });
     }
+    const rm = /^\/records\/([A-Za-z0-9-]+)$/.exec(url.pathname);
+    if (rm && req.method() === "GET") {
+      if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
+      const c = children.get(rm[1]);
+      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
+      const since = url.searchParams.get("since") || "";
+      const all = [...c.records.values()].filter((r) => r.completedAt >= since).sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+      return reply(route, 200, { records: all.slice(0, 500), more: all.length > 500, serverTime: new Date().toISOString() });
+    }
     if (url.pathname === "/sync" && req.method() === "POST") {
       if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
       const c = children.get(body.child.id) || { id: body.child.id, sets: [], records: new Map(), lastTestAt: null, devices: {} };
