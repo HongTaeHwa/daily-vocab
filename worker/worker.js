@@ -683,6 +683,10 @@ function parseSync(body) {
       activeMs: Number.isInteger(r.activeMs) && r.activeMs >= 0 ? Math.min(r.activeMs, 7 * 86400000) : null,
       missed,
       ...(typeof r.daily === "string" && DATE_PATTERN.test(r.daily) ? { daily: r.daily } : {}), // 오늘의 단어로 본 시험
+      // 문제 중 화면 이탈(앱이 가려짐·다른 앱) 횟수·시간: 보호자 폰에 ⚠️로 표시
+      ...(Number.isInteger(r.awayCount) && r.awayCount > 0
+        ? { awayCount: Math.min(r.awayCount, 10000), awayMs: Number.isInteger(r.awayMs) && r.awayMs >= 0 ? Math.min(r.awayMs, 86400000) : 0 }
+        : {}),
     });
   }
   let sets;

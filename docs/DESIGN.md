@@ -227,3 +227,12 @@
 - **iOS 안내**: 홈 화면에 설치한 앱을 연 뒤 접속 코드 → 아이 코드 입력. Safari에서 링크로 연결한 내용은 설치한 앱에 넘어가지 않는다. 갤럭시(Chrome)는 링크로 연결 후 설치해도 이어진다.
 - 옛 흐름(기기에서 이름 입력 → childId 자동 생성)은 없앴다. `/sync`는 모르는 childId도 받아 만들지만(옛 앱 호환) 새 앱은 늘 연결된 id로 보낸다.
 - 테스트: `tests/worker.cjs`(아이 만들기 권한·검증, `/join` 형식·모르는 코드·기기 등록·보호자 코드 허용, 두 기기 병합·서버 이름 우선, 이름·코드 재발급·삭제), `tests/family.cjs`(링크 → 접속 코드 대기 → 자동 연결, 연결 해제·재연결, 아이 추가·코드·링크·이름·코드 재발급), `tests/daily.cjs`(코드로 연결한 아이의 오늘의 단어). 버전 `20261018-4`, 캐시 v13.
+
+## 13. 부정행위 대응 — 화면 번역·AI 검색 (2026-10-18)
+
+배경: 갤럭시 태블릿에서 내비게이션 바를 길게 누르면 서클 투 서치가 화면의 영어 단어를 바로 번역한다(아이폰은 Apple Intelligence·Siri·선택 → 번역). 사용자는 “이 앱에서만 서클 투 서치를 막기 + 화면 이탈 기록”을 원했다. 듣기 모드·제한 시간 제안은 보류.
+
+- **웹앱의 한계**: 서클 투 서치·Apple Intelligence는 OS가 화면을 캡처해 읽으므로 웹 페이지는 막을 수도, 알아챌 수도 없다. 웹앱에서 가능한 것은 ① 글자 선택·복사·길게 누르기 메뉴 차단(`.word-box` `user-select:none`, `-webkit-touch-callout:none`, contextmenu/copy/cut/dragstart 차단) ② 화면 이탈 기록뿐이다.
+- **화면 이탈 기록(구현)**: `visibilitychange`(hidden)·`blur`로 시작, `visible`·`focus`로 끝. 1초 미만은 깜빡임으로 보고 세지 않으며, 마이크 버튼 직후 2초 안에 시작된 가림(권한 요청 창)과 채점이 끝난 문제의 이탈은 제외한다. `question.away/awayMs`(문제별), `sessionMeta.awayCount/awayMs`(시험별) → 기록(`results[i].away`, `record.awayCount`) → `compactRecord` → Worker(`awayCount` ≤ 10000, `awayMs` ≤ 1일) → 보호자 기록 ‘⚠️ 문제 중 화면 이탈 N회 · 총 M초’, 아이 카드 ‘⚠️ 오늘 화면 이탈 N회’, 아이 기기 기록 탭에도 표시. 서클 투 서치 호출이 `visibilitychange`를 일으키는지는 실기기 확인 필요(앱 전환은 확실).
+- **갤럭시 태블릿용 네이티브 래퍼 앱(다음 작업, `android/`)**: WebView로 `https://hongtaehwa.github.io/daily-vocab/`를 열고 액티비티 창에 `FLAG_SECURE`를 걸어 이 앱 화면에서만 스크린샷·화면 녹화·서클 투 서치를 막는다(은행 앱 방식, 다른 앱에는 영향 없음). WebView에는 Web Speech API(음성 인식)가 없으므로 `android.speech.SpeechRecognizer`를 `@JavascriptInterface`(`AndroidSpeech.start/stop`, 결과는 `window.onAndroidSpeech`)로 연결하고, TTS도 `TextToSpeech`로 브리지한다. 웹앱은 `window.AndroidSpeech`가 있으면 그것을 쓰도록 `startRecognition`/`speak`에 어댑터를 둔다. 사진 선택(`<input type=file>`)은 `onShowFileChooser`로, 마이크는 RECORD_AUDIO 런타임 권한으로 처리. 뒤로 가기는 WebView 히스토리(앱의 pushState)로. UA에 `DailyVocabApp/버전`을 붙여 기기 종류를 ‘Android 태블릿(앱)’으로 표시. 빌드는 GitHub Actions(JDK 17 + Android SDK, `assembleRelease`)로 APK를 만들어 Release에 첨부하고, 서명 키는 보호자가 한 번 만든 keystore를 GitHub Secrets에 넣어 쓴다(저장소에 키 없음). 태블릿은 ‘알 수 없는 앱 설치 허용’ 후 설치.
+- **아이폰**: iOS는 네이티브 앱에도 스크린샷·Siri 화면 읽기 차단 수단을 주지 않는다. 스크린 타임의 ‘Intelligence 및 Siri’ 제한과 사용 안내 모드 안내로 대응하고, 화면 이탈 기록으로 보완한다.
