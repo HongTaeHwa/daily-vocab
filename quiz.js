@@ -122,6 +122,8 @@ const VIEWS = ["home", "quiz", "finish", "editor", "history", "settings", "famil
 let currentView = "home";
 function showView(name, options = {}) {
   if (!VIEWS.includes(name)) name = "home";
+  // 보호자 모드(family.js): 아이용 화면(홈·시험·결과·편집·기록) 대신 아이들 화면을 보여 준다.
+  if (typeof isParentMode === "function" && isParentMode() && !sessionRunning && ["home", "quiz", "finish", "editor", "history"].includes(name)) name = "family";
   if (sessionRunning && name !== "quiz") {
     pauseQuiz();
     return;

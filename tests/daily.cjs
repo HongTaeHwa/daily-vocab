@@ -243,6 +243,11 @@ const { chromium } = require("playwright");
   assert((await page.textContent("#planStatus")).includes("제한 시간 20초"), "status mentions the time limit");
 
   // 문제당 제한 시간: 아이 기기는 앱을 열 때 설정을 받아 두고, 시간이 지나면 그 문제를 모름 처리한다(앱 밖에 있어도 시간은 흐른다)
+  // (이 테스트 페이지는 보호자 코드도 저장돼 보호자 모드이므로, 아이용 화면을 쓰려고 ‘아이 기기처럼 보기’를 켠다)
+  await page.click("#tabSettings");
+  await openFamilySettings();
+  await page.check("#parentModeOff");
+  await waitFor(() => page.isVisible("#home"), "child UI back for the quiz");
   children.get(childId).plan.timeLimitSec = 10;
   await page.reload();
   await waitFor(() => paths("/settings/" + childId, "GET").length >= 1, "settings fetched on launch");
@@ -270,10 +275,14 @@ const { chromium } = require("playwright");
   assert((await page.textContent("#historyList")) !== null, "history exists");
   await page.click("#tabHistory");
   assert((await page.textContent("#historyList")).includes("⏱ 시간 초과 1개"), "child history shows the timeout");
-  await page.click("#tabFamily");
+  await page.click("#tabSettings");
+  await openFamilySettings();
+  await page.uncheck("#parentModeOff");
+  await waitFor(() => page.isVisible("#family"), "parent mode back");
   await waitFor(() => statusHas("familyLoadStatus", "방금 확인했어요"), "family reloaded");
   await page.click("#childrenList button");
   await waitFor(() => page.evaluate(() => document.getElementById("childRecords").textContent.includes("⏱ 시간 초과 1개")), "parent record shows the timeout");
+  assert((await page.textContent("#familyOverview")).includes("⏱ 시간 초과 1개"), "overview warns about the timeout");
   assert((await page.inputValue("#planTimeLimit")) === "10", "plan form shows the current limit");
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));

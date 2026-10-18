@@ -7,6 +7,7 @@
 //        daily_vocab_daily_v1  = {childId, date, words, level, note, fetchedAt, result?, disabled?, lastCheckedAt, lastError?}
 // 보호자 코드·아이 코드·아이 이름은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다.
 const FAMILY_KEY = "daily_vocab_family_v1";
+const MODE_KEY = "daily_vocab_mode_v1"; // "parent": 보호자 전용 아이콘(parent.html → ?mode=parent)으로 설치된 기기
 const FAMILY_CACHE_KEY = "daily_vocab_family_cache_v1";
 const DAILY_KEY = "daily_vocab_daily_v1";
 const FAMILY_BATCH = 50; // 한 번에 보내는 기록 수 (Worker 상한 100)
@@ -42,6 +43,7 @@ function readFamily() {
     lastError: typeof f.lastError === "string" ? f.lastError : "",
     pending: Array.isArray(f.pending) ? f.pending.filter((x) => typeof x === "string").slice(0, 5000) : [],
     parentCode: typeof f.parentCode === "string" ? f.parentCode : "",
+    parentModeOff: f.parentModeOff === true, // 보호자 코드가 있어도 아이용 화면을 쓰고 싶을 때(설정의 ‘아이 기기처럼 보기’)
     // 보호자가 정한 아이 설정(서버 plan에서 받아 둠). timeLimitSec 0 = 제한 없음
     settings: {
       timeLimitSec: Number.isInteger(f.settings?.timeLimitSec) && f.settings.timeLimitSec >= 0 ? f.settings.timeLimitSec : 0,
@@ -50,6 +52,38 @@ function readFamily() {
   };
 }
 let family = readFamily();
+// ---- 보호자 모드: 보호자 코드가 있거나 보호자 아이콘으로 설치된 기기는 아이들 화면이 첫 화면이고 홈·시험·기록 탭이 숨는다 ----
+let appMode = "";
+try {
+  appMode = localStorage.getItem(MODE_KEY) === "parent" ? "parent" : "";
+} catch {}
+// ?mode=parent(보호자 아이콘 설치)·?mode=child 를 읽어 기억하고 주소에서 지운다.
+function modeFromUrl() {
+  try {
+    const u = new URL(location.href);
+    const m = u.searchParams.get("mode");
+    if (!m) return "";
+    u.searchParams.delete("mode");
+    history.replaceState(history.state, "", u.pathname + u.search + u.hash);
+    return m;
+  } catch {
+    return "";
+  }
+}
+function isParentMode() {
+  return (appMode === "parent" || Boolean(family.parentCode)) && !family.parentModeOff;
+}
+// 모드에 따라 탭·문구·아이용 요소를 토글한다. 화면 이동은 하지 않는다(모드가 바뀌는 곳에서 showView).
+function applyParentMode() {
+  const on = isParentMode();
+  document.body.classList.toggle("parent-mode", on);
+  $("tabHome").classList.toggle("hidden", on);
+  $("tabHistory").classList.toggle("hidden", on);
+  $("tabFamily").classList.toggle("hidden", !(on || family.parentCode));
+  $("brandTagline").textContent = on ? "보호자 · 아이들 관리" : "사진으로 만드는 나만의 단어장";
+  $("parentModeRow").classList.toggle("hidden", !(appMode === "parent" || family.parentCode));
+  $("parentModeOff").checked = Boolean(family.parentModeOff);
+}
 // quiz.js 가 문제마다 부른다: 보호자가 정한 문제당 제한 시간(초). 연결되지 않은 기기는 0.
 function childTimeLimitSec() {
   return isLinked() ? family.settings.timeLimitSec : 0;
@@ -509,7 +543,7 @@ function renderFamilySettings(progress) {
   setFeedback($("familyStatus"), type, text);
   $("parentState").textContent = family.parentCode ? "보호자 코드 저장됨" : "";
   $("clearParent").disabled = !family.parentCode;
-  $("tabFamily").classList.toggle("hidden", !family.parentCode);
+  applyParentMode();
 }
 $("saveFamily").onclick = () => {
   if (!isLinked()) return;
@@ -535,45 +569,58 @@ $("saveFamily").onclick = () => {
   }
 };
 $("syncNow").onclick = () => flushFamilySync({ force: true });
-$("saveParent").onclick = async () => {
-  const code = $("parentCode").value.trim();
+// 보호자 코드 저장(설정의 보호자 폰 칸과 보호자 모드 첫 화면이 함께 쓴다). 저장되면 보호자 모드로 바뀌고 아이들 화면으로 간다.
+async function saveParentCode(input, button, status) {
+  const code = input.value.trim();
   if (code.length < 4) {
-    setFeedback($("parentStatus"), "bad", "보호자 코드를 4자 이상 입력하세요.");
+    setFeedback(status, "bad", "보호자 코드를 4자 이상 입력하세요.");
     return;
   }
   family.parentCode = code;
+  family.parentModeOff = false;
   if (!writeFamily()) {
-    setFeedback($("parentStatus"), "bad", "저장 실패: 브라우저 저장 공간을 확인하세요.");
+    setFeedback(status, "bad", "저장 실패: 브라우저 저장 공간을 확인하세요.");
     return;
   }
-  $("parentCode").value = "";
+  input.value = "";
   renderFamilySettings();
-  setFeedback($("parentStatus"), "info", "저장했어요. 아이들 기록을 확인하는 중…");
-  $("saveParent").disabled = true;
+  setFeedback(status, "info", "저장했어요. 아이들 기록을 확인하는 중…");
+  button.disabled = true;
   try {
     const data = await familyRequest("/family", { method: "GET", passcode: code });
     cacheFamily(data);
-    setFeedback(
-      $("parentStatus"),
-      "good",
-      `연결 성공 · 등록된 아이 ${familyData.children.length}명. 아래 ‘아이들’ 탭에서 아이를 추가하고 기록을 볼 수 있어요.`,
-    );
+    setFeedback(status, "good", `연결 성공 · 등록된 아이 ${familyData.children.length}명. 보호자 모드로 바뀌었어요.`);
+    showView("family");
   } catch (e) {
-    setFeedback($("parentStatus"), "bad", "연결 실패: " + e.message);
+    setFeedback(status, "bad", "연결 실패: " + e.message);
+    if (currentView === "family") renderFamily();
   } finally {
-    $("saveParent").disabled = false;
+    button.disabled = false;
   }
+}
+$("saveParent").onclick = () => saveParentCode($("parentCode"), $("saveParent"), $("parentStatus"));
+$("saveParentStart").onclick = () => saveParentCode($("parentCodeStart"), $("saveParentStart"), $("parentSetupStatus"));
+$("parentCodeStart").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("saveParentStart").click();
+});
+$("parentModeOff").onchange = () => {
+  family.parentModeOff = $("parentModeOff").checked;
+  writeFamily();
+  applyParentMode();
+  showView(family.parentModeOff ? "home" : "family");
 };
 $("clearParent").onclick = () => {
   family.parentCode = "";
+  family.parentModeOff = false;
   writeFamily();
   familyData = null;
   try {
     localStorage.removeItem(FAMILY_CACHE_KEY);
   } catch {}
   renderFamilySettings();
-  setFeedback($("parentStatus"), "info", "보호자 코드를 삭제했어요. ‘아이들’ 탭이 사라져요.");
-  if (currentView === "family") showView("settings");
+  setFeedback($("parentStatus"), "info", appMode === "parent" ? "보호자 코드를 삭제했어요. 아이들 화면에서 다시 입력할 수 있어요." : "보호자 코드를 삭제했어요. ‘아이들’ 탭이 사라져요.");
+  if (currentView === "family") showView(isParentMode() ? "family" : "settings");
+  else if (isParentMode()) renderFamily();
 };
 
 // ---- 보호자 폰: 아이들 화면 ----
@@ -614,13 +661,104 @@ async function refreshFamily() {
     $("refreshFamily").disabled = false;
   }
 }
-// showView("family") 가 부른다: 캐시를 먼저 그리고 새로 불러온다.
+// showView("family") 가 부른다: 보호자 코드가 없으면 코드 입력 화면만, 있으면 캐시를 먼저 그리고 새로 불러온다.
 function renderFamily() {
-  loadFamilyCache();
+  const hasCode = Boolean(family.parentCode);
+  $("parentSetup").classList.toggle("hidden", hasCode);
+  $("familyMain").classList.toggle("hidden", !hasCode);
+  $("childrenCard").classList.toggle("hidden", !hasCode);
   $("childDetail").classList.add("hidden");
   familyDetail = null;
+  if (!hasCode) {
+    setFeedback($("parentSetupStatus"), "info", "");
+    return;
+  }
+  loadFamilyCache();
   renderChildren();
   refreshFamily();
+}
+// 오늘 한눈에: 아이별 한 줄(오늘 시험·오늘의 단어·이번 주·경고). 누르면 상세.
+function renderOverview() {
+  const box = $("familyOverview");
+  box.textContent = "";
+  if (!familyData) {
+    box.textContent = "아직 불러온 기록이 없어요.";
+    return;
+  }
+  if (!familyData.children.length) {
+    box.textContent = "아직 등록된 아이가 없어요. 아래 ‘아이 추가’에서 아이를 만들어 주세요.";
+    return;
+  }
+  for (const c of familyData.children) {
+    const info = describeChild(c);
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "overview-row";
+    row.addEventListener("click", () => openChild(c));
+    const name = document.createElement("span");
+    name.className = "ov-name";
+    name.textContent = "🧒 " + c.name;
+    const main = document.createElement("span");
+    main.className = "ov-main";
+    const todayAvg = info.todays.length ? Math.round(info.todays.reduce((s, r) => s + pctOf(r), 0) / info.todays.length) : null;
+    const dailyText = planOf(c).enabled
+      ? c.today?.completed
+        ? ` · 오늘의 단어 ✅ ${c.today.completed.correct}/${c.today.completed.total}`
+        : c.today?.exists
+          ? " · 오늘의 단어 📬 아직"
+          : " · 오늘의 단어 –"
+      : "";
+    main.textContent = (info.todays.length ? `오늘 시험 ✅ ${info.todays.length}회 · ${todayAvg}점` : "오늘 시험 ⬜ 아직") + dailyText;
+    const sub = document.createElement("span");
+    sub.className = "ov-sub";
+    sub.textContent = info.week.length ? `이번 주 ${info.week.length}회 · 평균 ${info.weekAvg}점 · 마지막 ${info.latest ? relativeTime(info.latest.completedAt) : "-"}` : "이번 주 시험 없음";
+    const warn = document.createElement("span");
+    warn.className = "ov-warn";
+    const awayToday = info.todays.reduce((s, r) => s + (r.awayCount || 0), 0);
+    const timeoutsToday = info.todays.reduce((s, r) => s + (r.timeouts || 0), 0);
+    const warnings = [awayToday ? `⚠️ 화면 이탈 ${awayToday}회` : "", timeoutsToday ? `⏱ 시간 초과 ${timeoutsToday}개` : ""].filter(Boolean);
+    warn.textContent = warnings.join(" · ");
+    warn.classList.toggle("hidden", !warnings.length);
+    row.append(name, main, sub, warn);
+    box.append(row);
+  }
+}
+// 자주 틀린 단어: 최근 2주 기록의 틀린 단어를 세어 상위 10개.
+function missedTop(records, days = 14) {
+  const since = Date.now() - days * 86400000;
+  const counts = new Map();
+  for (const r of records) {
+    if (!(Date.parse(r.completedAt) >= since)) continue;
+    for (const m of Array.isArray(r.missed) ? r.missed : []) {
+      const key = String(m.en || "").toLowerCase();
+      if (!key) continue;
+      const entry = counts.get(key) || { en: m.en, ko: m.ko, n: 0 };
+      entry.n++;
+      counts.set(key, entry);
+    }
+  }
+  return [...counts.values()].sort((a, b) => b.n - a.n || a.en.localeCompare(b.en)).slice(0, 10);
+}
+function renderMissedTop(records) {
+  const box = $("missedTop");
+  box.textContent = "";
+  const top = missedTop(records);
+  if (!top.length) {
+    box.textContent = "최근 2주 동안 틀린 단어가 없어요.";
+    return;
+  }
+  for (const w of top) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    const en = document.createElement("span");
+    en.textContent = w.en;
+    const n = document.createElement("b");
+    n.textContent = `${w.n}회`;
+    const ko = document.createElement("small");
+    ko.textContent = w.ko || "";
+    chip.append(en, n, ko);
+    box.append(chip);
+  }
 }
 // 오늘·최근 7일은 이 폰의 현지 날짜로 센다(서버는 한국 시각으로 저장).
 const dayKey = (value) => {
@@ -685,6 +823,7 @@ function describeChild(c) {
   };
 }
 function renderChildren() {
+  renderOverview();
   const list = $("childrenList");
   list.textContent = "";
   if (!familyData) {
@@ -868,6 +1007,7 @@ function renderChildRecords(note) {
   const setsText = (Array.isArray(child.sets) ? child.sets : []).map((s) => `${s.name} ${s.count}단어`).join(", ");
   $("childDetailSummary").textContent =
     `시험 ${sorted.length}회` + (sorted.length ? ` · 평균 ${avg}점` : "") + (setsText ? ` · 세트: ${setsText}` : "") + (note ? " · " + note : "");
+  renderMissedTop(sorted);
   const list = $("childRecords");
   list.textContent = "";
   if (!sorted.length) {
@@ -1059,10 +1199,20 @@ $("deleteChild").onclick = async () => {
 
 // sets.js 가 보호자 설정을 준비한 뒤 부른다.
 function initFamily() {
+  const urlMode = modeFromUrl();
+  if (urlMode === "parent" || urlMode === "child") {
+    appMode = urlMode === "parent" ? "parent" : "";
+    if (urlMode === "child") family.parentModeOff = false;
+    try {
+      localStorage.setItem(MODE_KEY, appMode);
+    } catch {}
+    writeFamily();
+  }
   $("familySend").checked = family.sendEnabled;
   fillPlanSelects();
   renderFamilySettings();
   renderDailyCard();
+  if (isParentMode()) showView("family"); // 보호자 모드는 아이들 화면으로 시작
   const linkCode = linkCodeFromUrl();
   if (linkCode) handleLinkCode(linkCode);
   else {
