@@ -232,6 +232,49 @@ const { pathToFileURL } = require("url");
   res = await worker.fetch(req("/define", { body: { words: ["apple"] } }), { ...env, RATE_LIMITER: limiter });
   assert(limiter.keys[0].startsWith("/define:"), "define has its own rate-limit bucket");
 
+  // grade (2차 채점): 검증, 라우팅, 기본 haiku 모델(fallbacks 없음), 프롬프트, 판정 전달, GRADE_MODEL
+  res = await worker.fetch(req("/grade", { body: {} }), env);
+  assert.equal(res.status, 400, "grade needs en/ko/answer");
+  res = await worker.fetch(req("/grade", { body: { en: "weight", ko: "무게", answer: "  " } }), env);
+  assert.equal(res.status, 400, "blank answer rejected");
+  res = await worker.fetch(req("/grade", { raw: "nope" }), env);
+  assert.equal(res.status, 400);
+  res = await worker.fetch(new Request("https://ai.example.workers.dev/grade", { method: "GET" }), env);
+  assert.equal(res.status, 404, "grade is POST only");
+  res = await worker.fetch(req("/grade", { passcode: "nope", body: { en: "weight", ko: "무게", answer: "몸무게" } }), env);
+  assert.equal(res.status, 401);
+  calls.length = 0;
+  upstream = (body) => ({
+    status: 200,
+    json: { id: "msg_g", model: body.model, stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ accept: true, reason: "무게와 같은 뜻" }) }], usage: { input_tokens: 5, output_tokens: 3 } },
+  });
+  res = await worker.fetch(req("/grade", { body: { en: " weight ", ko: "무게", aliases: ["무게", "무게", " 중량 ", ""], answer: "몸무게" } }), env);
+  assert.equal(res.status, 200);
+  let graded = await res.json();
+  assert.deepEqual([graded.accept, graded.reason, graded.model, graded.usage.input], [true, "무게와 같은 뜻", "claude-haiku-5-5", 5], "grade result: " + JSON.stringify(graded));
+  assert.equal(calls.length, 1, "one upstream call per grade");
+  const gradeSent = calls[0].body;
+  assert.equal(gradeSent.model, "claude-haiku-5-5", "grade uses the cheap model by default");
+  assert.equal(gradeSent.fallbacks, undefined, "haiku: no fallbacks");
+  assert.equal(calls[0].headers["anthropic-beta"], undefined, "haiku: no fallback beta header");
+  assert.equal(gradeSent.thinking, undefined);
+  assert(gradeSent.system.includes("vocabulary quiz"), "grade prompt");
+  assert.equal(gradeSent.messages[0].content, "영어 단어: weight\n교재의 뜻: 무게\n이미 정답으로 인정하는 답: 무게, 중량\n학생의 답: 몸무게", "grade user message: " + gradeSent.messages[0].content);
+  assert.deepEqual(gradeSent.output_config.format.schema.required, ["accept", "reason"]);
+  await worker.fetch(req("/grade", { body: { en: "weight", ko: "무게", answer: "몸무게" } }), { ...env, GRADE_MODEL: "claude-sonnet-5-5" });
+  assert.equal(calls[1].body.model, "claude-sonnet-5-5", "GRADE_MODEL overrides the default");
+  assert.equal(calls[1].body.fallbacks, "default", "sonnet keeps fallbacks");
+  upstream = (body) => ({
+    status: 200,
+    json: { id: "msg_g", model: body.model, stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ accept: "yes", reason: "다른 뜻이에요" }) }], usage: {} },
+  });
+  graded = await (await worker.fetch(req("/grade", { body: { en: "weight", ko: "무게", answer: "기다리다" } }), env)).json();
+  assert.deepEqual([graded.accept, graded.reason], [false, "다른 뜻이에요"], "non-boolean accept counts as reject");
+  upstream = (body) => ({ status: 200, json: { id: "msg_g", model: body.model, stop_reason: "refusal", content: [], usage: {} } });
+  res = await worker.fetch(req("/grade", { body: { en: "weight", ko: "무게", answer: "기다리다" } }), env);
+  assert.equal(res.status, 422, "refusal → 422");
+  upstream = okResponse;
+
   // fallbacks unsupported (400) → retried without
   calls.length = 0;
   upstream = (body) =>
@@ -693,6 +736,9 @@ const { pathToFileURL } = require("url");
   assert.deepEqual(data.records.map((r) => r.id), ["t1", "p1"], "records from both devices merged");
   assert.deepEqual([data.records[1].awayCount, data.records[1].awayMs, data.records[0].awayCount], [2, 5000, undefined], "away fields kept only when present");
   assert(data.child.devices[phone.id].lastSeenAt >= data.child.devices[phone.id].joinedAt, "lastSeenAt updated on sync");
+  await familyCase("/sync", { body: { child: { id: made.id, name: "하늘" }, records: [rec("a1", hoursAgo(1), { aiPass: 2 }), rec("a2", hoursAgo(1), { aiPass: 0 })] } }, 200);
+  data = await familyCase("/family/" + made.id, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([data.records.find((r) => r.id === "a1").aiPass, data.records.find((r) => r.id === "a2").aiPass], [2, undefined], "aiPass kept only when present");
   // 이름 바꾸기·코드 새로 만들기(옛 코드는 무효)
   await familyCase("/family/" + made.id + "/name", { body: { name: "하늘이" } }, 401, "보호자 코드");
   await familyCase("/family/" + made.id + "/name", { ...PARENT, body: { name: "" } }, 400, "이름");
@@ -796,7 +842,7 @@ const { pathToFileURL } = require("url");
   assert.equal([...(await familyObject.storage.list({ prefix: "set:" + sid + ":" })).keys()].length, 0, "set keys removed with the child");
 
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/fallback retry/upstream error mapping/family store/daily words/child codes/set sync",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/fallback retry/upstream error mapping/family store/daily words/child codes/set sync",
   );
 })().catch((e) => {
   console.error(e);

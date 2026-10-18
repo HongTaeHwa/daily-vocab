@@ -693,6 +693,26 @@ function appendDraftRows(rows) {
   else updateWordCount(existing.length + lines.length);
   return lines.length;
 }
+// ---- 2차 채점(quiz.js의 grade가 부른다): 책의 뜻과 글자가 다른 답을 AI가 ‘같은 뜻인지’ 판정 ----
+// AI 서버가 설정된 기기에서, 기기 채점이 오답인 답에 대해서만 부른다. 실패·시간 초과(8초)·옛 Worker(404)면 null → 오답 그대로.
+const GRADE_TIMEOUT_MS = 8000;
+async function judgeMeaning(word, answer) {
+  const config = aiConfig();
+  if (!config) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GRADE_TIMEOUT_MS);
+  try {
+    const result = await aiRequest(config, "/grade", { en: word.en, ko: word.ko, aliases: word.aliases.slice(0, 30), answer: String(answer).slice(0, 100) }, controller.signal);
+    if (typeof result?.accept !== "boolean") return null;
+    return { accept: result.accept, reason: typeof result.reason === "string" ? result.reason.slice(0, 60) : "" };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+judgeMeaning.available = () => Boolean(aiConfig()) && navigator.onLine !== false;
+
 // ---- AI 작업 공통(사진 인식·빈 뜻 채우기): 한 번에 하나만, 취소·시간 초과·버튼 잠금 ----
 // 사전에 물어볼 수 있는 영어: 영문자로 시작하는 단어·짧은 구(공백, 마침표, 하이픈, 아포스트로피, 40자 이하). Worker와 같은 규칙.
 const WORD_PATTERN = /^[A-Za-z][A-Za-z .'’-]{0,39}$/;

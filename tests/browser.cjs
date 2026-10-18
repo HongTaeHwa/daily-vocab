@@ -51,6 +51,20 @@ const { chromium } = require("playwright");
     (await page.evaluate(() => question.answerPass)) === false,
     "strict meaning",
   );
+  // 기기 채점 규칙: 자리표시 조사(…을/…에게)·괄호 설명은 무시, 뜻으로 끝나는 짧은 합성어(몸무게)는 인정, 그 밖에는 여전히 엄격
+  assert(
+    await page.evaluate(
+      () =>
+        correctKo("제출하다", { ko: "…을 제출하다", aliases: [] }) &&
+        correctKo("주다", { ko: "…에게 …을 주다", aliases: [] }) &&
+        correctKo("수정하다", { ko: "(법 등을) 수정하다 · 개정하다", aliases: [] }) &&
+        correctKo("몸무게", { ko: "무게", aliases: ["무게"] }) &&
+        !correctKo("무", { ko: "무게", aliases: [] }) &&
+        !correctKo("가방무게추", { ko: "무게", aliases: [] }) &&
+        !correctKo("아주무거운무게", { ko: "무게", aliases: [] }),
+    ),
+    "particle/compound leniency without losing strictness",
+  );
   await page.click("#next");
   await page.click("#unknown");
   await page.click("#next");

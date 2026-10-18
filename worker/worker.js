@@ -39,6 +39,8 @@ const DEFAULT_ORIGINS = ["https://hongtaehwa.github.io"];
 const MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_IMAGE_BASE64 = 8 * 1024 * 1024;
 const MAX_DEFINE_WORDS = 60;
+const GRADE_MODEL_DEFAULT = "claude-haiku-5-5"; // 2차 채점(뜻 판정)은 짧고 잦아서 빠르고 싼 모델을 쓴다(`GRADE_MODEL`로 바꿀 수 있음)
+const MAX_GRADE_ANSWER = 100;
 // 사전에 물어볼 수 있는 항목: 영문자로 시작하는 단어·짧은 구(공백, 마침표, 하이픈, 아포스트로피 허용, 40자 이하)
 const WORD_PATTERN = /^[A-Za-z][A-Za-z .'’-]{0,39}$/;
 const UPSTREAM_TIMEOUT_MS = 110000;
@@ -177,6 +179,23 @@ const DEFINE_SCHEMA = {
   required: ["words", "note"],
   additionalProperties: false,
 };
+
+// 2차 채점(/grade): 앱이 책의 뜻·허용 답안과 글자 그대로 맞지 않는 답만 보내면, ‘같은 뜻인가’를 판정한다.
+// 동의어·조사/어미 차이·합성어(몸무게↔무게)·한 글자 오타는 인정하고, 다른 뜻·교재에 없는 다른 의미·막연한 답·여러 뜻 나열은 거절한다.
+const GRADE_SYSTEM = `You grade one answer in a Korean student's English vocabulary quiz. The user gives the English word, the meaning(s) printed in the student's textbook, the answers already accepted as correct, and the student's answer (typed or transcribed from speech).
+Decide whether the student's answer shows that they know the word in the textbook sense.
+Accept when the answer has the same meaning as a textbook meaning or an accepted answer: a synonym or near-synonym in that sense, the same word with a different particle, ending or spacing (…을 제출하다 vs 제출하다, 수정 vs 수정하다), a natural compound or narrower everyday form (몸무게 for 무게), a dictionary form vs a stem, or an obvious one-character typo or speech-recognition slip of the same word.
+Reject when the answer means something else, is a different sense of the English word that the textbook does not list, is too vague or general to show knowledge of this word, is in English, is empty or meaningless, or lists several unrelated meanings as guesses.
+Output JSON: accept (true or false) and reason: one short Korean phrase under 30 characters that the student can read, such as "무게와 같은 뜻" or "다른 뜻이에요".`;
+const GRADE_SCHEMA = {
+  type: "object",
+  properties: { accept: { type: "boolean" }, reason: { type: "string" } },
+  required: ["accept", "reason"],
+  additionalProperties: false,
+};
+function pickGradeModel(env) {
+  return ALLOWED_MODELS.includes(env.GRADE_MODEL) ? env.GRADE_MODEL : GRADE_MODEL_DEFAULT;
+}
 
 // 오늘의 단어: 수준 라벨 + 교재 앵커(지금 공부 중인 단어) + 제외 목록 + 복습 단어 → 새 단어 제안과 전체 정의.
 const DAILY_SYSTEM = `You create a short daily English vocabulary quiz for one Korean student. The user message gives the student's level, the words the student is currently studying (the "anchor" list, which shows the difficulty they already handle), words to avoid because they were used recently, review words to define exactly as given, and how many NEW words to propose.
@@ -816,6 +835,7 @@ function parseSync(body) {
         ? { awayCount: Math.min(r.awayCount, 10000), awayMs: Number.isInteger(r.awayMs) && r.awayMs >= 0 ? Math.min(r.awayMs, 86400000) : 0 }
         : {}),
       ...(Number.isInteger(r.timeouts) && r.timeouts > 0 ? { timeouts: Math.min(r.timeouts, 2000) } : {}), // 제한 시간 초과로 모름 처리된 문제 수
+      ...(Number.isInteger(r.aiPass) && r.aiPass > 0 ? { aiPass: Math.min(r.aiPass, 2000) } : {}), // AI 2차 채점이 정답으로 인정한 문제 수
     });
   }
   let sets;
@@ -1204,6 +1224,43 @@ async function define(request, env, model, cors) {
   return json(200, { words: found, note, model: message.model || model, usage: usageOf(message) }, cors);
 }
 
+// 2차 채점: POST /grade {en, ko, aliases?, answer} → {accept, reason, model, usage}. 앱은 기기 채점이 오답일 때만 부르고, 실패하면 오답으로 둔다.
+async function gradeAnswer(request, env, cors) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json(400, { error: "bad_request", message: "JSON 본문이 필요합니다." }, cors);
+  }
+  const en = clean(body?.en).slice(0, 80);
+  const ko = clean(body?.ko).slice(0, 200);
+  const answer = clean(body?.answer).slice(0, MAX_GRADE_ANSWER);
+  if (!en || !ko || !answer) return json(400, { error: "bad_request", message: "en, ko, answer가 필요합니다." }, cors);
+  const aliases = [...new Set((Array.isArray(body?.aliases) ? body.aliases : []).map((a) => clean(a).slice(0, 60)).filter(Boolean))].slice(0, 30);
+  const model = pickGradeModel(env);
+  const outcome = await callAnthropic(env, model, {
+    model,
+    max_tokens: 256,
+    system: GRADE_SYSTEM,
+    output_config: { format: { type: "json_schema", schema: GRADE_SCHEMA } },
+    messages: [
+      {
+        role: "user",
+        content: `영어 단어: ${en}\n교재의 뜻: ${ko}\n이미 정답으로 인정하는 답: ${aliases.join(", ") || "(없음)"}\n학생의 답: ${answer}`,
+      },
+    ],
+  });
+  if (outcome.failure) return json(outcome.failure.status, outcome.failure.body, cors);
+  const read = readJsonMessage(outcome.message, cors, { refused: "AI가 이 답의 판정을 거부했습니다.", truncated: "AI 응답이 잘렸습니다." });
+  if (read.response) return read.response;
+  return json(200, {
+    accept: read.data?.accept === true,
+    reason: clean(read.data?.reason).slice(0, 60),
+    model: outcome.message.model || model,
+    usage: usageOf(outcome.message),
+  }, cors);
+}
+
 // 비밀값 없이 Anthropic이 이 Worker의 요청을 받는지 본다. 정상이면 401(invalid x-api-key), 지역 차단이면 403.
 async function diag(request, env, cors) {
   const r = await upstreamFetch(
@@ -1252,7 +1309,7 @@ export default {
       (CHILD_SETS_PATH.test(path) && ["GET", "POST", "DELETE"].includes(request.method)) ||
       (DAILY_PATH.test(path) && ["GET", "POST"].includes(request.method)) ||
       (SETTINGS_PATH.test(path) && request.method === "GET");
-    const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define"].includes(path);
+    const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define", "/grade"].includes(path);
     if (!familyRoute && !aiRoute)
       return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." }, cors);
     const origin = request.headers.get("Origin");
@@ -1278,6 +1335,7 @@ export default {
     const model = pickModel(env);
     if (path === "/ping") return ping(env, model, cors);
     if (path === "/define") return define(request, env, model, cors);
+    if (path === "/grade") return gradeAnswer(request, env, cors);
     return recognize(request, env, model, cors);
   },
 };
