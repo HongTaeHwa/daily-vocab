@@ -154,6 +154,9 @@ body.parent-mode .child-only{display:none!important}
 .chip{display:inline-flex;align-items:baseline;gap:6px;background:#fff7f0;border:1px solid #f3d2a4;border-radius:999px;padding:4px 11px;font-size:14px;color:#4e3a1c}
 .chip b{color:#b83a48}.chip small{color:#88541f}
 .plan-box{margin:12px 0 16px;padding:12px;border:1px dashed var(--border);border-radius:12px;background:#f8fbff}
+.combo-panel summary{cursor:pointer;font-weight:800;color:var(--navy);font-size:17px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.combo-sets{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.combo-sets label{display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer}.combo-sets input{accent-color:#245fcb;width:20px;height:20px;flex:none}.combo-sets small{color:var(--muted)}
 .lookup-result{margin-top:12px;border:1px solid var(--border);border-radius:14px;padding:14px;background:#fbfdff}
 .tutor-kinds{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}
 .kind{border:2px solid var(--border);padding:10px 6px;cursor:pointer;border-radius:14px;background:#f8fbff;color:var(--navy);font-weight:800;font:inherit;font-weight:800;display:flex;flex-direction:column;align-items:center;gap:2px}
@@ -233,6 +236,16 @@ body.in-quiz main{padding-bottom:30px}
       <button type="button" class="btn soft hidden" id="resumeEditor">✏️ 편집 중인 세트로 돌아가기</button>
     </div>
     <div id="setStatus" role="status" class="feedback info"></div>
+  </div>
+  <div class="card hidden" id="comboCard">
+    <details id="comboPanel" class="combo-panel">
+      <summary>📝 종합 시험 <span class="pill" id="comboSummary">여러 세트 묶어 보기</span></summary>
+      <p class="muted">여러 세트를 묶어 한 번에 시험을 봐요. 시험 방식과 순서 섞기는 아래 카드의 선택을 그대로 쓰고, 틀린 단어는 원래 세트의 오답 목록에 들어가요.</p>
+      <div id="comboSets" class="combo-sets" role="group" aria-label="묶을 세트"></div>
+      <div class="controls"><label for="comboCount">문제 수</label><select id="comboCount"></select><label for="comboPick">뽑는 방법</label><select id="comboPick"><option value="random">무작위</option><option value="missed">틀린 단어 먼저</option><option value="even">세트별 골고루</option></select></div>
+      <div class="actionbar"><button type="button" class="btn primary" id="comboStart">▶ 종합 시험 시작</button></div>
+      <div id="comboStatus" role="status" class="feedback info"></div>
+    </details>
   </div>
   <div class="card">
     <h2 class="section-title">🎯 어떻게 풀까요?</h2>
@@ -530,7 +543,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-17 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-18 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -546,7 +559,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-17';
+  var release = '20261018-18';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -582,8 +595,8 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./quiz.js?v=20261018-17" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-17" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-17" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-18" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-18" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-18" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>
