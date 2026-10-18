@@ -215,6 +215,7 @@ function compactRecord(r) {
     ...(typeof r.daily === "string" ? { daily: r.daily } : {}),
     ...(Number.isInteger(r.awayCount) && r.awayCount > 0 ? { awayCount: r.awayCount, awayMs: Number.isInteger(r.awayMs) ? r.awayMs : 0 } : {}),
     ...(Number.isInteger(r.timeouts) && r.timeouts > 0 ? { timeouts: r.timeouts } : {}),
+    ...(Number.isInteger(r.aiPass) && r.aiPass > 0 ? { aiPass: r.aiPass } : {}),
     missed: r.results
       .filter((x) => !x.pass)
       .slice(0, FAMILY_MISSED_LIMIT)
@@ -1167,7 +1168,7 @@ function renderChildRecords(note) {
     head.className = "history-head";
     const score = document.createElement("span");
     score.className = "history-score";
-    score.textContent = `${r.correct} / ${r.total} · ${pctOf(r)}점${r.partial ? " · 중단" : ""}${r.daily ? " · 📬 오늘의 단어" : ""}${r.timeouts ? ` · ⏱ 시간 초과 ${r.timeouts}개` : ""}`;
+    score.textContent = `${r.correct} / ${r.total} · ${pctOf(r)}점${r.partial ? " · 중단" : ""}${r.daily ? " · 📬 오늘의 단어" : ""}${r.timeouts ? ` · ⏱ 시간 초과 ${r.timeouts}개` : ""}${r.aiPass ? ` · 🤖 AI 인정 ${r.aiPass}개` : ""}`;
     head.append(score);
     const meta = document.createElement("p");
     meta.className = "history-meta";

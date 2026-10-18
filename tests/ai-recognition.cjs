@@ -41,6 +41,11 @@ const { chromium } = require("playwright");
     if (mode === "notfound") return reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
     if (mode === "slow") await new Promise((r) => setTimeout(r, 1500));
     if (url.pathname === "/ping") return reply(route, 200, { ok: true, model: "claude-opus-5-5" });
+    if (url.pathname === "/grade") {
+      // 2차 채점 가짜 응답: ‘비슷한뜻’만 같은 뜻으로 인정한다
+      const accept = body.answer === "비슷한뜻";
+      return reply(route, 200, { accept, reason: accept ? "같은 뜻으로 인정" : "다른 뜻이에요", model: "claude-haiku-5-5", usage: { input: 1, output: 1 } });
+    }
     if (url.pathname === "/define") {
       // AI 사전 가짜 응답: 아는 단어만 돌려주고 모르는 단어(zzz)는 메모로 알린다
       const dict = {
@@ -158,6 +163,25 @@ const { chromium } = require("playwright");
   await page.click('[data-mode="en_ko"]');
   await page.click("#start");
   assert((await page.evaluate(() => queue.length)) === 4, "ai set quiz has 4 words");
+  // AI 2차 채점: 책의 뜻과 다른 답 → /grade 로 묻고 인정되면 정답 + 허용 답안에 학습, 거절되면 오답
+  const judgedEn = await page.evaluate(() => question.w.en);
+  await page.fill("#answerInput", "비슷한뜻");
+  await page.click("#check");
+  await page.waitForFunction(() => document.getElementById("answerFeedback").textContent.includes("AI 판정"));
+  const grades = () => requests.filter((r) => r.path === "/grade");
+  assert(grades().length === 1 && grades()[0].body.en === judgedEn && grades()[0].body.answer === "비슷한뜻" && Array.isArray(grades()[0].body.aliases) && grades()[0].headers["x-app-passcode"] === PASSCODE, "grade request: " + JSON.stringify(grades().map((g) => g.body)));
+  assert((await page.evaluate(() => question.answerPass === true && question.aiPass === true)) && (await page.textContent("#answerFeedback")).includes("✓ 정답!") && (await page.textContent("#answerFeedback")).includes("같은 뜻으로 인정"), "AI-accepted answer counts as correct: " + (await page.textContent("#answerFeedback")));
+  assert(await page.evaluate((en) => sets.find((s) => s.name === "AI 세트").words.find((w) => w.en === en).aliases.includes("비슷한뜻"), judgedEn), "accepted answer learned as an alias");
+  await page.click("#next");
+  await page.fill("#answerInput", "엉뚱한답");
+  await page.click("#check");
+  await page.waitForFunction(() => document.getElementById("answerFeedback").textContent.includes("AI 판정"));
+  assert((await page.evaluate(() => question.answerPass === false && !question.aiPass)) && (await page.textContent("#answerFeedback")).includes("다른 뜻이에요"), "AI-rejected answer stays wrong");
+  assert(grades().length === 2, "one grade call per non-matching answer");
+  await page.click("#next");
+  await page.fill("#answerInput", await page.evaluate(() => question.w.ko.split(" · ")[0]));
+  await page.click("#check");
+  assert(grades().length === 2 && (await page.evaluate(() => question.answerPass === true)), "exact answer never asks the AI");
 
   // 오류 안내: 접속 코드 오류, 서버 혼잡, 연결 실패 → 취소 → 설정 삭제
   await page.goto(url);

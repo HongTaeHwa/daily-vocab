@@ -443,11 +443,23 @@ function newSession(missedOnly = false, snapshot = null, source = null, options 
   return true;
 }
 function normEn(s) { return String(s || "").toLowerCase().normalize("NFKC").replace(/[^a-z]/g, ""); }
+// 뜻 비교 전에 ‘…을/를’, ‘~에게’, ‘-에’ 같은 자리표시 조사와 괄호 설명, 문장 앞의 조사를 뗀다(책의 ‘…을 제출하다’와 답 ‘제출하다’가 같도록).
+const KO_PARTICLES = "에게서|에게|한테서|한테|으로|에서|부터|까지|께서|께|을|를|이|가|은|는|에|와|과|로|의"; // 긴 조사가 먼저(정규식 대안은 왼쪽부터 맞춘다)
+const KO_PLACEHOLDER = new RegExp(`(?:…|\\.{2,}|~|-|_+|\\([^)]*\\)|\\[[^\\]]*\\])\\s*(?:${KO_PARTICLES})?\\s*`, "g");
+const KO_LEADING_PARTICLE = new RegExp(`^\\s*(?:${KO_PARTICLES})\\s+`);
+function stripKoPlaceholders(s) { return String(s || "").replace(KO_PLACEHOLDER, " ").replace(KO_LEADING_PARTICLE, ""); }
 function normKo(s) {
-  return String(s || "").toLowerCase().normalize("NFKC").replace(/[\s\p{P}\p{S}]/gu, "")
+  return stripKoPlaceholders(s).toLowerCase().normalize("NFKC").replace(/[\s\p{P}\p{S}]/gu, "")
     .replace(/(라는뜻입니다|라는뜻이에요|이라는뜻입니다|이에요|입니다|이라는뜻|뜻이에요|뜻입니다|뜻이야|거예요|겁니다)$/g, "");
 }
-function correctKo(spoken, w) { const ans = normKo(spoken); return !!ans && [...w.aliases, ...w.ko.split(/[·,;|]/)].some((x) => normKo(x) === ans); }
+// 뜻 채점(기기 안): ① 뜻·허용 답안과 글자 그대로 같음 ② 답이 뜻으로 끝나는 짧은 합성어(몸무게 ↔ 무게, 두 글자 이내 차이).
+// 그래도 다르면 grade()가 AI 2차 채점(sets.js judgeMeaning)에 ‘같은 뜻인지’ 묻는다.
+function correctKo(spoken, w) {
+  const ans = normKo(spoken);
+  if (!ans) return false;
+  return [...w.aliases, ...w.ko.split(/[·,;|]/)].map(normKo).filter(Boolean)
+    .some((x) => x === ans || (x.length >= 2 && ans.length > x.length && ans.length - x.length <= 2 && ans.endsWith(x)));
+}
 function correctEn(spoken, w) { const raw = String(spoken || "").toLowerCase(); return raw.split(/[^a-z]+/).includes(w.en) || normEn(spoken) === w.en; }
 
 // ---- 음성 인식 ----
@@ -666,18 +678,51 @@ function listenSpelling() {
 $("micSpelling").addEventListener("click", listenSpelling);
 $("penInput").addEventListener("click", () => { if (!$("answerInput").disabled) $("answerInput").focus(); });
 function grade(input, origin = "type") {
-  if (!sessionRunning || question.answerChecked) return;
+  if (!sessionRunning || question.answerChecked || question.aiPending) return;
   stopRec();
   const w = question.w, value = String(input || "").trim();
   if (!value) { setFeedback($("answerFeedback"), "bad", "답을 먼저 입력하거나 말해 주세요."); return; }
-  const pass = mode === "ko_en" ? normalizeSpelling(value) === normalizeSpelling(w.en) : correctKo(value, w);
-  question.answerChecked = true; question.answerPass = pass;
-  stopQuestionTimer();
-  setFeedback($("answerFeedback"), pass ? "good" : "bad", `${pass ? "✓ 정답!" : "✕ 아쉬워요"} · 내 답${origin === "speech" ? "(음성)" : ""}: ${value}${!pass ? " · 아래 정답을 확인하세요." : ""}${!pass && mode === "ko_en" ? " · 틀린 위치: " + Array.from(w.en).map((c, i) => (normalizeSpelling(value)[i] === c ? "✓" : c)).join(" ") + (value.length > w.en.length ? " (추가 글자 있음)" : "") : ""}`);
+  stopQuestionTimer(); // 답을 냈으므로 제한 시간은 멈춘다(AI가 확인하는 동안에도)
   $("answerInput").value = value; $("answerInput").disabled = true; $("check").disabled = true; $("micSpelling").disabled = true; $("penInput").disabled = true;
-  $("unknown").disabled = true;
+  $("unknown").disabled = true; $("micKorean").disabled = true;
+  const pass = mode === "ko_en" ? normalizeSpelling(value) === normalizeSpelling(w.en) : correctKo(value, w);
+  // 뜻이 글자 그대로는 다를 때만 AI에게 ‘같은 뜻인지’ 묻는다(sets.js judgeMeaning: AI 서버가 설정된 기기에서만, 실패하면 null → 오답 유지).
+  if (!pass && mode !== "ko_en" && typeof judgeMeaning === "function" && judgeMeaning.available()) {
+    const target = question;
+    question.aiPending = true;
+    setFeedback($("answerFeedback"), "info", `내 답${origin === "speech" ? "(음성)" : ""}: ${value} · 책의 뜻과 글자가 달라요. AI가 같은 뜻인지 확인하는 중…`);
+    judgeMeaning(w, value).then((verdict) => {
+      if (question !== target || !sessionRunning) return; // 그사이 쉬기·그만하기로 문제가 바뀌었으면 버린다
+      question.aiPending = false;
+      finishGrade(pass, value, origin, verdict);
+    });
+    return;
+  }
+  finishGrade(pass, value, origin, null);
+}
+// 채점 확정. verdict 는 AI 2차 채점 결과({accept, reason}) 또는 null(기기 채점만).
+function finishGrade(localPass, value, origin, verdict) {
+  const w = question.w;
+  const pass = localPass || verdict?.accept === true;
+  question.answerChecked = true; question.answerPass = pass;
+  if (!localPass && pass) { question.aiPass = true; sessionMeta.aiPass = (sessionMeta.aiPass || 0) + 1; learnAlias(w, value); }
+  const aiNote = verdict ? ` · AI 판정: ${verdict.reason || (pass ? "같은 뜻으로 인정" : "다른 뜻")}` : "";
+  setFeedback($("answerFeedback"), pass ? "good" : "bad", `${pass ? "✓ 정답!" : "✕ 아쉬워요"} · 내 답${origin === "speech" ? "(음성)" : ""}: ${value}${aiNote}${!pass ? " · 아래 정답을 확인하세요." : ""}${!pass && mode === "ko_en" ? " · 틀린 위치: " + Array.from(w.en).map((c, i) => (normalizeSpelling(value)[i] === c ? "✓" : c)).join(" ") + (value.length > w.en.length ? " (추가 글자 있음)" : "") : ""}`);
   showAnswer(); updateNext();
   if (!$("next").disabled) $("next").focus({ preventScroll: true });
+}
+// AI가 인정한 답은 그 단어의 허용 답안에 넣어 둔다: 다음부터는 기기에서 바로 정답이고, 같은 아이의 다른 기기에도 세트 동기화로 전해진다.
+function learnAlias(w, value) {
+  const alias = value.replace(/\s+/g, " ").trim().slice(0, 60);
+  const set = sets.find((s) => s.id === sessionMeta?.setId);
+  if (!alias || !set) return; // 오늘의 단어·기록 복습처럼 세트가 아닌 시험은 건너뛴다
+  const word = set.words.find((x) => x.id === w.id && x.en === w.en);
+  if (!word || word.aliases.some((a) => normKo(a) === normKo(alias))) return;
+  const updated = { ...set, words: set.words.map((x) => (x === word ? { ...x, aliases: [...x.aliases, alias] } : x)), updatedAt: new Date().toISOString() };
+  if (typeof persistSets !== "function" || !persistSets(sets.map((s) => (s.id === set.id ? updated : s)))) return;
+  if (activeSetId === set.id) WORDS = updated.words;
+  w.aliases = [...w.aliases, alias];
+  if (typeof queueSetsSync === "function") queueSetsSync(); // family.js
 }
 function markUnknown() {
   if (!question.w || question.unknown) return;
@@ -732,7 +777,7 @@ function speak() {
 function recordCurrentResult() {
   const spokenCount = mode === "ko_en" ? !question.readChecked || question.readSkipped || question.readPass : question.readPass;
   const pass = question.answerPass && (mode !== "read_meaning" || spokenCount);
-  results.push({ id: question.w.id, word: structuredClone(question.w), pass: question.unknown ? false : pass, unknown: question.unknown, ...(question.readSelf ? { self: true } : {}), ...(question.away ? { away: question.away, awayMs: question.awayMs || 0 } : {}), ...(question.timedOut ? { timeout: true } : {}) });
+  results.push({ id: question.w.id, word: structuredClone(question.w), pass: question.unknown ? false : pass, unknown: question.unknown, ...(question.readSelf ? { self: true } : {}), ...(question.away ? { away: question.away, awayMs: question.awayMs || 0 } : {}), ...(question.timedOut ? { timeout: true } : {}), ...(question.aiPass ? { ai: true } : {}) });
   question = { ...question, answerChecked: false };
 }
 function advance() {
@@ -819,7 +864,7 @@ function persistHistory(next) {
 function saveSession(partial = false) {
   if (!sessionMeta || sessionMeta.saved) return;
   sessionMeta.saved = true;
-  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), ...(sessionMeta.daily ? { daily: sessionMeta.daily } : {}), ...(sessionMeta.awayCount ? { awayCount: sessionMeta.awayCount, awayMs: sessionMeta.awayMs || 0 } : {}), ...(sessionMeta.timeouts ? { timeouts: sessionMeta.timeouts } : {}), results: results.map((x) => ({ ...x })) };
+  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), ...(sessionMeta.daily ? { daily: sessionMeta.daily } : {}), ...(sessionMeta.awayCount ? { awayCount: sessionMeta.awayCount, awayMs: sessionMeta.awayMs || 0 } : {}), ...(sessionMeta.timeouts ? { timeouts: sessionMeta.timeouts } : {}), ...(sessionMeta.aiPass ? { aiPass: sessionMeta.aiPass } : {}), results: results.map((x) => ({ ...x })) };
   if (partial) record.partial = true;
   const next = [record, ...historyRecords];
   if (!persistHistory(next)) { historyRecords = next; renderHistory(); }
@@ -864,7 +909,7 @@ function renderHistory() {
     meta.className = "history-meta";
     meta.textContent = new Date(record.completedAt).toLocaleString("ko-KR") + " · " + record.setName + " · " + modeLabels[record.mode] + " · " + record.range;
     const counts = document.createElement("p");
-    counts.textContent = "정답 " + correct + " · 오답 " + (total - correct) + " (모름 " + unknown + "개 포함)" + (record.awayCount ? " · ⚠️ 화면 이탈 " + record.awayCount + "회" : "") + (record.timeouts ? " · ⏱ 시간 초과 " + record.timeouts + "개" : "");
+    counts.textContent = "정답 " + correct + " · 오답 " + (total - correct) + " (모름 " + unknown + "개 포함)" + (record.awayCount ? " · ⚠️ 화면 이탈 " + record.awayCount + "회" : "") + (record.timeouts ? " · ⏱ 시간 초과 " + record.timeouts + "개" : "") + (record.aiPass ? " · 🤖 AI 인정 " + record.aiPass + "개" : "");
     entry.append(head, meta, counts);
     const missed = record.results.filter((x) => !x.pass);
     if (missed.length) {
