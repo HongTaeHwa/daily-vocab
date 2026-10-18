@@ -56,6 +56,7 @@ function writeFamily() {
 // 보호자 화면에 보일 기기 이름. iPadOS는 Mac처럼 보이므로 터치 지원으로 가른다.
 function deviceLabel() {
   const ua = navigator.userAgent || "";
+  if (/DailyVocabApp\//.test(ua)) return /Mobile/.test(ua) ? "Android 폰(앱)" : "Android 태블릿(앱)"; // 갤럭시용 래퍼 앱(android/)
   if (/iPhone/.test(ua)) return "iPhone";
   if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return "iPad";
   if (/Android/.test(ua)) return /Mobile/.test(ua) ? "Android 폰" : "Android 태블릿";
