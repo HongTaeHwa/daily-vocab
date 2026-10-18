@@ -4,15 +4,21 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -38,10 +44,11 @@ import java.util.Locale
 
 /**
  * 매일 영단어 웹앱(https://hongtaehwa.github.io/daily-vocab/)을 WebView로 여는 갤럭시용 앱.
- * 하는 일은 셋뿐이다.
+ * 하는 일은 넷뿐이다.
  *  1. FLAG_SECURE — 이 앱 화면에서는 스크린샷·화면 녹화·서클 투 서치가 동작하지 않는다(다른 앱에는 영향 없음).
- *  2. 음성 인식·TTS 브리지 — WebView에는 Web Speech API가 없어 안드로이드 기본 인식기/TTS를 연결한다(SpeechBridge + assets/bridge.js).
- *  3. 사진 선택·촬영, 마이크 권한, 뒤로 가기, 아이 전용 링크 열기.
+ *  2. 화면 분할 차단 — 매니페스트 resizeableActivity=false + 멀티윈도우(분할·팝업 화면)가 감지되면 웹앱을 가리고 안내만 보여 준다.
+ *  3. 음성 인식·TTS 브리지 — WebView에는 Web Speech API가 없어 안드로이드 기본 인식기/TTS를 연결한다(SpeechBridge + assets/bridge.js).
+ *  4. 사진 선택·촬영, 마이크 권한, 뒤로 가기, 아이 전용 링크 열기.
  * 세트·기록·가족 기록함·오늘의 단어는 모두 웹앱 그대로다(앱은 웹앱 주소만 안다).
  */
 class MainActivity : AppCompatActivity() {
@@ -52,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var webView: WebView
+    private lateinit var splitGuard: View
     private lateinit var speech: SpeechBridge
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var cameraUri: Uri? = null
@@ -96,7 +104,13 @@ class MainActivity : AppCompatActivity() {
         root.addView(topSpacer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0))
         root.addView(webView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(bottomSpacer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0))
-        setContentView(root)
+        // 웹앱 위에 화면 분할 안내 가림막을 겹쳐 둔다(평소에는 숨김).
+        val frame = FrameLayout(this)
+        frame.addView(root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        splitGuard = buildSplitGuard()
+        frame.addView(splitGuard, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        setContentView(frame)
+        applyMultiWindowGuard(isInMultiWindowMode)
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
@@ -242,6 +256,52 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         webView.onResume()
+        applyMultiWindowGuard(isInMultiWindowMode)
+    }
+
+    // ---- 화면 분할(멀티윈도우) 차단 ----
+    // 분할 화면·팝업 화면에서는 옆에 브라우저나 AI 앱을 띄워 답을 찾을 수 있으므로 쓰지 못하게 한다.
+    // 매니페스트의 resizeableActivity=false 로 대부분 막히지만 Android 12+ 큰 화면(태블릿)은 OS가 분할을 강제할 수 있어 여기서 한 번 더 막는다:
+    // 멀티윈도우가 감지되면 WebView를 숨기고(페이지에는 visibilitychange(hidden)가 전달되어 웹앱이 ‘화면 이탈’로 기록한다) 안내 가림막만 보여 준다.
+    // 다시 전체 화면이 되면 그대로 이어서 쓸 수 있다(시험 중이던 제한 시간은 계속 흐른다).
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+        applyMultiWindowGuard(isInMultiWindowMode)
+    }
+
+    private fun applyMultiWindowGuard(on: Boolean) {
+        splitGuard.visibility = if (on) View.VISIBLE else View.GONE
+        webView.visibility = if (on) View.INVISIBLE else View.VISIBLE
+    }
+
+    private fun buildSplitGuard(): View {
+        val density = resources.displayMetrics.density
+        val pad = (28 * density).toInt()
+        val white = ContextCompat.getColor(this, R.color.white)
+        val title = TextView(this).apply {
+            text = getString(R.string.split_blocked_title)
+            setTextColor(white)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+        }
+        val body = TextView(this).apply {
+            text = getString(R.string.split_blocked_body)
+            setTextColor(white)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            gravity = Gravity.CENTER
+            setPadding(0, (12 * density).toInt(), 0, 0)
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.navy))
+            setPadding(pad, pad, pad, pad)
+            isClickable = true // 뒤의 WebView로 터치가 가지 않게
+            visibility = View.GONE
+            addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
     }
 
     override fun onDestroy() {

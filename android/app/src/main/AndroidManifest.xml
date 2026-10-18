@@ -29,8 +29,11 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:resizeableActivity="false"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize">
+            <!-- resizeableActivity=false: 화면 분할·팝업 화면(멀티윈도우)을 지원하지 않는다고 선언한다. 옆에 브라우저·AI 앱을 띄워 답을 찾지 못하게.
+                 Android 12+ 큰 화면(태블릿)은 OS가 분할을 강제할 수 있어 MainActivity 가 멀티윈도우를 감지하면 웹앱을 가리고 안내만 보여 준다. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

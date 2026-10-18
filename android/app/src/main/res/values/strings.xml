@@ -2,4 +2,6 @@
 <resources>
     <string name="app_name">매일 영단어</string>
     <string name="choose_photo">사진 선택</string>
+    <string name="split_blocked_title">화면 분할은 쓸 수 없어요</string>
+    <string name="split_blocked_body">매일 영단어는 전체 화면에서만 열려요.\n화면 분할이나 팝업 화면을 끝내면 다시 보여요.\n(분할한 동안은 ‘화면 이탈’로 기록돼요)</string>
 </resources>

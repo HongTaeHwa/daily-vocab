@@ -1,10 +1,11 @@
 # 매일 영단어 갤럭시용 앱 (웹앱 래퍼)
 
-웹앱 https://hongtaehwa.github.io/daily-vocab/ 을 WebView로 여는 작은 안드로이드 앱입니다. 하는 일은 세 가지뿐이고 세트·기록·가족 기록함·오늘의 단어는 웹앱 그대로입니다.
+웹앱 https://hongtaehwa.github.io/daily-vocab/ 을 WebView로 여는 작은 안드로이드 앱입니다. 하는 일은 네 가지뿐이고 세트·기록·가족 기록함·오늘의 단어는 웹앱 그대로입니다.
 
 1. **화면 캡처 금지(FLAG_SECURE)**: 이 앱 화면에서는 스크린샷·화면 녹화·**서클 투 서치**가 동작하지 않습니다(은행 앱과 같은 방식). 다른 앱에는 영향이 없습니다.
-2. **음성 인식·발음 듣기 연결**: WebView에는 브라우저 음성 인식이 없어서 안드로이드 기본 음성 인식기(삼성/구글)와 TTS를 웹앱에 연결합니다(`SpeechBridge.kt`, `assets/bridge.js`). 웹앱 코드는 바뀌지 않습니다.
-3. 사진 선택·촬영(세트 만들기), 마이크 권한, 뒤로 가기(웹앱의 화면 되돌리기), 아이 전용 링크를 이 앱으로 열기.
+2. **화면 분할 차단**(v1.2): 앱을 화면 분할·팝업 화면으로 열어 옆에 브라우저나 AI 앱을 띄우지 못합니다. 매니페스트에 분할 비지원(`resizeableActivity="false"`)을 선언하고, Android 12 이상 태블릿처럼 OS가 분할을 강제하는 경우에는 분할이 감지되는 동안 웹앱을 가리고 **‘화면 분할은 쓸 수 없어요’** 안내만 보여 줍니다(그동안 웹앱은 ‘화면 이탈’로 기록하고 제한 시간은 계속 흐릅니다). 전체 화면으로 돌아오면 그대로 이어서 쓸 수 있습니다.
+3. **음성 인식·발음 듣기 연결**: WebView에는 브라우저 음성 인식이 없어서 안드로이드 기본 음성 인식기(삼성/구글)와 TTS를 웹앱에 연결합니다(`SpeechBridge.kt`, `assets/bridge.js`). 웹앱 코드는 바뀌지 않습니다.
+4. 사진 선택·촬영(세트 만들기), 마이크 권한, 뒤로 가기(웹앱의 화면 되돌리기), 아이 전용 링크를 이 앱으로 열기.
 
 아이폰에는 같은 방법이 없습니다(iOS는 앱이 스크린샷·Siri 화면 읽기를 막을 수 없음). 아이폰은 스크린 타임 제한을 쓰세요.
 
@@ -15,7 +16,7 @@
 3. **매일 영단어** 앱을 엽니다. Chrome과 저장 공간이 다르므로 앱 안에서 다시 설정합니다: 설정 → `보호자 설정 · AI 연결`에 가족 접속 코드 저장 → `가족 기록함`에 아이 코드 입력(또는 보호자가 보낸 아이 전용 링크를 열 때 ‘매일 영단어’ 앱으로 열기). 세트는 백업 JSON으로 옮기거나 사진으로 다시 만듭니다.
 4. 처음 마이크 버튼을 누르면 마이크 권한을 묻습니다. 허용하면 이후 시험에서 음성 인식이 됩니다.
 
-확인: 앱 화면에서 홈 버튼을 길게 눌러 서클 투 서치를 해 보면 “이 화면에서는 사용할 수 없음” 또는 검은 화면이 나와야 합니다. 스크린샷도 찍히지 않습니다.
+확인: 앱 화면에서 홈 버튼을 길게 눌러 서클 투 서치를 해 보면 “이 화면에서는 사용할 수 없음” 또는 검은 화면이 나와야 합니다. 스크린샷도 찍히지 않습니다. 최근 앱 화면에서 이 앱을 분할 화면으로 열어 보면 분할이 거부되거나, 분할된 동안 남색 바탕의 ‘화면 분할은 쓸 수 없어요’만 보여야 합니다.
 
 ## 업데이트
 
@@ -43,13 +44,14 @@ bash android/scripts/setup-signing.sh
 
 | 파일 | 역할 |
 |---|---|
-| `app/src/main/java/kr/dailyvocab/app/MainActivity.kt` | WebView, FLAG_SECURE, 권한·사진 선택·뒤로 가기·링크 처리 |
+| `app/src/main/java/kr/dailyvocab/app/MainActivity.kt` | WebView, FLAG_SECURE, 화면 분할 가림막(`onMultiWindowModeChanged`), 권한·사진 선택·뒤로 가기·링크 처리 |
 | `app/src/main/java/kr/dailyvocab/app/SpeechBridge.kt` | `@JavascriptInterface AndroidSpeech`: 음성 인식(SpeechRecognizer)·TTS(TextToSpeech) → `window.__androidSpeechEvent` |
 | `app/src/main/assets/bridge.js` | 페이지 스크립트보다 먼저 실행되어 `window.SpeechRecognition`·`speechSynthesis`를 브리지로 채움 |
 | `app/src/main/AndroidManifest.xml` | 권한(INTERNET, RECORD_AUDIO), 패키지 가시성(음성 인식·카메라), 링크 인텐트 필터, FileProvider |
 | `scripts/setup-signing.sh` | 서명 키 생성 + Secrets 등록 |
 
 ## 버전
+- v1.2 (versionCode 3): 화면 분할·팝업 화면 차단(분할 비지원 선언 + 분할 중 가림막).
 - v1.1 (versionCode 2): 상태 표시줄·내비게이션 바·키보드 여백 처리(Android 15에서 상단 시계가 가려지던 문제).
 - v1.0 (versionCode 1): 첫 버전.
 
