@@ -33,7 +33,7 @@ const { chromium } = require("playwright");
   let nextCode = 777777;
   const now = () => new Date().toISOString();
   const seedChild = (id, name, code) => {
-    children.set(id, { id, name, joinCode: code, devices: {}, sets: [], setStore: new Map(), records: new Map(), lastTestAt: null, createdBy: "parent" });
+    children.set(id, { id, name, joinCode: code, devices: {}, sets: [], setStore: new Map(), records: new Map(), questions: [], lastTestAt: null, createdBy: "parent" });
     codes.set(code, id);
     return children.get(id);
   };
@@ -41,12 +41,14 @@ const { chromium } = require("playwright");
   const liveSets = (c) => [...c.setStore.values()].filter((s) => !s.deletedAt);
   const setSummary = (c) => liveSets(c).map((s) => ({ id: s.id, name: s.name, count: s.words.length, updatedAt: s.updatedAt })).sort((a, b) => a.name.localeCompare(b.name, "ko"));
   seedChild(HANEUL, "하늘", HANEUL_CODE); // 보호자가 미리 만들어 둔 아이
+  children.get(HANEUL).questions.push({ id: "q1", kind: "grammar", question: "왜 aids 인가요?", problem: "UNT 02 2) 어법", summary: "주어가 3인칭 단수라 aids 가 맞아요.", askedAt: new Date(Date.now() - 3600000).toISOString() });
   const touchDevice = (c, device) => {
     if (device && device.id) c.devices[device.id] = { label: device.label || "기기", joinedAt: c.devices[device.id]?.joinedAt || now(), lastSeenAt: now() };
   };
   let mode = "ok";
   const summaryOf = (c) => ({
     id: c.id, name: c.name, joinCode: c.joinCode, devices: c.devices, sets: c.setStore ? setSummary(c) : c.sets, anchor: c.anchor, updatedAt: c.updatedAt, lastTestAt: c.lastTestAt,
+    questionCount: (c.questions || []).length, lastQuestionAt: (c.questions || [])[0]?.askedAt || null,
     plan: { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0 }, today: { date: "", exists: false, count: 0, completed: null },
     records: [...c.records.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt)),
   });
@@ -160,7 +162,7 @@ const { chromium } = require("playwright");
       return reply(route, 200, { ok: true, deleted: c.records.size });
     }
     const s = summaryOf(c);
-    return reply(route, 200, { child: { ...s, records: undefined, today: undefined }, records: s.records, today: s.today });
+    return reply(route, 200, { child: { ...s, records: undefined, today: undefined }, records: s.records, today: s.today, questions: c.questions || [] });
   });
   const syncs = () => requests.filter((r) => r.path === "/sync");
   const joins = () => requests.filter((r) => r.path === "/join");
@@ -357,6 +359,7 @@ const { chromium } = require("playwright");
   const card = await page.textContent("#childrenList");
   assert(card.includes("하늘") && card.includes("오늘 ✅ 3회") && card.includes("최근 7일 3회") && card.includes("마지막 시험") && /연결 기기: .+ 1/.test(card), "child card: " + card);
   assert(card.includes("⚠️ 오늘 화면 이탈 1회"), "card warns about today's away episodes");
+  assert(card.includes("📷 물어본 문제 1개"), "card shows the tutor question count");
   assert((await page.$$eval("#childrenList .day", (d) => d.length)) === 7, "seven day cells");
   assert((await page.$$eval("#childrenList .day.done", (d) => d.length)) === 1, "today marked done");
   await page.click("#childrenList button");
@@ -376,6 +379,9 @@ const { chromium } = require("playwright");
 
   // 세트 상자: 아이 세트 목록 → ‘세트 만들어 보내기’는 보호자 모드에서도 편집 화면을 연다 → 저장하면 기기가 아니라 아이의 세트로 서버에 보내고 상세로 돌아온다
   assert((await page.textContent("#childSets")).includes("하늘 DAY04 · 40단어"), "child sets listed: " + (await page.textContent("#childSets")));
+  await waitFor(() => page.evaluate(() => document.getElementById("childQuestions").textContent.includes("UNT 02 2) 어법")), "tutor questions listed in the detail");
+  const questionsText = await page.textContent("#childQuestions");
+  assert(questionsText.includes("어법 설명") && questionsText.includes("왜 aids 인가요?") && questionsText.includes("3인칭 단수") && (await page.textContent("#childQuestionCount")) === "1개", "question row: " + questionsText);
   await page.click("#sendNewSet");
   await waitFor(() => page.isVisible("#editor"), "editor opens in the parent mode for the child's set");
   assert((await page.textContent("#editorTitle")).includes("하늘에게 보내기") && (await page.isHidden("#manageBox")), "editor titled for the child without the rename/delete box");
