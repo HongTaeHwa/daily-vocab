@@ -1281,6 +1281,41 @@
     refreshAll({ force: true });
   };
 
+  // ===== [questions] 질문 탭: 아이가 AI 선생님에게 물어본 문제(요약만, 사진 없음) =====
+  const TUTOR_KIND_TEXT = { explain: "풀이 설명", translate: "해석", grammar: "어법 설명", check: "내 답 확인", ask: "직접 질문" };
+  panels.questions = (c, d) => {
+    const questions = d?.questions;
+    const total = Math.max(c.questionCount || 0, questions?.length || 0);
+    $("childQuestionCount").textContent = `${total}개`;
+    const box = $("childQuestions");
+    if (!questions) {
+      $("questionsSummary").textContent = "";
+      box.textContent = detailLoading.has(c.id) ? "불러오는 중…" : "아직 불러오지 못했어요. 위의 🔄 새로고침을 눌러 주세요.";
+      return;
+    }
+    const week = questions.filter((q) => Date.parse(q.askedAt) >= startOfDay(6)).length;
+    $("questionsSummary").textContent = `이번 주 ${week}개 · 전체 ${total}개` + (total > questions.length ? ` (최근 ${questions.length}개를 보여 줘요)` : "");
+    const key = JSON.stringify([c.id, d.fetchedAt]);
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    box.textContent = "";
+    if (!questions.length) {
+      box.append(h("p", { class: "muted" }, "아직 물어본 문제가 없어요."));
+      return;
+    }
+    for (const q of questions)
+      box.append(
+        h(
+          "div",
+          { class: "question-row" },
+          h("strong", null, q.problem || "(문제)"),
+          h("span", { class: "q-kind" }, (TUTOR_KIND_TEXT[q.kind] || q.kind || "") + (q.question ? ` · ${q.question}` : "")),
+          h("small", null, Number.isFinite(Date.parse(q.askedAt)) ? new Date(q.askedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""),
+          q.summary ? h("p", null, q.summary) : null,
+        ),
+      );
+  };
+
   // ===== [start] 시작: 탭·새로고침·라우터·자동 갱신 =====
   $("tabToday").onclick = () => router.go("#/");
   $("tabChildren").onclick = () => router.go("#/children");
