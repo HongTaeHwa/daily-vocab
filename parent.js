@@ -8,7 +8,7 @@
 (function () {
   // ===== [core] 상수·도우미·저장소·상태·서버 요청·라우터·그리기 =====
   const { $, h, setFeedback, tidy, formatCode, hourLabel, relativeTime, durationText, dayKey, pctOf, WEEKDAYS, modeLabels,
-    AI_SERVER_DEFAULT, normalizeServer, PLAN_LEVELS, TIME_LIMIT_CHOICES, planDefaults, apiRequest, readJson, writeJson } = Shared;
+    AI_SERVER_DEFAULT, normalizeServer, PLAN_LEVELS, TIME_LIMIT_CHOICES, REMIND_HOUR_CHOICES, planDefaults, deviceLabel, apiRequest, readJson, writeJson } = Shared;
   const PARENT_KEY = "daily_vocab_parent_v1";
   // 옛 아이 앱 보호자 모드가 쓰던 키(처음 한 번 이전한 뒤 보호자 것만 지운다. 아이 키의 다른 필드는 건드리지 않는다)
   const OLD_FAMILY_KEY = "daily_vocab_family_v1", OLD_AI_KEY = "daily_vocab_ai_v2", OLD_CACHE_KEY = "daily_vocab_family_cache_v1", OLD_MODE_KEY = "daily_vocab_mode_v1";
@@ -22,7 +22,7 @@
   const JOIN_CODE = /^\d{6}$/;
   const TABS = ["records", "sets", "daily", "settings", "questions"];
   const VIEW_IDS = ["setup", "today", "children", "child", "editor", "settings"];
-  const NOTE_IDS = ["setsStatus", "planStatus", "linkStatus", "nameStatus", "limitStatus", "deleteStatus", "missedStatus", "recordsStatus", "dailySetStatus"];
+  const NOTE_IDS = ["setsStatus", "planStatus", "linkStatus", "nameStatus", "limitStatus", "remindStatus", "deleteStatus", "missedStatus", "recordsStatus", "dailySetStatus"];
 
   const enc = encodeURIComponent;
   const nowIso = () => new Date().toISOString();
@@ -62,9 +62,10 @@
   // ---- 저장소: daily_vocab_parent_v1 ----
   // { parentCode, server, children:[GET /family 의 아이(최근 기록 포함)],
   //   details:{ [id]: {child, records(최근 30일 중 최신 200), recordTotal(전체 기록 수), more(더 오래된 기록 있음), questions, today, fetchedAt, viewedAt} },
-  //   fetchedAt, prefs:{ recordsSet, recordsDays, levelSuggestDismissed:{ [id]: 'YYYY-MM-DD' } } }
+  //   fetchedAt, prefs:{ recordsSet, recordsDays, levelSuggestDismissed:{ [id]: 'YYYY-MM-DD' },
+  //                      deviceId(이 폰의 알림 기기 id, 처음 켤 때 한 번 만든다), push:{deviceId, endpoint, kinds:{finish, summary}, summaryHour} | null(이 폰에서 켠 알림) } }
   // ‘더 보기’로 받은 옛 기록은 저장하지 않고 이 세션 동안만 olderPages(아래 [core] 불러오기)에 둔다.
-  const emptyState = () => ({ parentCode: "", server: AI_SERVER_DEFAULT, children: [], details: {}, fetchedAt: "", prefs: { recordsSet: "all", recordsDays: 30, levelSuggestDismissed: {} } });
+  const emptyState = () => ({ parentCode: "", server: AI_SERVER_DEFAULT, children: [], details: {}, fetchedAt: "", prefs: { recordsSet: "all", recordsDays: 30, levelSuggestDismissed: {}, deviceId: "", push: null } });
   function normalizeListChild(c) {
     return { ...c, records: (Array.isArray(c.records) ? c.records : []).filter(validRecord).sort(byNewest) };
   }
@@ -89,6 +90,15 @@
       if ([0, 7, 30].includes(p.recordsDays)) s.prefs.recordsDays = p.recordsDays;
       if (p.levelSuggestDismissed && typeof p.levelSuggestDismissed === "object")
         for (const [id, day] of Object.entries(p.levelSuggestDismissed)) if (/^\d{4}-\d{2}-\d{2}$/.test(String(day))) s.prefs.levelSuggestDismissed[id] = day;
+      if (typeof p.deviceId === "string" && /^[A-Za-z0-9-]{8,64}$/.test(p.deviceId)) s.prefs.deviceId = p.deviceId;
+      const push = p.push;
+      if (push && typeof push === "object" && typeof push.deviceId === "string" && typeof push.endpoint === "string")
+        s.prefs.push = {
+          deviceId: push.deviceId,
+          endpoint: push.endpoint,
+          kinds: { finish: push.kinds?.finish !== false, summary: push.kinds?.summary !== false },
+          summaryHour: Number.isInteger(push.summaryHour) && push.summaryHour >= 0 && push.summaryHour <= 23 ? push.summaryHour : 21,
+        };
     }
     return s;
   }
@@ -1366,6 +1376,10 @@
   const timeLimitLabel = (sec) => (sec ? `${sec}초` : "없음");
   $("planTimeLimit").append(...TIME_LIMIT_CHOICES.map((sec) => h("option", { value: String(sec) }, timeLimitLabel(sec))));
   let limitBusy = false;
+  // 공부 알림 시각(plan.remindHour): 없음 또는 오후 3시~오후 10시(한국 시각). 아이 기기에서 알림을 켜 두면 그 시각까지 시험이 없을 때 한 번 알려 준다.
+  const remindLabel = (hr) => (Number.isInteger(hr) ? hourLabel(hr) : "없음");
+  $("planRemindHour").append(...REMIND_HOUR_CHOICES.map((hr) => h("option", { value: Number.isInteger(hr) ? String(hr) : "" }, remindLabel(hr))));
+  let remindBusy = false;
   panels.settings = (c) => {
     const code = JOIN_CODE.test(c.joinCode || "") ? c.joinCode : "";
     $("childCodeText").textContent = code ? formatCode(code) : "(없음 · ‘코드 새로 만들기’를 누르세요)";
@@ -1388,12 +1402,21 @@
       if (![...select.options].some((o) => o.value === String(limit))) select.append(h("option", { value: String(limit) }, timeLimitLabel(limit)));
       select.value = String(limit);
     }
+    const remind = planDefaults(c.plan).remindHour;
+    const remindValue = Number.isInteger(remind) ? String(remind) : "";
+    const remindSelect = $("planRemindHour");
+    if (!remindBusy && remindSelect.dataset.key !== c.id + ":" + remindValue) {
+      remindSelect.dataset.key = c.id + ":" + remindValue;
+      if (![...remindSelect.options].some((o) => o.value === remindValue)) remindSelect.append(h("option", { value: remindValue }, remindLabel(remind)));
+      remindSelect.value = remindValue;
+    }
     $("deleteConfirmText").textContent = `지우려면 아이 이름 ‘${c.name}’을(를) 그대로 적고 ‘삭제’를 누르세요.`;
     $("deleteChildGo").disabled = tidy($("deleteConfirmName").value) !== c.name;
   };
   formResets.push(() => {
     delete $("renameChild").dataset.key;
     delete $("planTimeLimit").dataset.key;
+    delete $("planRemindHour").dataset.key;
     $("deleteConfirm").classList.add("hidden");
     $("deleteConfirmName").value = "";
   });
@@ -1468,6 +1491,33 @@
       scheduleRender();
     }
   };
+  // 공부 알림 시각: 바꾸는 즉시 계획(plan)에 remindHour 만 저장한다(제한 시간과 같은 방식).
+  $("planRemindHour").onchange = async () => {
+    const c = currentChild();
+    if (!c) return;
+    const raw = $("planRemindHour").value;
+    const remindHour = raw === "" ? null : Number(raw);
+    const before = planDefaults(c.plan).remindHour;
+    remindBusy = true;
+    $("planRemindHour").disabled = true;
+    note(c.id, "remindStatus", "info", "저장하는 중…");
+    try {
+      putPlan(c.id, await api.savePlan(c.id, { remindHour }), { remindHour });
+      const text = Number.isInteger(remindHour)
+        ? `저장했어요. 아이 기기에서 알림을 켜 두면 매일 ${hourLabel(remindHour)}까지 시험이 없을 때 한 번 알려 줘요.`
+        : "저장했어요. 공부 알림을 보내지 않아요.";
+      note(c.id, "remindStatus", "good", text);
+      toast(text, "good");
+    } catch (e) {
+      $("planRemindHour").value = Number.isInteger(before) ? String(before) : "";
+      note(c.id, "remindStatus", "bad", "저장 실패: " + failure(e));
+    } finally {
+      remindBusy = false;
+      $("planRemindHour").disabled = false;
+      delete $("planRemindHour").dataset.key;
+      scheduleRender();
+    }
+  };
   // 삭제는 두 단계: ‘삭제…’ → 아이 이름을 그대로 적어야 ‘삭제’가 눌린다.
   $("deleteChild").onclick = () => {
     $("deleteConfirm").classList.remove("hidden");
@@ -1502,6 +1552,7 @@
     $("parentState").textContent = s.parentCode ? `연결됨 · 아이 ${s.children.length}명` : "";
     $("clearParent").disabled = !s.parentCode;
     if (document.activeElement !== $("parentServer")) $("parentServer").value = s.server;
+    renderNotifyCard();
   };
   $("saveParent").onclick = () =>
     verifyAndSave($("parentCode"), $("saveParent"), $("parentStatus"), (text) => {
@@ -1516,7 +1567,14 @@
     const s = store.get();
     notes.clear();
     lastLoadError = "";
-    store.patch({ ...emptyState(), server: s.server, prefs: s.prefs });
+    // 이 폰의 알림도 끈다: 서버 구독은 지우는 코드가 남아 있는 지금 지운다(실패해도 다음 전송 때 만료로 정리된다)
+    const push = s.prefs.push;
+    if (push) {
+      api.request("/push/unsubscribe", { method: "POST", body: { role: "parent", device: { id: push.deviceId } } }).catch(() => {});
+      Shared.notify.unsubscribe().catch(() => {});
+    }
+    pushNote = null;
+    store.patch({ ...emptyState(), server: s.server, prefs: { ...s.prefs, push: null } });
     setupNote = { kind: "info", text: "보호자 코드를 지웠어요. 다시 쓰려면 코드를 넣어 주세요." };
     router.replace("#/setup");
   };
@@ -1531,6 +1589,139 @@
     setFeedback($("serverStatus"), "good", "저장했어요. 이 서버에서 아이들 기록을 다시 불러와요.");
     refreshAll({ force: true });
   };
+
+  // ===== [notify] 알림(2B): 이 폰에서 받기 · 🧒 시험 마침 · 🌙 저녁 요약 · 테스트 알림 =====
+  // 켜기: 권한(터치 직후 맨 먼저) → GET /push/key → 브라우저 구독 → POST /push/subscribe {role:"parent", device, subscription, kinds, summaryHour}(보호자 코드) → prefs.push.
+  // 체크·시각을 바꾸면 같은 구독으로 바로 다시 보낸다. 앱 시작 때 구독이 없어졌거나 endpoint 가 바뀌었으면 다시 등록한다(권한이 granted 일 때만).
+  // 끄기·보호자 코드 삭제는 브라우저 구독과 서버 구독(POST /push/unsubscribe)을 함께 지운다. 문구는 Worker 가 만든다.
+  const SUMMARY_HOURS = [18, 19, 20, 21, 22, 23];
+  $("notifySummaryHour").append(...SUMMARY_HOURS.map((hr) => h("option", { value: String(hr) }, hourLabel(hr))));
+  $("notifySummaryHour").value = "21";
+  let pushBusy = false;
+  let pushNote = null; // #notifyStatus 에 보일 {kind, text}(없으면 지원 여부 안내)
+  function pushDeviceId() {
+    const s = store.get();
+    if (s.prefs.deviceId) return s.prefs.deviceId;
+    const id = crypto.randomUUID();
+    store.patch((st) => ({ prefs: { ...st.prefs, deviceId: id } }));
+    return id;
+  }
+  const pushChoices = () => ({ kinds: { finish: $("notifyFinish").checked, summary: $("notifySummary").checked }, summaryHour: Number($("notifySummaryHour").value) });
+  const choicesText = (c) => [c.kinds.finish ? "시험을 마치면 바로" : "", c.kinds.summary ? `저녁 요약 ${hourLabel(c.summaryHour)}` : ""].filter(Boolean).join(" · ") || "받을 알림 없음";
+  async function registerParentPush(choices) {
+    const { publicKey } = await api.request("/push/key");
+    const subscription = await Shared.notify.subscribe(publicKey);
+    const deviceId = pushDeviceId();
+    await api.request("/push/subscribe", { method: "POST", body: { role: "parent", device: { id: deviceId, label: deviceLabel() }, subscription, ...choices } });
+    store.patch((s) => ({ prefs: { ...s.prefs, push: { deviceId, endpoint: subscription.endpoint, kinds: choices.kinds, summaryHour: choices.summaryHour } } }));
+  }
+  function renderNotifyCard() {
+    const push = store.get().prefs.push;
+    const on = Boolean(push);
+    const support = Shared.notify.support();
+    $("notifyState").textContent = on ? "켜짐" : "꺼짐";
+    $("notifyState").className = "pill" + (on ? " ok" : "");
+    const button = $("notifyEnable");
+    button.textContent = on ? "🔕 알림 끄기" : "🔔 이 폰에서 알림 받기";
+    button.className = "btn " + (on ? "outline" : "primary");
+    button.classList.toggle("hidden", !on && support !== "push");
+    button.disabled = pushBusy;
+    $("notifyOptions").classList.toggle("hidden", !on);
+    if (on && !pushBusy) {
+      $("notifyFinish").checked = push.kinds.finish;
+      $("notifySummary").checked = push.kinds.summary;
+      $("notifySummaryHour").value = String(push.summaryHour);
+    }
+    for (const id of ["notifyFinish", "notifySummary", "notifyTest"]) $(id).disabled = pushBusy;
+    $("notifySummaryHour").disabled = pushBusy || !$("notifySummary").checked;
+    if (pushNote) return setFeedback($("notifyStatus"), pushNote.kind, pushNote.text);
+    const denied = support === "push" && Shared.notify.permission() === "denied";
+    setFeedback(
+      $("notifyStatus"),
+      denied ? "bad" : "info",
+      denied
+        ? "알림 권한이 꺼져 있어요. 폰 설정에서 이 앱의 알림을 허용해 주세요."
+        : on
+          ? `🔔 알림 켜짐 · ${choicesText(push)}`
+          : support === "install"
+            ? "홈 화면에 설치한 앱에서만 알림을 켤 수 있어요. Safari 공유(⬆) → ‘홈 화면에 추가’로 설치한 뒤 그 앱에서 켜 주세요(iOS 16.4 이상)."
+            : support === "push"
+              ? "알림 꺼짐"
+              : "이 브라우저는 알림을 지원하지 않아요. 폰의 Chrome·Safari에서 설치한 보호자 앱으로 열어 주세요.",
+    );
+  }
+  async function pushAction(busyText, run) {
+    if (pushBusy) return;
+    pushBusy = true;
+    pushNote = { kind: "info", text: busyText };
+    renderNotifyCard();
+    try {
+      pushNote = await run();
+    } catch (e) {
+      pushNote = { kind: "bad", text: e?.code === "push_unconfigured" ? e.message : "알림 설정을 바꾸지 못했어요: " + failure(e) };
+    } finally {
+      pushBusy = false;
+      renderNotifyCard();
+    }
+  }
+  $("notifyEnable").onclick = () => {
+    if (store.get().prefs.push)
+      return pushAction("알림을 끄는 중…", async () => {
+        const prev = store.get().prefs.push;
+        store.patch((s) => ({ prefs: { ...s.prefs, push: null } }));
+        await Shared.notify.unsubscribe().catch(() => {});
+        await api.request("/push/unsubscribe", { method: "POST", body: { role: "parent", device: { id: prev.deviceId } } }).catch(() => {}); // 남은 구독은 다음 전송 때 만료로 정리된다
+        return { kind: "good", text: "알림을 껐어요." };
+      });
+    if (Shared.notify.support() !== "push") return renderNotifyCard();
+    pushAction("알림을 켜는 중…", async () => {
+      const permission = await Shared.notify.request(); // 터치 직후 맨 먼저(아이폰은 사용자 터치 안에서만 묻는다)
+      if (permission !== "granted") return { kind: "bad", text: "알림 권한이 꺼져 있어요. 폰 설정에서 이 앱의 알림을 허용해 주세요." };
+      const choices = pushChoices();
+      await registerParentPush(choices);
+      toast("🔔 알림을 켰어요", "good");
+      return { kind: "good", text: `알림을 켰어요(${choicesText(choices)}). ‘테스트 알림 보내기’로 이 폰에 오는지 확인해 보세요.` };
+    });
+  };
+  // 체크·시각 변경: 같은 구독으로 바로 다시 등록한다(구독이 바뀌었으면 새로 만든다).
+  function savePushChoices() {
+    const prev = store.get().prefs.push;
+    if (!prev) return;
+    const choices = pushChoices();
+    pushAction("저장하는 중…", async () => {
+      const current = await Shared.notify.current();
+      if (current && current.endpoint === prev.endpoint) {
+        await api.request("/push/subscribe", { method: "POST", body: { role: "parent", device: { id: prev.deviceId, label: deviceLabel() }, subscription: current, ...choices } });
+        store.patch((s) => ({ prefs: { ...s.prefs, push: { ...prev, ...choices } } }));
+      } else await registerParentPush(choices);
+      return { kind: "good", text: `저장했어요. ${choicesText(choices)}` };
+    });
+  }
+  for (const id of ["notifyFinish", "notifySummary", "notifySummaryHour"]) $(id).onchange = savePushChoices;
+  $("notifyTest").onclick = () => {
+    const push = store.get().prefs.push;
+    if (!push) return;
+    pushAction("테스트 알림을 보내는 중…", async () => {
+      try {
+        await api.request("/push/test", { method: "POST", body: { role: "parent", device: { id: push.deviceId } } });
+      } catch (e) {
+        if (e?.code === "no_subscription" || e?.code === "push_failed") return { kind: "bad", text: e.message };
+        throw e;
+      }
+      return { kind: "good", text: "테스트 알림을 보냈어요. 몇 초 안에 이 폰에 알림이 와요. 안 오면 폰의 알림 설정을 확인해 주세요." };
+    });
+  };
+  // 앱 시작 때: 켜 둔 알림의 구독이 사라졌거나 바뀌었으면(브라우저 갱신·키 교체) 조용히 다시 등록한다.
+  async function refreshParentPush() {
+    const s = store.get();
+    const prev = s.prefs.push;
+    if (!prev || !s.parentCode || pushBusy || Shared.notify.support() !== "push" || Shared.notify.permission() !== "granted") return;
+    try {
+      const current = await Shared.notify.current();
+      if (current && current.endpoint === prev.endpoint) return;
+      await registerParentPush({ kinds: prev.kinds, summaryHour: prev.summaryHour });
+    } catch {} // 오프라인·옛 Worker: 다음에 앱을 열 때 다시
+  }
 
   // ===== [questions] 질문 탭: 아이가 AI 선생님에게 물어본 문제(요약만, 사진 없음) =====
   const TUTOR_KIND_TEXT = { explain: "풀이 설명", translate: "해석", grammar: "어법 설명", check: "내 답 확인", ask: "직접 질문" };
@@ -1593,7 +1784,18 @@
   setInterval(renderLoadStatus, 60000);
   store.subscribe(scheduleRender);
   onRoute();
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
+    // 알림을 눌러 이미 열린 보호자 앱으로 돌아오면 sw.js 가 {type:"navigate", url} 을 보낸다: 그 화면(해시)으로 옮긴다.
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      if (e.data?.type !== "navigate") return;
+      try {
+        const target = new URL(e.data.url, location.href);
+        if (target.pathname.endsWith("parent.html")) router.go(target.hash || "#/");
+      } catch {}
+    });
+  }
+  refreshParentPush();
   window.ParentApp = Object.freeze({ store, router, computeStats, suggestLevel, api });
   if (window.markVocabAppReady) window.markVocabAppReady();
 })();

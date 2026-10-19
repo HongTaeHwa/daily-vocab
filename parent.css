@@ -28,7 +28,7 @@ textarea{width:100%;padding:12px;font-size:14px}
 .controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}
 .controls input{flex:1;min-width:160px}
 .controls select{flex:0 1 auto;min-width:120px}
-.check{display:flex;align-items:center;gap:7px;font-weight:600}.check input{accent-color:#245fcb;width:20px;height:20px;flex:none}
+.check{display:flex;align-items:center;gap:7px;font-weight:600}.check input{accent-color:#245fcb;width:20px;height:20px;flex:none;min-width:0}
 .btn{border:0;border-radius:13px;padding:11px 16px;font-weight:800;cursor:pointer;background:var(--pale);color:var(--blue);min-height:48px;transition:transform .12s,background .12s;display:inline-flex;align-items:center;justify-content:center;gap:6px;text-decoration:none}
 .btn:active,.tab:active,.subtab:active{transform:scale(.985)}
 .btn.primary{background:var(--blue);color:#fff}.btn.primary:active{background:var(--blue-dark)}

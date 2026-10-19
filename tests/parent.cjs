@@ -6,9 +6,12 @@
 // C단계: 상세는 ?days=30&limit=200, 자주 틀린 단어 고르기 → ‘복습 M/D’ 세트 보내기(이름 겹치면 (2)) → 세트 탭, 오늘의 단어 → ‘오늘의 단어 M/D’ 세트,
 //        ‘더 보기’ 페이지(겹침 없음·끝나면 숨김·옛 Worker 404면 조용히 숨김), 옛 Worker(전체 기록·recordCount 없음)면 최신 200개·버튼 없음,
 //        수준 제안 규칙(올리기·내리기·없음)·카드 ‘적용’(수준만 저장)·‘다음에’(7일 숨김), 뜻 없는 틀린 단어는 빼고 알림.
+// 알림(2B): 아이 설정 탭의 공부 알림 시각(#planRemindHour → plan {remindHour}), 보호자 설정 🔔(가짜 구독 tests/lib/fake-push.cjs: 켜기 → /push/key·/push/subscribe
+//        role parent·kinds·summaryHour → 체크·시각 즉시 갱신 → 테스트 알림 → 새로고침 유지 → 끄기 → 코드 삭제 때 해지), 미설정 Worker(503) 안내.
 // 가족 Worker 는 tests/lib/fake-family-worker.cjs 가 가짜로 응답한다(보호자 앱 기본 서버 주소를 가로챈다).
 const { chromium } = require("playwright");
 const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
+const { fakePushScript } = require("./lib/fake-push.cjs");
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -16,6 +19,7 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
     args: ["--no-sandbox"],
   });
   const context = await browser.newContext({ viewport: { width: 420, height: 900 }, serviceWorkers: "block" });
+  await context.addInitScript(fakePushScript); // 알림: 가짜 구독(Shared.notify 테스트 훅)
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -258,6 +262,17 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   const limitReq = paths("/family/" + HANEUL + "/plan", "POST").slice(-1)[0];
   assert(JSON.stringify(limitReq.body) === JSON.stringify({ timeLimitSec: 20 }) && (await textHas("#limitStatus", "20초")), "time limit sent alone: " + JSON.stringify(limitReq.body));
   assert(fake.planOf(children.get(HANEUL)).level === "중3 상위권" && fake.planOf(children.get(HANEUL)).timeLimitSec === 20, "server plan keeps the level and stores the limit");
+  // 공부 알림 시각: 없음 / 오후 3시~10시, 바꾸면 바로 {remindHour} 만 저장
+  assert((await page.inputValue("#planRemindHour")) === "" && (await page.$$eval("#planRemindHour option", (o) => o.map((x) => x.textContent).join(","))) === "없음,오후 3시,오후 4시,오후 5시,오후 6시,오후 7시,오후 8시,오후 9시,오후 10시", "remind hour choices, off by default");
+  await page.selectOption("#planRemindHour", "20");
+  await waitFor(() => textHas("#remindStatus", "저장했어요"), "remind hour saved at once");
+  let remindReq = paths("/family/" + HANEUL + "/plan", "POST").slice(-1)[0];
+  assert(JSON.stringify(remindReq.body) === JSON.stringify({ remindHour: 20 }) && remindReq.passcode === PARENT_CODE && (await textHas("#remindStatus", "오후 8시까지 시험이 없을 때")), "remind hour sent alone: " + JSON.stringify(remindReq.body));
+  assert(fake.planOf(children.get(HANEUL)).remindHour === 20 && fake.planOf(children.get(HANEUL)).timeLimitSec === 20, "server plan stores the remind hour, keeps the limit");
+  await page.selectOption("#planRemindHour", "");
+  await waitFor(() => textHas("#remindStatus", "보내지 않아요"), "remind hour cleared");
+  remindReq = paths("/family/" + HANEUL + "/plan", "POST").slice(-1)[0];
+  assert(JSON.stringify(remindReq.body) === JSON.stringify({ remindHour: null }) && fake.planOf(children.get(HANEUL)).remindHour === null, "null clears it: " + JSON.stringify(remindReq.body));
   await page.fill("#renameChild", "하늘이");
   await page.click("#saveChildName");
   await waitFor(() => page.evaluate(() => document.getElementById("childDetailTitle").textContent === "🧒 하늘이"), "renamed");
@@ -321,11 +336,58 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert((await page.getAttribute("#openChildApp", "href")) === "./", "child app link");
   await page.click("#checkApp");
   assert((await textHas("#appStatus", "앱 준비 완료")) && (await textHas("#appStatus", "편집기 연결됨")), "app check: " + (await text("#appStatus")));
+  // ---- 🔔 알림(이 폰): 켜기 → 구독 본문(role parent·kinds·summaryHour) → 체크·시각 즉시 갱신 → 테스트 알림 → 새로고침 유지 → 끄기 → 다시 켜기 ----
+  const pushState = () => page.evaluate(() => JSON.parse(localStorage.getItem("__test_push") || "{}"));
+  assert((await text("#notifyState")) === "꺼짐" && (await page.isHidden("#notifyOptions")) && (await textHas("#notifyStatus", "알림 꺼짐")) && !(await textHas("#settings", "준비 중")), "notify card starts off (no ready-soon chip)");
+  assert(paths("/push/key").length === 0 && paths("/push/subscribe").length === 0, "nothing sent before turning it on");
+  await page.click("#notifyEnable");
+  await waitFor(() => textHas("#notifyStatus", "알림을 켰어요"), "parent notifications on");
+  assert(paths("/push/key", "GET").length === 1 && paths("/push/key", "GET")[0].passcode === PARENT_CODE, "server key with the parent code");
+  let pushSubs = paths("/push/subscribe", "POST");
+  const pushDevice = pushSubs[0].body.device.id;
+  assert(
+    pushSubs.length === 1 && pushSubs[0].passcode === PARENT_CODE && pushSubs[0].body.role === "parent" && !("childId" in pushSubs[0].body) && /^[0-9a-f-]{36}$/.test(pushDevice) &&
+      typeof pushSubs[0].body.device.label === "string" && pushSubs[0].body.subscription.endpoint === "https://push.test/sub/1" &&
+      JSON.stringify(pushSubs[0].body.kinds) === JSON.stringify({ finish: true, summary: true }) && pushSubs[0].body.summaryHour === 21,
+    "parent subscribe body: " + JSON.stringify(pushSubs[0].body).slice(0, 220),
+  );
+  let saved = (await parentState()).prefs;
+  assert(saved.deviceId === pushDevice && JSON.stringify(saved.push) === JSON.stringify({ deviceId: pushDevice, endpoint: "https://push.test/sub/1", kinds: { finish: true, summary: true }, summaryHour: 21 }), "prefs.push stored: " + JSON.stringify(saved.push));
+  assert((await text("#notifyState")) === "켜짐" && (await page.isVisible("#notifyOptions")) && (await text("#notifyEnable")) === "🔕 알림 끄기" && (await textHas("#toast", "알림을 켰어요")), "card shows on");
+  assert((await page.inputValue("#notifySummaryHour")) === "21" && (await page.$$eval("#notifySummaryHour option", (o) => o.length)) === 6, "summary hour 18~23, default 21");
+  await page.uncheck("#notifyFinish");
+  await waitFor(() => paths("/push/subscribe", "POST").length === 2, "kinds change sent at once");
+  pushSubs = paths("/push/subscribe", "POST");
+  assert(JSON.stringify(pushSubs[1].body.kinds) === JSON.stringify({ finish: false, summary: true }) && pushSubs[1].body.device.id === pushDevice && pushSubs[1].body.subscription.endpoint === "https://push.test/sub/1", "same subscription, new kinds");
+  await waitFor(() => textHas("#notifyStatus", "저장했어요"), "kinds saved message");
+  await page.selectOption("#notifySummaryHour", "22");
+  await waitFor(() => paths("/push/subscribe", "POST").length === 3, "summary hour sent at once");
+  await waitFor(() => textHas("#notifyStatus", "저녁 요약 오후 10시"), "summary hour saved message");
+  assert(paths("/push/subscribe", "POST")[2].body.summaryHour === 22, "summary hour 22");
+  await waitFor(async () => (await parentState()).prefs.push.summaryHour === 22 && (await parentState()).prefs.push.kinds.finish === false, "prefs follow");
+  await page.click("#notifyTest");
+  await waitFor(() => textHas("#notifyStatus", "테스트 알림을 보냈어요"), "test push sent");
+  const testReq = paths("/push/test", "POST")[0];
+  assert(testReq.passcode === PARENT_CODE && JSON.stringify(testReq.body) === JSON.stringify({ role: "parent", device: { id: pushDevice } }), "test body: " + JSON.stringify(testReq.body));
+  await page.reload();
+  await waitFor(() => page.isVisible("#notifyOptions"), "card after reload");
+  await new Promise((r) => setTimeout(r, 300));
+  assert(!(await page.isChecked("#notifyFinish")) && (await page.isChecked("#notifySummary")) && (await page.inputValue("#notifySummaryHour")) === "22" && paths("/push/subscribe", "POST").length === 3, "choices kept, no re-registration for the same subscription");
+  await page.click("#notifyEnable");
+  await waitFor(() => paths("/push/unsubscribe", "POST").length === 1, "turned off: unsubscribe");
+  assert(JSON.stringify(paths("/push/unsubscribe", "POST")[0].body) === JSON.stringify({ role: "parent", device: { id: pushDevice } }) && paths("/push/unsubscribe", "POST")[0].passcode === PARENT_CODE, "unsubscribe body");
+  await waitFor(() => textHas("#notifyStatus", "알림을 껐어요"), "off message");
+  assert((await parentState()).prefs.push === null && !(await pushState()).sub && fake.pushSubs.size === 0 && (await text("#notifyState")) === "꺼짐" && (await page.isHidden("#notifyOptions")), "everything off");
+  await page.click("#notifyEnable");
+  await waitFor(() => paths("/push/subscribe", "POST").length === 4 && fake.pushSubs.size === 1, "on again");
+  assert(paths("/push/subscribe", "POST")[3].body.device.id === pushDevice, "the phone keeps its device id");
   page.once("dialog", (d) => d.accept());
   await page.click("#clearParent");
   await waitFor(() => page.isVisible("#parentSetup"), "setup after clearing");
   const cleared = await parentState();
   assert((await hash()) === "#/setup" && cleared.parentCode === "" && cleared.children.length === 0 && Object.keys(cleared.details).length === 0 && !cleared.fetchedAt, "code and cache cleared: " + JSON.stringify(cleared).slice(0, 160));
+  await waitFor(() => paths("/push/unsubscribe", "POST").length === 2, "clearing the code removes the server subscription");
+  assert(paths("/push/unsubscribe", "POST")[1].passcode === PARENT_CODE && cleared.prefs.push === null && !(await pushState()).sub && fake.pushSubs.size === 0, "push cleared with the code");
   assert(await page.isHidden(".tabbar"), "tabs hidden again");
 
   // ---- 옛 설치 호환: 보호자 아이콘(…/?mode=parent)으로 열면 parent.html 로 옮기고 옛 키를 이전한다 ----
@@ -414,9 +476,10 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
 
   // ---- ‘더 보기’ · 뜻 없는 틀린 단어 · 수준 제안 카드: 기록 27개(최근 13일 22개 + 40일 전 5개) 아이, ‘더 보기’ 한 페이지 2개 ----
   const pg = await browser.newContext({ viewport: { width: 420, height: 900 }, serviceWorkers: "block" });
+  await pg.addInitScript(fakePushScript);
   const pgPage = await pg.newPage();
   pgPage.on("pageerror", (e) => errors.push("paging: " + e.message));
-  const pgFake = await createFakeWorker(pgPage, { server: DEFAULT_SERVER, familyCode: FAMILY_CODE, parentCode: PARENT_CODE, detailPageSize: 2 });
+  const pgFake = await createFakeWorker(pgPage, { server: DEFAULT_SERVER, familyCode: FAMILY_CODE, parentCode: PARENT_CODE, detailPageSize: 2, push: false }); // push:false = 알림 키가 없는 Worker
   const PG = "33333333-4444-4555-8666-777777777777";
   const pgChild = pgFake.seedChild(PG, "다온", "246810");
   pgChild.devices = { "dev-c": { label: "iPhone", joinedAt: noonDaysAgo(20), lastSeenAt: minutesAgo(5) } };
@@ -434,7 +497,9 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await waitFor(() => pgPage.isVisible("#today"), "paging: today");
   await pgPage.evaluate((id) => (location.hash = "#/child/" + id), PG);
   await waitFor(async () => (await pgEntries()) === 22, "paging: 22 records in the 30-day window");
-  assert((await pgHas("#childDetailSummary", "전체 시험 27회")) && (await pgHas("#recordsNote", "전체 27회 중 최근 22개를 받았어요")) && (await pgHas("#recordsNote", "더 보기")), "recordCount shown: " + (await pgText("#recordsNote")));
+  // 목록(최근 14일)도 22개라 상세가 오기 전에 22개가 먼저 보인다: 상세의 기록 수 문구가 나올 때까지 기다린다
+  await waitFor(() => pgHas("#recordsNote", "전체 27회 중 최근 22개를 받았어요"), "paging: detail loaded");
+  assert((await pgHas("#childDetailSummary", "전체 시험 27회")) && (await pgHas("#recordsNote", "더 보기")), "recordCount shown: " + (await pgText("#recordsNote")) + " / " + (await pgText("#childDetailSummary")));
   assert(await pgPage.isVisible("#loadMoreRecords"), "‘more’ button when older records exist");
   // 뜻이 없는 틀린 단어: 그것만 고르면 보내지 않고 알린다, 모두 빼면 버튼이 꺼진다, 섞여 있으면 빼고 보낸다
   assert((await pgPage.$$eval("#missedTop .chip", (c) => c.length)) === 2 && (await pgHas('#missedTop .chip[data-word="fleeting"]', "뜻 없음")), "missed chips with a missing meaning");
@@ -510,6 +575,12 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await waitFor(() => pgPage.isVisible("#panelDaily"), "daily tab after reload");
   await new Promise((r) => setTimeout(r, 300));
   assert(await pgPage.isHidden("#levelSuggest"), "still hidden after reload");
+  // 알림 키가 없는 Worker(503 push_unconfigured): 켜려 하면 안내만 하고 다른 기능은 그대로
+  await pgPage.click("#tabSettings");
+  await waitFor(() => pgPage.isVisible("#notifyEnable"), "paging: settings");
+  await pgPage.click("#notifyEnable");
+  await waitFor(() => pgHas("#notifyStatus", "알림 서버가 아직 준비되지 않았어요"), "unconfigured Worker message");
+  assert((await pgState()).prefs.push === null && (await pgText("#notifyState")) === "꺼짐" && pgFake.paths("/push/subscribe").length === 0, "stays off without server keys");
 
   // ---- 옛 Worker(2026-10-19 이전): 상세가 인자를 무시하고 전체 기록(203개)을 주고 recordCount·more·‘더 보기’ 경로가 없다 ----
   const ow = await browser.newContext({ viewport: { width: 420, height: 900 }, serviceWorkers: "block" });
@@ -533,7 +604,7 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert(owFake.paths("/family/" + PG + "/records").length === 0 && !(await owPage.getAttribute("#toast", "class")).includes("bad"), "old worker: no page request, no error toast");
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: parent app — setup (length/401/404, one GET /family to the cards), today cards (linked/unlinked), hash back, child tabs (records summary/missed/filters, sets/lock, daily plan/make-now/off, link/code/devices/time limit/rename/regen, questions), add/delete child (name confirm), offline cache, clear code, old-install redirect + migration, 30-day detail + ‘more’ pages (404 quiet, old Worker 200), review set from missed words ((2) names, skipped meanings), daily words as a set, level suggestion rules/apply/later");
+  console.log("PASS: parent app — setup (length/401/404, one GET /family to the cards), today cards (linked/unlinked), hash back, child tabs (records summary/missed/filters, sets/lock, daily plan/make-now/off, link/code/devices/time limit/rename/regen, questions), add/delete child (name confirm), offline cache, clear code, old-install redirect + migration, 30-day detail + ‘more’ pages (404 quiet, old Worker 200), review set from missed words ((2) names, skipped meanings), daily words as a set, level suggestion rules/apply/later, notifications (remind hour, parent push on/kinds/hour/test/off/clear, 503)");
   await browser.close();
 })().catch((e) => {
   console.error(e);
