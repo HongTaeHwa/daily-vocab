@@ -678,6 +678,169 @@
     for (const c of s.children) box.append(childCard(c));
   };
 
+  // ===== [records] 아이들 목록 (#/children) · 아이 화면 (#/child/<id>) · 기록 탭 =====
+  views.children = () => {
+    const s = store.get();
+    const list = $("childrenList");
+    list.textContent = "";
+    if (!s.children.length) {
+      list.append(h("p", { class: "muted" }, loading ? "불러오는 중…" : "아직 등록된 아이가 없어요. 아래 ‘아이 추가’에 이름을 적어 아이를 만들고, 받은 아이 코드를 아이 기기에 넣어 주세요."));
+      return;
+    }
+    for (const c of s.children) {
+      const summary = devicesSummary(c);
+      list.append(
+        h(
+          "button",
+          { type: "button", class: "list-row", dataset: { child: c.id }, onclick: () => router.go(childPath(c.id)) },
+          h(
+            "span",
+            { class: "row-text" },
+            h("strong", null, "🧒 " + c.name),
+            h("small", null, summary ? "연결 기기: " + summary : JOIN_CODE.test(c.joinCode || "") ? `아직 연결된 기기 없음 · 아이 코드 ${formatCode(c.joinCode)}` : "연결된 기기 정보 없음"),
+          ),
+          h("span", { class: "chev", "aria-hidden": "true" }, "›"),
+        ),
+      );
+    }
+  };
+  $("addChild").onclick = async () => {
+    const name = tidy($("newChildName").value).slice(0, 20);
+    if (!name) {
+      setFeedback($("addChildStatus"), "bad", "아이 이름을 적어 주세요.");
+      return;
+    }
+    $("addChild").disabled = true;
+    setFeedback($("addChildStatus"), "info", "아이를 만드는 중…");
+    try {
+      const data = await api.createChild(name);
+      if (!validChild(data?.child)) throw Error("서버 응답이 올바르지 않아요.");
+      $("newChildName").value = "";
+      putChild({ ...data.child, records: [], today: null });
+      const text = `‘${data.child.name}’을(를) 만들었어요. 아이 코드 ${formatCode(data.child.joinCode)} · 링크를 복사해 아이 기기로 보내 주세요.`;
+      setFeedback($("addChildStatus"), "good", text);
+      toast(text, "good");
+      router.go(childPath(data.child.id, "settings"));
+    } catch (e) {
+      setFeedback($("addChildStatus"), "bad", "만들지 못했어요: " + failure(e));
+    } finally {
+      $("addChild").disabled = false;
+    }
+  };
+  $("newChildName").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("addChild").click();
+  });
+
+  // 아이 화면 머리: 이름·요약·하위 탭. 탭 내용은 panels[tab].
+  views.child = (r) => {
+    const s = store.get();
+    const c = childById(r.id);
+    const d = s.details[r.id];
+    for (const t of TABS) {
+      const on = t === r.tab;
+      $("sub" + t[0].toUpperCase() + t.slice(1)).classList.toggle("active", on);
+      $("sub" + t[0].toUpperCase() + t.slice(1)).setAttribute("aria-selected", on ? "true" : "false");
+      $("panel" + t[0].toUpperCase() + t.slice(1)).classList.toggle("hidden", !on || !c);
+    }
+    if (!c) {
+      $("childDetailTitle").textContent = "🧒 …";
+      $("childDetailSummary").textContent = loading || detailLoading.has(r.id) ? "불러오는 중…" : "그 아이를 찾을 수 없어요. 아이들 목록에서 다시 골라 주세요.";
+      return;
+    }
+    $("childDetailTitle").textContent = "🧒 " + c.name;
+    const total = Math.max(d?.recordTotal || 0, Number.isInteger(c.recordCount) ? c.recordCount : 0, recordsOf(c.id).length);
+    const sets = Array.isArray(c.sets) ? c.sets.length : 0;
+    const devices = devicesOf(c).length;
+    const state = detailLoading.has(c.id) ? " · 불러오는 중…" : detailErrors.has(c.id) ? " · " + detailErrors.get(c.id) : "";
+    $("childDetailSummary").textContent = `전체 시험 ${total}회 · 세트 ${sets}개 · ` + (devices ? `연결 기기 ${devices}대` : "연결된 기기 없음") + state;
+    panels[r.tab]?.(c, d, r);
+    showNotes(c.id);
+  };
+  for (const t of TABS)
+    $("sub" + t[0].toUpperCase() + t.slice(1)).onclick = () => {
+      const id = router.current.id;
+      if (id) router.replace(childPath(id, t)); // 하위 탭은 history 를 늘리지 않는다(뒤로 가기는 아이 화면 전체를 닫는다)
+    };
+  $("closeChildDetail").onclick = () => router.back("#/children");
+
+  function recordItem(r) {
+    const missed = Array.isArray(r.missed) ? r.missed : [];
+    const duration = durationText(r.activeMs);
+    const score =
+      `${r.correct} / ${r.total} · ${pctOf(r)}점${r.partial ? " · 중단" : ""}${r.daily ? " · 📬 오늘의 단어" : ""}` +
+      `${r.timeouts ? ` · ⏱ 시간 초과 ${r.timeouts}개` : ""}${r.aiPass ? ` · 🤖 AI 인정 ${r.aiPass}개` : ""}`;
+    return h(
+      "article",
+      { class: "history-entry" },
+      h("div", { class: "history-head" }, h("span", { class: "history-score" }, score)),
+      h("p", { class: "history-meta" }, `${timeText(r.completedAt)} · ${r.setName || ""} · ${modeLabels[r.mode] || r.mode || ""} · ${r.range || ""}` + (duration ? ` · ${duration}` : "")),
+      r.awayCount ? h("p", { class: "away-flag" }, `⚠️ 문제 중 화면 이탈 ${r.awayCount}회 · 총 ${Math.round((r.awayMs || 0) / 1000)}초 (앱이 가려지거나 다른 앱으로 나감)`) : null,
+      missed.length
+        ? h("details", null, h("summary", null, `틀린 단어 ${missed.length}개 보기`), h("p", null, missed.map((m) => `${m.en} — ${m.ko}${m.unknown ? " [모름]" : ""}`).join(" · ")))
+        : h("p", { class: "muted" }, "틀린 단어 없음 🎉"),
+    );
+  }
+  function statTile(label, main, sub) {
+    return h("div", { class: "stat" }, h("small", null, label), h("b", null, main), h("span", null, sub));
+  }
+  panels.records = (c, d) => {
+    const s = store.get();
+    const records = recordsOf(c.id);
+    const stats = computeStats(records, { days: 30 });
+    const { week, prevWeek, window: month, streak } = stats;
+    const tiles = $("recordsSummary");
+    tiles.textContent = "";
+    tiles.append(
+      statTile("이번 주", `${week.count}회`, week.count ? `평균 ${week.avg}점` : "시험 없음"),
+      statTile("지난주", `${prevWeek.count}회`, prevWeek.count ? `평균 ${prevWeek.avg}점` : "시험 없음"),
+      statTile("최근 30일", month.count ? `${month.avg}점` : "-", `시험 ${month.count}회 평균`),
+      statTile("연속 학습", `🔥 ${streak}일`, streak ? "오늘·어제까지 이어서" : "오늘 시작해 봐요"),
+    );
+    const chips = $("missedTop");
+    chips.textContent = "";
+    if (!stats.missedTop.length) chips.append(h("span", { class: "muted" }, "최근 2주 동안 틀린 단어가 없어요."));
+    for (const w of stats.missedTop) chips.append(h("span", { class: "chip" }, h("span", null, w.en), h("b", null, `${w.n}회`), h("small", null, w.ko || "")));
+    // 필터: 세트(기록에 나온 이름, 최근 것부터)·기간
+    const names = [...new Set(records.map((r) => String(r.setName || "")).filter(Boolean))];
+    const prefs = s.prefs;
+    const setFilter = names.includes(prefs.recordsSet) ? prefs.recordsSet : "all";
+    const select = $("recordsSet");
+    const optionsKey = JSON.stringify(names);
+    if (select.dataset.key !== optionsKey) {
+      select.dataset.key = optionsKey;
+      select.textContent = "";
+      select.append(h("option", { value: "all" }, "전체 세트"), ...names.map((n) => h("option", { value: n }, n)));
+    }
+    select.value = setFilter;
+    $("recordsDays").value = String(prefs.recordsDays);
+    const since = prefs.recordsDays ? startOfDay(prefs.recordsDays - 1) : 0;
+    const filtered = records.filter((r) => (setFilter === "all" || r.setName === setFilter) && Date.parse(r.completedAt) >= since);
+    $("recordsNote").textContent = !d
+      ? detailLoading.has(c.id) ? "전체 기록을 불러오는 중… 지금은 최근 2주 기록만 보여요." : "최근 2주 기록만 보여요."
+      : d.recordTotal > d.records.length ? `전체 ${d.recordTotal}회 중 최근 ${d.records.length}개를 보여 줘요.` : "";
+    const list = $("childRecords");
+    const key = JSON.stringify([c.id, d?.fetchedAt || "", s.fetchedAt, setFilter, prefs.recordsDays, dayKey(new Date()), records.length]);
+    if (list.dataset.key === key) return; // 같은 내용이면 다시 만들지 않는다(펼쳐 둔 ‘틀린 단어 보기’ 유지)
+    list.dataset.key = key;
+    list.textContent = "";
+    if (!filtered.length) {
+      list.append(h("p", { class: "muted" }, records.length ? "이 조건의 기록이 없어요." : "아직 시험 기록이 없어요."));
+      return;
+    }
+    const groups = new Map();
+    for (const r of filtered) {
+      const k = dayKey(r.completedAt);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(r);
+    }
+    for (const rs of groups.values())
+      list.append(
+        h("section", { class: "day-group" }, h("h4", { class: "day-title" }, `${dateText(new Date(rs[0].completedAt))} · ${rs.length}회 · 평균 ${avgOf(rs)}점`), rs.map(recordItem)),
+      );
+  };
+  $("recordsSet").onchange = () => store.patch((s) => ({ prefs: { ...s.prefs, recordsSet: $("recordsSet").value } }));
+  $("recordsDays").onchange = () => store.patch((s) => ({ prefs: { ...s.prefs, recordsDays: Number($("recordsDays").value) } }));
+
   // ===== [start] 시작: 탭·새로고침·라우터·자동 갱신 =====
   $("tabToday").onclick = () => router.go("#/");
   $("tabChildren").onclick = () => router.go("#/children");
