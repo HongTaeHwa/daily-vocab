@@ -18,7 +18,7 @@ const { chromium } = require("playwright");
     }),
   );
   await p.goto(url);
-  if (!(await p.textContent("#appStatus")).includes("20261018-20"))
+  if (!(await p.textContent("#appStatus")).includes("20261018-21"))
     throw Error("version missing");
   await p.click("#createSet");
   await p.setInputFiles("#photos", {
@@ -42,13 +42,22 @@ const { chromium } = require("playwright");
     (await p.evaluate(() => localStorage.getItem("update-preserve"))) !== "yes"
   )
     throw Error("refresh erased data");
+  // 보호자 앱(parent.html)도 같은 릴리스: 버전 표시, 스크립트 3개(shared → editor → parent)·스타일의 ?v=, 앱 점검
+  const parent = await context.newPage();
+  await parent.goto(url + "parent.html");
+  if (!(await parent.textContent("#appStatus")).includes("20261018-21")) throw Error("parent version missing");
+  const parentAssets = await parent.evaluate(() => [...document.querySelectorAll("script[src], link[rel=stylesheet]")].map((e) => e.getAttribute("src") || e.getAttribute("href")));
+  if (JSON.stringify(parentAssets) !== JSON.stringify(["./parent.css?v=20261018-21", "./shared.js?v=20261018-21", "./editor.js?v=20261018-21", "./parent.js?v=20261018-21"]))
+    throw Error("parent assets: " + JSON.stringify(parentAssets));
+  await parent.evaluate(() => document.getElementById("checkApp").click()); // 코드가 없으면 설정 화면이 숨어 있어 직접 누른다
+  if (!(await parent.textContent("#appStatus")).includes("앱 준비 완료 · 편집기 연결됨")) throw Error("parent diagnostic: " + (await parent.textContent("#appStatus")));
   const failed = await context.newPage();
   await failed.route("**/sets.js?*", (r) => r.abort());
   await failed.goto(url);
   if (!(await failed.textContent("#appStatus")).includes("다운로드 실패"))
     throw Error("script failure invisible");
   console.log(
-    "PASS: versioned script bypasses old cache, photo feedback, app diagnostics, refresh preserves data, failed initialization visible",
+    "PASS: versioned script bypasses old cache, photo feedback, app diagnostics, refresh preserves data, failed initialization visible, parent app version/assets/diagnostics",
   );
   await b.close();
 })().catch((e) => {
