@@ -1111,6 +1111,176 @@
     }
   };
 
+  // ===== [settings] 아이 설정 탭(연결·이름·제한 시간·삭제) · 보호자 설정 (#/settings) =====
+  const timeLimitLabel = (sec) => (sec ? `${sec}초` : "없음");
+  $("planTimeLimit").append(...TIME_LIMIT_CHOICES.map((sec) => h("option", { value: String(sec) }, timeLimitLabel(sec))));
+  let limitBusy = false;
+  panels.settings = (c) => {
+    const code = JOIN_CODE.test(c.joinCode || "") ? c.joinCode : "";
+    $("childCodeText").textContent = code ? formatCode(code) : "(없음 · ‘코드 새로 만들기’를 누르세요)";
+    $("childLinkText").textContent = code ? linkFor(code) : "";
+    $("copyLink").disabled = !code;
+    $("copyCode").disabled = !code;
+    const devices = devicesOf(c).sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)));
+    $("deviceList").textContent = devices.length
+      ? "연결된 기기: " + devices.map((d) => `${d.label || "기기"} (${relativeTime(d.lastSeenAt)})`).join(" · ")
+      : "아직 연결된 기기가 없어요. 아이 기기에서 코드를 넣거나 링크를 열어 주세요.";
+    const nameKey = c.id + ":" + c.name;
+    if ($("renameChild").dataset.key !== nameKey) {
+      $("renameChild").dataset.key = nameKey;
+      $("renameChild").value = c.name;
+    }
+    const limit = planDefaults(c.plan).timeLimitSec;
+    const select = $("planTimeLimit");
+    if (!limitBusy && select.dataset.key !== c.id + ":" + limit) {
+      select.dataset.key = c.id + ":" + limit;
+      if (![...select.options].some((o) => o.value === String(limit))) select.append(h("option", { value: String(limit) }, timeLimitLabel(limit)));
+      select.value = String(limit);
+    }
+    $("deleteConfirmText").textContent = `지우려면 아이 이름 ‘${c.name}’을(를) 그대로 적고 ‘삭제’를 누르세요.`;
+    $("deleteChildGo").disabled = tidy($("deleteConfirmName").value) !== c.name;
+  };
+  formResets.push(() => {
+    delete $("renameChild").dataset.key;
+    delete $("planTimeLimit").dataset.key;
+    $("deleteConfirm").classList.add("hidden");
+    $("deleteConfirmName").value = "";
+  });
+  const currentChild = () => (router.current.id ? childById(router.current.id) : null);
+  $("copyLink").onclick = () => {
+    const c = currentChild();
+    if (c && JOIN_CODE.test(c.joinCode || "")) copyText(linkFor(c.joinCode), "아이 전용 링크", c.id);
+  };
+  $("copyCode").onclick = () => {
+    const c = currentChild();
+    if (c && JOIN_CODE.test(c.joinCode || "")) copyText(c.joinCode, "아이 코드", c.id);
+  };
+  $("regenCode").onclick = async () => {
+    const c = currentChild();
+    if (!c) return;
+    if (!confirm("아이 코드를 새로 만들면 옛 코드와 옛 링크로는 더 연결할 수 없어요. 이미 연결된 기기는 그대로예요. 새로 만들까요?")) return;
+    $("regenCode").disabled = true;
+    try {
+      const data = await api.regenCode(c.id);
+      putChild({ ...c, ...(validChild(data?.child) ? data.child : {}), records: undefined, today: undefined });
+      note(c.id, "linkStatus", "good", `새 아이 코드 ${formatCode(childById(c.id)?.joinCode)}을(를) 만들었어요.`);
+    } catch (e) {
+      note(c.id, "linkStatus", "bad", "코드를 만들지 못했어요: " + failure(e));
+    } finally {
+      $("regenCode").disabled = false;
+    }
+  };
+  $("saveChildName").onclick = async () => {
+    const c = currentChild();
+    if (!c) return;
+    const name = tidy($("renameChild").value).slice(0, 20);
+    if (!name) {
+      note(c.id, "nameStatus", "bad", "이름을 적어 주세요.");
+      return;
+    }
+    $("saveChildName").disabled = true;
+    try {
+      const data = await api.renameChild(c.id, name);
+      putChild({ ...c, ...(validChild(data?.child) ? data.child : {}), name: data?.child?.name || name, records: undefined, today: undefined });
+      const text = `이름을 ‘${childById(c.id).name}’(으)로 바꿨어요. 아이 기기에는 다음에 앱을 열 때 반영돼요.`;
+      note(c.id, "nameStatus", "good", text);
+      toast(text, "good");
+    } catch (e) {
+      note(c.id, "nameStatus", "bad", "이름을 바꾸지 못했어요: " + failure(e));
+    } finally {
+      $("saveChildName").disabled = false;
+    }
+  };
+  // 문제당 제한 시간: 바꾸는 즉시 계획(plan)에 timeLimitSec 만 저장한다.
+  $("planTimeLimit").onchange = async () => {
+    const c = currentChild();
+    if (!c) return;
+    const timeLimitSec = Number($("planTimeLimit").value);
+    const before = planDefaults(c.plan).timeLimitSec;
+    limitBusy = true;
+    $("planTimeLimit").disabled = true;
+    note(c.id, "limitStatus", "info", "저장하는 중…");
+    try {
+      putPlan(c.id, await api.savePlan(c.id, { timeLimitSec }), { timeLimitSec });
+      const text = timeLimitSec
+        ? `저장했어요. 문제당 제한 시간 ${timeLimitSec}초는 아이 기기가 다음에 앱을 열 때부터 적용돼요.`
+        : "저장했어요. 제한 시간 없이 풀어요(아이 기기가 다음에 앱을 열 때부터).";
+      note(c.id, "limitStatus", "good", text);
+      toast(text, "good");
+    } catch (e) {
+      $("planTimeLimit").value = String(before);
+      note(c.id, "limitStatus", "bad", "저장 실패: " + failure(e));
+    } finally {
+      limitBusy = false;
+      $("planTimeLimit").disabled = false;
+      delete $("planTimeLimit").dataset.key;
+      scheduleRender();
+    }
+  };
+  // 삭제는 두 단계: ‘삭제…’ → 아이 이름을 그대로 적어야 ‘삭제’가 눌린다.
+  $("deleteChild").onclick = () => {
+    $("deleteConfirm").classList.remove("hidden");
+    $("deleteConfirmName").value = "";
+    $("deleteChildGo").disabled = true;
+    $("deleteConfirmName").focus();
+  };
+  $("deleteChildCancel").onclick = () => $("deleteConfirm").classList.add("hidden");
+  $("deleteConfirmName").oninput = () => {
+    const c = currentChild();
+    $("deleteChildGo").disabled = !c || tidy($("deleteConfirmName").value) !== c.name;
+  };
+  $("deleteChildGo").onclick = async () => {
+    const c = currentChild();
+    if (!c || tidy($("deleteConfirmName").value) !== c.name) return;
+    $("deleteChildGo").disabled = true;
+    note(c.id, "deleteStatus", "info", "지우는 중…");
+    try {
+      await api.deleteChild(c.id);
+      removeChild(c.id);
+      toast(`‘${c.name}’을(를) 서버에서 지웠어요.`, "good");
+      router.replace("#/children");
+    } catch (e) {
+      note(c.id, "deleteStatus", "bad", "지우지 못했어요: " + failure(e));
+      $("deleteChildGo").disabled = false;
+    }
+  };
+
+  // 보호자 설정 (#/settings)
+  views.settings = () => {
+    const s = store.get();
+    $("parentState").textContent = s.parentCode ? `연결됨 · 아이 ${s.children.length}명` : "";
+    $("clearParent").disabled = !s.parentCode;
+    if (document.activeElement !== $("parentServer")) $("parentServer").value = s.server;
+  };
+  $("saveParent").onclick = () =>
+    verifyAndSave($("parentCode"), $("saveParent"), $("parentStatus"), (text) => {
+      $("parentStatus").textContent = text + " · 보호자 코드를 바꿨어요.";
+      toast("보호자 코드를 바꿨어요.", "good");
+    });
+  $("parentCode").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("saveParent").click();
+  });
+  $("clearParent").onclick = () => {
+    if (!confirm("보호자 코드를 이 폰에서 지울까요? 이 폰에 저장한 아이들 기록(캐시)도 함께 지워져요. 서버의 기록은 그대로예요.")) return;
+    const s = store.get();
+    notes.clear();
+    lastLoadError = "";
+    store.patch({ ...emptyState(), server: s.server, prefs: s.prefs });
+    setupNote = { kind: "info", text: "보호자 코드를 지웠어요. 다시 쓰려면 코드를 넣어 주세요." };
+    router.replace("#/setup");
+  };
+  $("saveServer").onclick = () => {
+    const raw = $("parentServer").value.trim();
+    const server = raw ? normalizeServer(raw) : AI_SERVER_DEFAULT;
+    if (!server) {
+      setFeedback($("serverStatus"), "bad", "https:// 로 시작하는 Worker 주소를 넣어 주세요.");
+      return;
+    }
+    store.patch({ server, fetchedAt: "" });
+    setFeedback($("serverStatus"), "good", "저장했어요. 이 서버에서 아이들 기록을 다시 불러와요.");
+    refreshAll({ force: true });
+  };
+
   // ===== [start] 시작: 탭·새로고침·라우터·자동 갱신 =====
   $("tabToday").onclick = () => router.go("#/");
   $("tabChildren").onclick = () => router.go("#/children");
