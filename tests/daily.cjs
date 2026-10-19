@@ -1,7 +1,7 @@
-// 오늘의 단어: 아이 기기 — 계획이 꺼져 있으면 카드 없음 → 보호자가 켠 뒤 앱을 열면 GET(no_daily) → POST 생성 → 홈 카드 →
-// 풀기(기존 시험 엔진) → 기록에 daily 날짜가 붙어 전송 → ✅ 카드 → 새로고침해도 재생성 없음.
-// 보호자 폰 — 아이 카드의 오늘의 단어 상태, 상세의 계획 저장(요청 본문)·미리보기·지금 만들기. 가족 서버는 라우트로 가짜 응답을 준다(tests/lib/fake-family-worker.cjs).
-// 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보내고 보호자 계획 상자에 ‘수준 기준 세트가 아직 없어요’가 보인다.
+// 오늘의 단어·제한 시간·세트 잠금 — 아이 기기: 계획이 꺼져 있으면 카드 없음 → 보호자가 켠 뒤 앱을 열면 GET(no_daily) → POST 생성 → 홈 카드 →
+// 풀기(기존 시험 엔진) → 기록에 daily 날짜가 붙어 전송 → ✅ 카드 → 새로고침해도 재생성 없음 → 제한 시간 수신·카운트다운·시간 초과 → 세트 잠금 수신·읽기 전용.
+// 보호자 쪽(계획 폼·제한 시간·잠금 저장)은 보호자 앱 tests/parent.cjs 가 시험하고, 여기서는 가짜 Worker 의 계획을 직접 바꾼다(tests/lib/fake-family-worker.cjs).
+// 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보낸다.
 const { chromium } = require("playwright");
 const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
 (async () => {
@@ -104,54 +104,8 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await new Promise((r) => setTimeout(r, 400));
   assert(paths("/daily/" + childId, "POST").length === 1, "no regeneration after reload");
 
-  // 보호자 폰: 아이 카드의 오늘의 단어 상태, 상세의 계획·미리보기 (보호자 화면으로 열어야 코드 칸이 보인다)
-  await page.goto(url + "?mode=parent");
-  await waitFor(() => page.isVisible("#parentSetup"), "parent setup screen");
-  await page.fill("#parentCodeStart", PARENT_CODE);
-  await page.click("#saveParentStart");
-  await waitFor(() => statusHas("parentSetupStatus", "연결 성공"), "parent connected");
-  await waitFor(() => statusHas("familyLoadStatus", "방금 확인했어요"), "family loaded");
-  assert((await page.textContent("#childrenList")).includes("오늘의 단어 ✅ 0 / 10"), "child card shows daily completion: " + (await page.textContent("#childrenList")));
-  await page.click("#childrenList button");
-  await waitFor(() => page.evaluate(() => document.querySelectorAll("#dailyPreview .daily-word").length === 10), "preview lists today's words");
-  assert((await page.$$eval("#dailyPreview .tag.review", (t) => t.length)) === 3, "three review tags");
-  assert(await page.isChecked("#planEnabled"), "plan enabled shown");
-  assert((await page.inputValue("#planLevel")) === "중2 상위권" && (await page.inputValue("#planCount")) === "10" && (await page.inputValue("#planHour")) === "16", "plan fields");
-  assert((await page.textContent("#planAnchor")).includes("수준 기준 세트가 아직 없어요"), "no level anchor while the child only has the example set: " + (await page.textContent("#planAnchor")));
-  assert((await page.textContent("#dailyPreview")).includes("✅ 0 / 10"), "preview shows completion");
-  await page.selectOption("#planCount", "15");
-  await page.selectOption("#planLevel", "고1·수능 기초");
-  await page.click("#savePlan");
-  await waitFor(() => statusHas("planStatus", "저장했어요"), "plan saved");
-  const planReq = paths("/family/" + childId + "/plan", "POST")[0];
-  assert(planReq && planReq.passcode === PARENT_CODE, "plan saved with the parent code");
-  assert(JSON.stringify(planReq.body) === JSON.stringify({ enabled: true, level: "고1·수능 기초", dailyCount: 15, hour: 16, timeLimitSec: 0 }), "plan body: " + JSON.stringify(planReq.body));
-  assert((await page.textContent("#planStatus")).includes("15개"), "status mentions the count");
-  await page.selectOption("#planLevel", "__custom");
-  assert(await page.isVisible("#planLevelCustom"), "custom level input appears");
-  await page.fill("#planLevelCustom", "중3 상위권");
-  await page.click("#savePlan");
-  await waitFor(() => paths("/family/" + childId + "/plan", "POST").length === 2, "second plan save");
-  assert(paths("/family/" + childId + "/plan", "POST")[1].body.level === "중3 상위권", "custom level sent");
-  await page.click("#makeDailyNow");
-  await waitFor(() => statusHas("planStatus", "준비됐어요"), "make now reports the existing set");
-  assert(paths("/daily/" + childId, "POST").length === 2 && paths("/daily/" + childId, "POST")[1].passcode === PARENT_CODE, "make-now uses the parent code");
-  await page.uncheck("#planEnabled");
-  await page.selectOption("#planTimeLimit", "20");
-  await page.click("#savePlan");
-  await waitFor(() => statusHas("planStatus", "만들지 않아요"), "plan disabled message");
-  assert((await page.textContent("#dailyPreview")).includes("꺼져 있어요"), "preview reflects the disabled plan");
-  const limitReq = paths("/family/" + childId + "/plan", "POST").slice(-1)[0];
-  assert(limitReq.body.timeLimitSec === 20 && limitReq.body.enabled === false, "time limit sent with the plan: " + JSON.stringify(limitReq.body));
-  assert((await page.textContent("#planStatus")).includes("제한 시간 20초"), "status mentions the time limit");
-
   // 문제당 제한 시간: 아이 기기는 앱을 열 때 설정을 받아 두고, 시간이 지나면 그 문제를 모름 처리한다(앱 밖에 있어도 시간은 흐른다)
-  // (이 테스트 페이지는 보호자 코드도 저장돼 보호자 모드이므로, 아이용 화면을 쓰려고 ‘아이 기기처럼 보기’를 켠다)
-  await page.click("#tabSettings");
-  await openFamilySettings();
-  await page.check("#parentModeOff");
-  await waitFor(() => page.isVisible("#home"), "child UI back for the quiz");
-  children.get(childId).plan.timeLimitSec = 10;
+  children.get(childId).plan.timeLimitSec = 10; // 보호자가 보호자 앱에서 정했다
   await page.reload();
   await waitFor(() => paths("/settings/" + childId, "GET").length >= 1, "settings fetched on launch");
   await waitFor(() => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).settings.timeLimitSec === 10), "time limit stored");
@@ -178,27 +132,8 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert((await page.textContent("#historyList")) !== null, "history exists");
   await page.click("#tabHistory");
   assert((await page.textContent("#historyList")).includes("⏱ 시간 초과 1개"), "child history shows the timeout");
-  await page.click("#tabSettings");
-  await openFamilySettings();
-  await page.uncheck("#parentModeOff");
-  await waitFor(() => page.isVisible("#family"), "parent mode back");
-  await waitFor(() => statusHas("familyLoadStatus", "방금 확인했어요"), "family reloaded");
-  await page.click("#childrenList button");
-  await waitFor(() => page.evaluate(() => document.getElementById("childRecords").textContent.includes("⏱ 시간 초과 1개")), "parent record shows the timeout");
-  assert((await page.textContent("#familyOverview")).includes("⏱ 시간 초과 1개"), "overview warns about the timeout");
-  assert((await page.inputValue("#planTimeLimit")) === "10", "plan form shows the current limit");
-
-  // 세트 수정 잠금: 보호자가 📚 세트 상자에서 켜면 plan 에 setsLocked 만 보내고, 아이 기기는 앱을 열 때 /settings 로 받아 새 세트·수정·삭제·가져오기를 막고 단어는 보기만 한다
-  assert(!(await page.isChecked("#setsLock")), "lock unchecked by default");
-  await page.check("#setsLock");
-  await waitFor(() => statusHas("setsStatus", "잠갔어요"), "lock saved");
-  const lockReq = paths("/family/" + childId + "/plan", "POST").slice(-1)[0];
-  assert(lockReq.passcode === PARENT_CODE && JSON.stringify(lockReq.body) === JSON.stringify({ setsLocked: true }), "lock sent alone: " + JSON.stringify(lockReq.body));
-  assert(children.get(childId).plan.timeLimitSec === 10 && children.get(childId).plan.setsLocked === true, "server plan keeps the limit and stores the lock");
-  await page.click("#tabSettings");
-  await openFamilySettings();
-  await page.check("#parentModeOff");
-  await waitFor(() => page.isVisible("#home"), "child UI for the lock check");
+  // 세트 수정 잠금: 보호자가 잠그면 아이 기기는 앱을 열 때 /settings 로 받아 새 세트·수정·삭제·가져오기를 막고 단어는 보기만 한다
+  children.get(childId).plan.setsLocked = true; // 보호자가 보호자 앱 📚 세트 탭에서 잠갔다
   await page.reload();
   await waitFor(() => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).settings.setsLocked === true), "lock stored on the device");
   await page.click("#tabHome");
@@ -225,12 +160,9 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert((await page.isVisible("#createSet")) && (await page.isHidden("#setsLockNote")) && (await page.textContent("#editSet")).trim() === "📖 단어 보기·수정", "home editing back after unlocking");
   await page.click("#tabSettings");
   assert(await page.isVisible("#importSetsLabel"), "JSON import back");
-  await openFamilySettings();
-  await page.uncheck("#parentModeOff");
-  await waitFor(() => page.isVisible("#family"), "parent mode restored");
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: daily words — child card/generation/quiz/record flag/completion, parent plan form/preview/make-now");
+  console.log("PASS: daily words — child card/generation/quiz/record flag/completion, time limit received/countdown/timeout, sets lock received/view-only editor");
   await browser.close();
 })().catch((e) => {
   console.error(e);

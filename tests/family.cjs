@@ -1,9 +1,9 @@
-// 가족 기록함 + 아이 코드: 아이 기기는 전용 링크(?child=코드)나 아이 코드로 연결해 시험 기록을 가족 서버로 보내고
-// (접속 코드가 없으면 대기 → 저장 뒤 자동 연결, 완료 전송, 연결 실패 → 재시작 후 재전송, 끄기, 연결 해제 → 재연결),
-// 보호자 폰은 보호자 코드로 ‘아이들’ 탭에서 아이를 만들고(코드·링크·이름·기기 표시) 아이별 기록을 본다(상세·틀린 단어·삭제·코드 삭제).
-// 세트 동기화: 연결하면 예제 세트 대신 아이의 세트를 받고, 보호자가 편집기로 만들어 보낸 세트가 아이 기기에 들어오며, 기기에서 지우면 서버에도 지워진다(마지막 세트 삭제 → 빈 상태).
+// 가족 기록함 + 아이 코드(아이 기기): 전용 링크(?child=코드)나 아이 코드로 연결해 시험 기록을 가족 서버로 보낸다
+// (접속 코드가 없으면 대기 → 저장 뒤 자동 연결, 완료 전송, 연결 실패 → 재시작 후 재전송, 끄기, 연결 해제 → 재연결). 아이 앱에는 보호자 화면이 없다.
+// 보호자 화면(아이 만들기·코드·기록·세트 보내기·계획)은 보호자 앱 tests/parent.cjs · tests/parent-sets.cjs 가 시험한다.
+// 세트 동기화: 연결하면 예제 세트 대신 아이의 세트를 받고, 보호자가 보낸 세트(가짜 Worker 에 직접 심음)가 아이 기기에 들어오며, 기기에서 지우면 서버에도 지워진다(마지막 세트 삭제 → 빈 상태).
 // 시험 중 AI가 인정한 답을 허용 답안에 학습하면 시험 중에는 /sets 를 보내지 않고 시험이 끝난 직후 한 번 올린다.
-// 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보내고, 동기화된 세트가 있으면 그 단어가 앵커가 되어 보호자 계획 상자에 보인다.
+// 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보내고, 동기화된 세트가 있으면 그 단어를 앵커로 보낸다.
 // 보호자가 서버에서 아이를 지우면(404 unknown_child) 기기는 안내·연결 해제 강조 뒤 요청을 멈추고, 연결 해제 → 새 코드로 다시 연결한다.
 // 기록 복원: 연결하면 서버에 있던 이 아이의 기록이 요약 기록으로 기록 탭에 들어오고(다시 보내지 않음, 틀린 단어 다시 풀기), ‘서버 기록 다시 가져오기’는 겹치지 않게 여러 페이지를 받으며, 기록 전체 삭제 뒤에는 자동 복원하지 않는다.
 // Worker는 라우트로 가짜 응답을 준다(tests/lib/fake-family-worker.cjs).
@@ -40,11 +40,10 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   const statusHas = (id, text) => page.evaluate(([i, t]) => document.getElementById(i).textContent.includes(t), [id, text]);
   const url = process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/";
 
-  // 보호자 아이콘으로 설치된 기기(?mode=parent): 코드가 없어도 보호자 모드로 시작해 코드 입력 화면만 보인다
-  await page.goto(url + "parent.html");
-  assert((await page.title()).includes("보호자") && (await page.$eval('a[href="./?mode=parent"]', (a) => a.textContent)).includes("보호자 화면"), "parent.html install page");
-  await page.goto(url + "?mode=parent");
-  await waitFor(() => page.evaluate(() => document.body.classList.contains("parent-mode")), "parent mode from the install link");
+  // 아이용 앱(index.html)에는 보호자 화면이 없다(보호자 앱은 parent.html — tests/parent.cjs)
+  await page.goto(url);
+  await waitFor(() => page.evaluate(() => typeof defaultWords !== "undefined"), "child app loaded");
+  assert((await page.$("#tabFamily")) === null && (await page.$("#family")) === null && (await page.$("#parentBox")) === null && (await page.$("#parentModeOff")) === null, "no parent mode in the child app");
   // 하늘에게는 서버에 세트가 하나 있다(예제와 같은 단어, 이름만 다름). 연결하면 예제 대신 이 세트를 받는다.
   const exampleWords = await page.evaluate(() => defaultWords);
   children.get(HANEUL).setStore.set("haneul-day04", { id: "haneul-day04", name: "하늘 DAY04", words: exampleWords, updatedAt: "2026-10-01T00:00:00.000Z" });
@@ -58,20 +57,13 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   const srvA = serverRecord("srv-a", daysAgo(20));
   children.get(HANEUL).records.set("srv-a", srvA);
   children.get(HANEUL).records.set("srv-b", serverRecord("srv-b", daysAgo(30), { setName: "옛 세트", mode: "read_meaning", range: "전체 5단어", total: 5, correct: 5, missed: [] }));
-  assert(!page.url().includes("mode="), "mode removed from the address: " + page.url());
-  assert(await page.isVisible("#family") && (await page.isVisible("#parentSetup")) && (await page.isHidden("#familyMain")), "setup card only");
-  assert((await page.isHidden("#tabHome")) && (await page.isHidden("#tabLookup")) && (await page.isHidden("#tabHistory")) && (await page.isVisible("#tabFamily")), "parent tabs");
-  assert((await page.textContent("#brandTagline")).includes("보호자"), "tagline for the parent mode");
-  await page.goto(url + "?mode=child");
-  await waitFor(() => page.evaluate(() => !document.body.classList.contains("parent-mode")), "back to the child mode");
-  assert((await page.isVisible("#tabHome")) && (await page.isVisible("#tabLookup")), "child tabs restored");
+  assert(!(await page.textContent("#brandTagline")).includes("보호자"), "child tagline");
 
   // 아이 기기: 전용 링크로 열었지만 접속 코드가 아직 없다 → 설정 화면에 코드가 채워지고 안내, 주소에서 코드는 지워진다
   await page.goto(url + "?child=" + HANEUL_CODE);
   await waitFor(() => statusHas("familyStatus", "접속 코드를 저장"), "link code waits for the family passcode");
   assert(await page.isVisible("#settings") && (await page.inputValue("#childCode")) === HANEUL_CODE, "settings opened with the code prefilled");
   assert(!page.url().includes("child="), "code removed from the address: " + page.url());
-  assert(await page.isHidden("#tabFamily"), "no family tab without a parent code");
   assert(joins().length === 0, "no join attempt without a passcode");
   // 접속 코드를 저장하면 바로 연결되고, 등록 전송(기록 0개, 세트·앵커·기기)이 나간다
   assert(await page.evaluate(() => document.getElementById("aiSettings").open), "AI settings opened for the passcode");
@@ -233,7 +225,6 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await page.click("#backSettings");
   await new Promise((r) => setTimeout(r, 700));
   assert(syncs().length === 4, "no sync while off");
-  assert(await page.isHidden("#tabFamily"), "still no family tab");
 
   // 연결 해제 → 코드로 다시 연결(모르는 코드는 안내)
   await page.click("#tabSettings");
@@ -280,158 +271,15 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert(learnedSync.sets.length === 1 && learnedSync.sets[0].id === "haneul-day04" && learnedSync.sets[0].words.find((w) => w.en === learnedEn).aliases.includes("비슷한뜻"), "learned alias uploaded with the set: " + JSON.stringify(learnedSync.sets.map((s) => s.id)));
   await waitFor(() => syncs().some((r) => r.body.records.some((x) => x.aiPass === 1 && x.correct === 1 && x.total === 10)), "record with the AI-accepted answer synced");
 
-  // 아이 기기에는 보호자 코드 칸이 보이지 않는다. 보호자 화면(?mode=parent)으로 열어야 나타난다.
-  assert(await page.isHidden("#parentBox"), "no parent-code box on a child device");
-  await page.goto(url + "?mode=parent");
-  await waitFor(() => page.evaluate(() => document.body.classList.contains("parent-mode")), "parent screen opened");
-  assert(await page.isVisible("#parentSetup"), "setup card asks for the code");
-  await page.click("#tabSettings");
-  await openFamilySettings();
-  assert(await page.isVisible("#parentBox"), "parent-code box visible on the parent screen");
-  // 보호자 폰: 코드 길이·코드 오류·옛 Worker 안내
-  await page.fill("#parentCode", "bad");
-  await page.click("#saveParent");
-  assert((await page.textContent("#parentStatus")).includes("4자"), "parent code length check");
-  await page.fill("#parentCode", "wrong-code");
-  await page.click("#saveParent");
-  await waitFor(() => statusHas("parentStatus", "보호자 코드가 맞지 않아요"), "wrong parent code message");
-  setMode("notfound");
-  await page.fill("#parentCode", PARENT_CODE);
-  await page.click("#saveParent");
-  await waitFor(() => statusHas("parentStatus", "다시 배포"), "old worker message");
-  setMode("ok");
-  await page.fill("#parentCode", PARENT_CODE);
-  await page.click("#saveParent");
-  await waitFor(() => statusHas("parentStatus", "연결 성공"), "parent connected");
-  assert((await page.textContent("#parentStatus")).includes("1명"), "one child reported");
-  assert(await page.isVisible("#tabFamily"), "family tab appears");
-  assert((await page.inputValue("#parentCode")) === "", "code field cleared after save");
-  // 보호자 코드를 저장하면 보호자 모드로 자동 전환: 아이들 화면으로 이동, 홈·기록 탭과 아이용 설정은 숨김
-  await waitFor(() => page.isVisible("#family"), "switched to the family view");
-  assert(await page.evaluate(() => document.body.classList.contains("parent-mode")), "parent mode on");
-  assert((await page.isHidden("#tabHome")) && (await page.isHidden("#tabHistory")), "child tabs hidden");
-  assert(await page.isVisible("#familyMain") && (await page.isHidden("#parentSetup")), "overview shown once the code exists");
-
-  // 아이들 화면: 카드(오늘 4회 = 완료 2 + 중단 2, 재연결 때 보내기가 꺼져 있던 기록도 올라감; 연결 기기), 상세(코드·링크·기기·기록·틀린 단어·수준 기준)
-  await page.click("#tabFamily");
-  assert(await page.isVisible("#family") && (await page.isHidden("#settings")), "family view");
-  await waitFor(() => statusHas("familyLoadStatus", "방금 확인했어요"), "family loaded");
-  const overview = await page.textContent("#familyOverview");
-  assert(overview.includes("🧒 하늘") && overview.includes("오늘 시험 ✅ 4회") && overview.includes("이번 주 4회") && overview.includes("⚠️ 화면 이탈 1회"), "overview row: " + overview);
-  const card = await page.textContent("#childrenList");
-  assert(card.includes("하늘") && card.includes("오늘 ✅ 4회") && card.includes("최근 7일 4회") && card.includes("마지막 시험") && /연결 기기: .+ 1/.test(card), "child card: " + card);
-  assert(card.includes("⚠️ 오늘 화면 이탈 1회"), "card warns about today's away episodes");
-  assert(card.includes("📷 물어본 문제 1개"), "card shows the tutor question count");
-  assert((await page.$$eval("#childrenList .day", (d) => d.length)) === 7, "seven day cells");
-  assert((await page.$$eval("#childrenList .day.done", (d) => d.length)) === 1, "today marked done");
-  await page.click("#childrenList button");
-  await waitFor(() => requests.some((r) => r.path === "/family/" + HANEUL && r.method === "GET"), "detail requested");
-  await waitFor(() => page.evaluate(() => document.querySelectorAll("#childRecords .history-entry").length === 7), "seven records in detail (four from this device, three restored from the server)");
-  assert((await page.textContent("#childCodeText")) === "483 921", "code shown in the detail");
-  assert((await page.textContent("#childLinkText")) === url + "?child=" + HANEUL_CODE, "child link shown: " + (await page.textContent("#childLinkText")));
-  assert((await page.textContent("#deviceList")).includes("연결된 기기: "), "device list shown");
-  const missedTop = await page.textContent("#missedTop");
-  assert(missedTop.includes("authority") && missedTop.includes("3회") && missedTop.includes("권위"), "most-missed words: " + missedTop);
-  assert((await page.$$eval("#missedTop .chip", (c) => c.length)) === 10, "top ten chips");
-  const detail = await page.textContent("#childDetail");
-  assert(detail.includes("시험 7회") && detail.includes("중단") && detail.includes("0 / 10") && detail.includes("세트 1개"), "detail summary: " + detail);
-  assert(detail.includes("⚠️ 문제 중 화면 이탈 1회"), "record shows the away flag: " + detail.slice(0, 200));
-  assert((await page.textContent("#planAnchor")).includes("하늘 DAY04") && (await page.textContent("#planAnchor")).includes("40단어"), "level anchor shown from the child's synced set: " + (await page.textContent("#planAnchor")));
-  await page.click("#childRecords .history-entry:nth-child(2) summary");
-  assert((await page.textContent("#childRecords")).includes("authority — 권위"), "missed words shown");
-
-  // 세트 상자: 아이 세트 목록 → ‘세트 만들어 보내기’는 보호자 모드에서도 편집 화면을 연다 → 저장하면 기기가 아니라 아이의 세트로 서버에 보내고 상세로 돌아온다
-  assert((await page.textContent("#childSets")).includes("하늘 DAY04 · 40단어"), "child sets listed: " + (await page.textContent("#childSets")));
-  await waitFor(() => page.evaluate(() => document.getElementById("childQuestions").textContent.includes("UNT 02 2) 어법")), "tutor questions listed in the detail");
-  const questionsText = await page.textContent("#childQuestions");
-  assert(questionsText.includes("어법 설명") && questionsText.includes("왜 aids 인가요?") && questionsText.includes("3인칭 단수") && (await page.textContent("#childQuestionCount")) === "1개", "question row: " + questionsText);
-  await page.click("#sendNewSet");
-  await waitFor(() => page.isVisible("#editor"), "editor opens in the parent mode for the child's set");
-  assert((await page.textContent("#editorTitle")).includes("하늘에게 보내기") && (await page.isHidden("#manageBox")), "editor titled for the child without the rename/delete box");
-  await page.fill("#setName", "보호자 세트");
-  await page.click("#toggleDraftText");
-  await page.fill("#wordDraft", "1\tapple\t사과\t사과\n2\tbanana\t바나나\t바나나");
-  await page.check("#confirmed");
-  await page.click("#saveSet");
-  await waitFor(() => page.evaluate(() => !document.getElementById("childDetail").classList.contains("hidden") && document.getElementById("setsStatus").textContent.includes("보냈어요")), "set sent and the detail reopened");
-  const sentSet = requests.find((r) => r.path === "/family/" + HANEUL + "/sets" && r.method === "POST");
-  assert(sentSet && sentSet.passcode === PARENT_CODE && sentSet.body.set.name === "보호자 세트" && sentSet.body.set.words.length === 2 && sentSet.body.set.words[1].en === "banana", "set upload body: " + JSON.stringify(sentSet && sentSet.body).slice(0, 160));
-  const parentSetId = sentSet.body.set.id; // 앱이 만든 세트 id(UUID)를 그대로 쓴다
-  await waitFor(() => page.evaluate(() => document.getElementById("childSets").textContent.includes("보호자 세트 · 2단어")), "new set listed in the detail");
-  assert((await page.evaluate(() => sets.length)) === 1, "parent device keeps no local copy of the child's set");
-  assert((await page.evaluate(() => window.editorForChild)) === null, "editor target cleared");
-  // 보기·수정: 서버에서 단어를 받아 편집기를 채운다 → 닫기 → 상세로
-  await page.click("#childSets .set-row:has-text('보호자 세트') button:has-text('보기·수정')");
-  await waitFor(() => page.isVisible("#editor"), "edit opens the parent's set");
-  assert((await page.inputValue("#setName")) === "보호자 세트" && (await page.evaluate(() => parseDraft(document.getElementById("wordDraft").value).length)) === 2, "editor filled from the server set");
-  assert(requests.some((r) => r.path === "/family/" + HANEUL + "/sets/" + parentSetId && r.method === "GET" && r.passcode === PARENT_CODE), "set fetched with the parent code");
-  await page.click("#closeEditor");
-  await waitFor(() => page.isVisible("#childDetail") && page.isHidden("#editor"), "back to the detail after closing the editor");
-
-  // 아이 추가 → 코드·링크가 생기고 상세가 열린다 → 이름 바꾸기 → 코드 새로 만들기
-  await page.click("#addChild");
-  assert((await page.textContent("#addChildStatus")).includes("이름"), "name required to add a child");
-  await page.fill("#newChildName", " 둘째 ");
-  await page.click("#addChild");
-  await waitFor(() => statusHas("addChildStatus", "아이 코드 777 777"), "child created with a code");
-  const created = requests.find((r) => r.path === "/family/children" && r.method === "POST");
-  assert(created && created.passcode === PARENT_CODE && created.body.name === "둘째", "create request: " + JSON.stringify(created && created.body));
-  await waitFor(() => page.evaluate(() => document.getElementById("childDetailTitle").textContent.includes("둘째")), "new child's detail opened");
-  assert((await page.textContent("#childCodeText")) === "777 777" && (await page.textContent("#childLinkText")).endsWith("?child=777777"), "new child's code and link");
-  assert((await page.textContent("#deviceList")).includes("아직 연결된 기기가 없어요"), "no devices yet");
-  assert((await page.textContent("#childrenList")).includes("아이 코드 777 777"), "card shows the code until a device joins");
-  await page.fill("#renameChild", "둘째야");
-  await page.click("#saveChildName");
-  await waitFor(() => page.evaluate(() => document.getElementById("childDetailTitle").textContent.includes("둘째야")), "renamed");
-  const renamed = requests.find((r) => r.path === "/family/child-777777/name");
-  assert(renamed && renamed.body.name === "둘째야", "rename request body");
-  assert((await page.textContent("#childrenList")).includes("둘째야"), "card renamed");
-  page.once("dialog", (d) => d.accept());
-  await page.click("#regenCode");
-  await waitFor(() => page.evaluate(() => document.getElementById("childCodeText").textContent === "777 778"), "new code shown");
-  assert(requests.some((r) => r.path === "/family/child-777777/code" && r.passcode === PARENT_CODE), "regenerate request sent");
-  assert((await page.textContent("#childLinkText")).endsWith("?child=777778"), "link follows the new code");
-
-  // 한눈에 보기 줄을 누르면 상세가 열린다
-  await page.click("#closeChildDetail");
-  assert(await page.isHidden("#childDetail"), "detail closed by the back link");
-  await page.click("#familyOverview .overview-row");
-  await waitFor(() => page.isVisible("#childDetail"), "overview row opens the detail");
-  assert((await page.textContent("#childDetailTitle")).includes("하늘"), "first child's detail");
-  await page.click("#closeChildDetail");
-  await page.click("#childrenList button >> nth=1");
-  await waitFor(() => page.evaluate(() => document.getElementById("childDetailTitle").textContent.includes("둘째야")), "second child's detail reopened");
-
-  // 아이 기기처럼 보기: 보호자 모드를 끄면 홈 탭이 돌아오고, 다시 켜면 아이들 화면으로
-  await page.click("#tabSettings");
-  await openFamilySettings();
-  assert(await page.isVisible("#parentModeRow") && (await page.isHidden("#familyChildPart")) && (await page.isHidden("#micPanel")), "parent mode hides child-only settings");
-  assert(await page.isVisible("#parentBox"), "parent-code box stays on a parent device");
-  await page.check("#parentModeOff");
-  await waitFor(() => page.isVisible("#home"), "home shown when parent mode is off");
-  assert((await page.isVisible("#tabHome")) && !(await page.evaluate(() => document.body.classList.contains("parent-mode"))), "child UI back");
-  await page.click("#tabSettings");
-  await openFamilySettings();
-  await page.uncheck("#parentModeOff");
-  await waitFor(() => page.isVisible("#family"), "parent mode back on");
-  await page.click("#childrenList button >> nth=1");
-  await waitFor(() => page.evaluate(() => document.getElementById("childDetailTitle").textContent.includes("둘째야")), "detail open again");
-
-  // 삭제 → 목록에서 빠짐, 보호자 코드 삭제 → 탭 숨김·캐시 삭제
-  page.once("dialog", (d) => d.accept());
-  await page.click("#deleteChild");
-  await waitFor(() => requests.some((r) => r.method === "DELETE" && r.path === "/family/child-777777"), "delete requested");
-  await waitFor(() => page.evaluate(() => !document.getElementById("childrenList").textContent.includes("둘째야")), "deleted child removed from the list");
-  assert(await page.isHidden("#childDetail"), "detail closed");
-  await page.click("#tabSettings");
-  await page.click("#clearParent");
-  assert(await page.isVisible("#tabFamily"), "family tab stays on a parent-installed device (code can be entered again)");
-  assert(await page.evaluate(() => document.body.classList.contains("parent-mode")), "parent-installed device stays in parent mode after clearing the code");
-  await page.goto(url + "?mode=child");
-  await waitFor(() => page.evaluate(() => !document.body.classList.contains("parent-mode")), "child mode after ?mode=child");
-  assert((await page.isHidden("#tabFamily")) && (await page.isVisible("#tabHome")), "child tabs after leaving the parent mode");
-  assert((await page.evaluate(() => localStorage.getItem("daily_vocab_family_cache_v1"))) === null, "cache cleared");
-  assert(!(await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).parentCode)), "parent code removed");
+  // 보호자가 보호자 앱에서 세트를 만들어 보냈다(가짜 Worker 에 직접 심는다; 보내는 화면은 tests/parent-sets.cjs)
+  const parentSetId = "6c1f0e2a-3b4c-4d5e-8f60-718293a4b5c6";
+  children.get(HANEUL).setStore.set(parentSetId, {
+    id: parentSetId,
+    name: "보호자 세트",
+    words: [{ id: "1", en: "apple", ko: "사과", aliases: ["사과"], ipa: "", hangul: "" }, { id: "2", en: "banana", ko: "바나나", aliases: ["바나나"], ipa: "", hangul: "" }],
+    updatedAt: new Date().toISOString(),
+  });
+  await page.reload();
 
   // 아이 기기: 앱을 열면 보호자가 보낸 세트가 들어온다 → 기기에서 지우면 묘비가 올라가 서버에서도 지워진다 → 마지막 세트를 지우면 빈 상태(시작 불가), 새로고침해도 그대로
   await waitFor(() => page.evaluate(() => sets.length === 2 && sets.some((s) => s.name === "보호자 세트")), "child device received the parent's set");
@@ -496,7 +344,7 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert(syncs().slice(-1)[0].body.child.id === HANEUL2 && syncs().slice(-1)[0].body.records.length >= 1 || syncs().some((r) => r.body.child.id === HANEUL2 && r.body.records.length >= 1), "history resent to the new child");
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, no auto-restore after clearing) + set sync (pull on join, parent send/edit/delete, device delete, empty state) + parent dashboard (add child, code/link, rename, regen, cards/detail/delete) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin");
+  console.log("PASS: child app without a parent mode + child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, no auto-restore after clearing) + set sync (pull on join, parent's set received, device delete, empty state) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin");
   await browser.close();
 })().catch((e) => {
   console.error(e);
