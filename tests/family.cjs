@@ -6,8 +6,9 @@
 // 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보내고, 동기화된 세트가 있으면 그 단어가 앵커가 되어 보호자 계획 상자에 보인다.
 // 보호자가 서버에서 아이를 지우면(404 unknown_child) 기기는 안내·연결 해제 강조 뒤 요청을 멈추고, 연결 해제 → 새 코드로 다시 연결한다.
 // 기록 복원: 연결하면 서버에 있던 이 아이의 기록이 요약 기록으로 기록 탭에 들어오고(다시 보내지 않음, 틀린 단어 다시 풀기), ‘서버 기록 다시 가져오기’는 겹치지 않게 여러 페이지를 받으며, 기록 전체 삭제 뒤에는 자동 복원하지 않는다.
-// Worker는 라우트로 가짜 응답을 준다.
+// Worker는 라우트로 가짜 응답을 준다(tests/lib/fake-family-worker.cjs).
 const { chromium } = require("playwright");
+const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -29,167 +30,10 @@ const { chromium } = require("playwright");
   };
   const SERVER = "https://ai.test", FAMILY_CODE = "family-1234", PARENT_CODE = "parent-9999";
   const HANEUL = "11111111-2222-4333-8444-555555555555", HANEUL_CODE = "483921";
-  const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "GET, POST, DELETE, OPTIONS" };
-  const reply = (route, status, body) => route.fulfill({ status, headers: cors, contentType: "application/json", body: JSON.stringify(body) });
-  const requests = [];
-  const children = new Map(); // 가짜 가족 기록함(Worker의 FamilyStore 역할)
-  const codes = new Map(); // 아이 코드 → childId
-  const gone = new Set(); // 보호자가 지운 아이 id(Worker의 gone:<id> 묘비): 그 id의 /sync 는 404 unknown_child
-  let nextCode = 777777;
-  const now = () => new Date().toISOString();
-  const seedChild = (id, name, code) => {
-    children.set(id, { id, name, joinCode: code, devices: {}, sets: [], setStore: new Map(), records: new Map(), questions: [], lastTestAt: null, createdBy: "parent" });
-    codes.set(code, id);
-    return children.get(id);
-  };
-  let nextSetId = 1;
-  const liveSets = (c) => [...c.setStore.values()].filter((s) => !s.deletedAt);
-  const setSummary = (c) => liveSets(c).map((s) => ({ id: s.id, name: s.name, count: s.words.length, updatedAt: s.updatedAt })).sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  // 가짜 가족 Worker(tests/lib/fake-family-worker.cjs): /records 는 페이지 넘김을 시험하려고 한 번에 2개만, /daily 는 언제나 꺼짐(409 plan_disabled).
+  const { requests, children, codes, gone, seedChild, liveSets, setMode } = await createFakeWorker(page, { server: SERVER, familyCode: FAMILY_CODE, parentCode: PARENT_CODE, recordsPageSize: 2, daily: false });
   seedChild(HANEUL, "하늘", HANEUL_CODE); // 보호자가 미리 만들어 둔 아이
   children.get(HANEUL).questions.push({ id: "q1", kind: "grammar", question: "왜 aids 인가요?", problem: "UNT 02 2) 어법", summary: "주어가 3인칭 단수라 aids 가 맞아요.", askedAt: new Date(Date.now() - 3600000).toISOString() });
-  const touchDevice = (c, device) => {
-    if (device && device.id) c.devices[device.id] = { label: device.label || "기기", joinedAt: c.devices[device.id]?.joinedAt || now(), lastSeenAt: now() };
-  };
-  let mode = "ok";
-  const summaryOf = (c) => ({
-    id: c.id, name: c.name, joinCode: c.joinCode, devices: c.devices, sets: c.setStore ? setSummary(c) : c.sets, anchor: c.anchor, updatedAt: c.updatedAt, lastTestAt: c.lastTestAt,
-    questionCount: (c.questions || []).length, lastQuestionAt: (c.questions || [])[0]?.askedAt || null,
-    plan: { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false }, today: { date: "", exists: false, count: 0, completed: null },
-    records: [...c.records.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt)),
-  });
-  await page.route(SERVER + "/**", async (route) => {
-    const req = route.request();
-    if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
-    const url = new URL(req.url());
-    const body = req.postData() ? JSON.parse(req.postData()) : null;
-    const passcode = req.headers()["x-app-passcode"];
-    requests.push({ method: req.method(), path: url.pathname, search: url.search, passcode, body });
-    if (mode === "abort") return route.abort("connectionrefused");
-    if (mode === "notfound") return reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
-    const familyOk = [FAMILY_CODE, PARENT_CODE].includes(passcode);
-    if (url.pathname === "/join" && req.method() === "POST") {
-      if (!familyOk) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      const code = String(body.code || "").replace(/\D/g, "");
-      const c = children.get(codes.get(code));
-      if (!c || c.joinCode !== code) return reply(route, 404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요." });
-      touchDevice(c, body.device);
-      return reply(route, 200, { ok: true, childId: c.id, name: c.name, timeLimitSec: 0, setsLocked: false });
-    }
-    const sm = /^\/settings\/([A-Za-z0-9-]+)$/.exec(url.pathname);
-    if (sm && req.method() === "GET") {
-      const c = children.get(sm[1]);
-      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      return reply(route, 200, { childId: c.id, name: c.name, timeLimitSec: 0, setsLocked: false });
-    }
-    const rm = /^\/records\/([A-Za-z0-9-]+)$/.exec(url.pathname);
-    if (rm && req.method() === "GET") {
-      if (!familyOk) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      const c = children.get(rm[1]);
-      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      const since = url.searchParams.get("since") || "";
-      const pageSize = Math.min(Number(url.searchParams.get("limit")) || 500, 2); // 페이지 넘김을 시험하려고 한 번에 2개만
-      const all = [...c.records.values()].filter((r) => r.completedAt >= since).sort((a, b) => a.completedAt.localeCompare(b.completedAt));
-      return reply(route, 200, { records: all.slice(0, pageSize), more: all.length > pageSize, serverTime: now() });
-    }
-    if (url.pathname === "/sync" && req.method() === "POST") {
-      if (!familyOk) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      if (gone.has(body.child.id)) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 보호자 폰에서 아이를 다시 만들어 주세요." });
-      const c = children.get(body.child.id) || { id: body.child.id, name: body.child.name, devices: {}, sets: [], records: new Map(), lastTestAt: null };
-      if (body.sets) c.sets = body.sets;
-      if (body.anchor) {
-        if (body.anchor.words.length) c.anchor = body.anchor;
-        else delete c.anchor; // 빈 앵커 = 수준 기준 삭제(Worker와 같은 규칙)
-      }
-      touchDevice(c, body.device);
-      c.updatedAt = now();
-      for (const r of body.records) {
-        c.records.set(r.id, r);
-        if (!c.lastTestAt || r.completedAt > c.lastTestAt) c.lastTestAt = r.completedAt;
-      }
-      children.set(c.id, c);
-      return reply(route, 200, { ok: true, stored: body.records.length, trimmed: 0, syncedAt: c.updatedAt });
-    }
-    const setsM = /^\/sets\/([A-Za-z0-9-]+)$/.exec(url.pathname);
-    if (setsM && req.method() === "POST") {
-      if (!familyOk) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      const c = children.get(setsM[1]);
-      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      touchDevice(c, body.device);
-      for (const d of body.deleted || []) {
-        const cur = c.setStore.get(d.id);
-        if (cur && cur.updatedAt >= d.deletedAt) continue;
-        c.setStore.set(d.id, { id: d.id, name: cur?.name || "", words: [], updatedAt: d.deletedAt, deletedAt: d.deletedAt });
-      }
-      for (const s of body.sets || []) {
-        const cur = c.setStore.get(s.id);
-        if (cur && cur.updatedAt >= s.updatedAt) continue;
-        c.setStore.set(s.id, { ...s });
-      }
-      const known = new Map((body.known || []).map((k) => [k.id, k.updatedAt]));
-      const pull = liveSets(c).filter((s) => !known.has(s.id) || known.get(s.id) < s.updatedAt);
-      const removed = [...c.setStore.values()].filter((s) => s.deletedAt && known.has(s.id)).map((s) => s.id);
-      c.updatedAt = now();
-      return reply(route, 200, { ok: true, sets: pull, deleted: removed, summary: setSummary(c), syncedAt: c.updatedAt });
-    }
-    if (url.pathname.startsWith("/daily/")) return reply(route, 409, { error: "plan_disabled", message: "보호자가 아직 오늘의 단어를 켜지 않았어요." });
-    if (url.pathname === "/grade" && req.method() === "POST") {
-      // AI 2차 채점 가짜 응답: ‘비슷한뜻’만 같은 뜻으로 인정한다(시험 중 허용 답안 학습 → 시험 뒤 세트 동기화 확인용)
-      if (!familyOk) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      const accept = body.answer === "비슷한뜻";
-      return reply(route, 200, { accept, reason: accept ? "같은 뜻으로 인정" : "다른 뜻이에요", model: "claude-haiku-5-5", usage: {} });
-    }
-    const cm = /^\/family\/children$/.test(url.pathname) && req.method() === "POST";
-    const am = /^\/family\/([A-Za-z0-9-]+)\/(plan|code|name)$/.exec(url.pathname);
-    const m = /^\/family(?:\/([A-Za-z0-9-]+))?$/.exec(url.pathname);
-    const csm = /^\/family\/([A-Za-z0-9-]+)\/sets(?:\/([A-Za-z0-9_-]+))?$/.exec(url.pathname);
-    if (!cm && !am && !m && !csm) return reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
-    if (passcode !== PARENT_CODE) return reply(route, 401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." });
-    if (csm) {
-      const c = children.get(csm[1]);
-      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      if (!csm[2] && req.method() === "GET") return reply(route, 200, { sets: setSummary(c) });
-      if (!csm[2] && req.method() === "POST") {
-        const set = body.set || {};
-        if (!set.name || !Array.isArray(set.words) || !set.words.length) return reply(route, 400, { error: "bad_request", message: "세트 단어가 없습니다." });
-        const stored = { id: set.id || "pset-" + nextSetId++, name: String(set.name).trim(), words: set.words, updatedAt: now() };
-        c.setStore.set(stored.id, stored);
-        return reply(route, 200, { ok: true, set: { id: stored.id, name: stored.name, count: stored.words.length, updatedAt: stored.updatedAt }, summary: setSummary(c) });
-      }
-      const cur = c.setStore.get(csm[2]);
-      if (!cur || cur.deletedAt) return reply(route, 404, { error: "unknown_set", message: "그 세트가 없어요." });
-      if (req.method() === "GET") return reply(route, 200, { set: cur });
-      const t = now();
-      c.setStore.set(cur.id, { ...cur, words: [], updatedAt: t, deletedAt: t });
-      return reply(route, 200, { ok: true, summary: setSummary(c) });
-    }
-    if (cm) {
-      const code = String(nextCode++);
-      const c = seedChild("child-" + code, String(body.name || "").trim(), code);
-      return reply(route, 200, { ok: true, child: { ...summaryOf(c), records: undefined, today: undefined } });
-    }
-    if (am) {
-      const c = children.get(am[1]);
-      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      if (am[2] === "code") {
-        codes.delete(c.joinCode);
-        c.joinCode = String(nextCode++);
-        codes.set(c.joinCode, c.id);
-      } else if (am[2] === "name") c.name = String(body.name || "").trim();
-      else c.plan = { ...summaryOf(c).plan, ...body };
-      return reply(route, 200, { ok: true, child: { ...summaryOf(c), records: undefined, today: undefined } });
-    }
-    if (!m[1]) return reply(route, 200, { children: [...children.values()].map(summaryOf), serverTime: now() });
-    const c = children.get(m[1]);
-    if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-    if (req.method() === "DELETE") {
-      children.delete(m[1]);
-      codes.delete(c.joinCode);
-      gone.add(m[1]);
-      return reply(route, 200, { ok: true, deleted: c.records.size });
-    }
-    const s = summaryOf(c);
-    return reply(route, 200, { child: { ...s, records: undefined, today: undefined }, records: s.records, today: s.today, questions: c.questions || [] });
-  });
   const syncs = () => requests.filter((r) => r.path === "/sync");
   const joins = () => requests.filter((r) => r.path === "/join");
   const openFamilySettings = () => page.evaluate(() => { document.getElementById("familySettings").open = true; });
@@ -354,7 +198,7 @@ const { chromium } = require("playwright");
   assert((await page.evaluate(() => historyRecords[0].activeMs)) >= 0, "record stores activeMs locally");
 
   // 연결 실패 → 대기 목록에 남김 → 새로고침 후 재전송
-  mode = "abort";
+  setMode("abort");
   await page.click("#newTest");
   await page.click("#start");
   await page.click("#unknown");
@@ -366,7 +210,7 @@ const { chromium } = require("playwright");
   await page.click("#tabSettings");
   await waitFor(() => statusHas("familyStatus", "못 보낸 기록 1개"), "pending status shown");
   assert((await page.textContent("#familyState")).includes("보낼 기록 1개"), "pill shows pending count");
-  mode = "ok";
+  setMode("ok");
   await page.reload();
   await waitFor(() => syncs().length === 4, "retry on next launch");
   const retried = syncs()[3].body.records;
@@ -451,11 +295,11 @@ const { chromium } = require("playwright");
   await page.fill("#parentCode", "wrong-code");
   await page.click("#saveParent");
   await waitFor(() => statusHas("parentStatus", "보호자 코드가 맞지 않아요"), "wrong parent code message");
-  mode = "notfound";
+  setMode("notfound");
   await page.fill("#parentCode", PARENT_CODE);
   await page.click("#saveParent");
   await waitFor(() => statusHas("parentStatus", "다시 배포"), "old worker message");
-  mode = "ok";
+  setMode("ok");
   await page.fill("#parentCode", PARENT_CODE);
   await page.click("#saveParent");
   await waitFor(() => statusHas("parentStatus", "연결 성공"), "parent connected");

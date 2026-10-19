@@ -1,8 +1,9 @@
 // 오늘의 단어: 아이 기기 — 계획이 꺼져 있으면 카드 없음 → 보호자가 켠 뒤 앱을 열면 GET(no_daily) → POST 생성 → 홈 카드 →
 // 풀기(기존 시험 엔진) → 기록에 daily 날짜가 붙어 전송 → ✅ 카드 → 새로고침해도 재생성 없음.
-// 보호자 폰 — 아이 카드의 오늘의 단어 상태, 상세의 계획 저장(요청 본문)·미리보기·지금 만들기. 가족 서버는 라우트로 가짜 응답을 준다.
+// 보호자 폰 — 아이 카드의 오늘의 단어 상태, 상세의 계획 저장(요청 본문)·미리보기·지금 만들기. 가족 서버는 라우트로 가짜 응답을 준다(tests/lib/fake-family-worker.cjs).
 // 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보내고 보호자 계획 상자에 ‘수준 기준 세트가 아직 없어요’가 보인다.
 const { chromium } = require("playwright");
+const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -23,126 +24,14 @@ const { chromium } = require("playwright");
     }
   };
   const SERVER = "https://ai.test", FAMILY_CODE = "family-1234", PARENT_CODE = "parent-9999";
-  const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "GET, POST, DELETE, OPTIONS" };
-  const reply = (route, status, body) => route.fulfill({ status, headers: cors, contentType: "application/json", body: JSON.stringify(body) });
-  const requests = [];
-  const children = new Map();
-  const dailies = new Map(); // childId:date → daily
   const HANEUL = "11111111-2222-4333-8444-555555555555", HANEUL_CODE = "483921"; // 보호자가 미리 만들어 둔 아이
-  children.set(HANEUL, { id: HANEUL, name: "하늘", joinCode: HANEUL_CODE, devices: {}, sets: [], records: new Map(), lastTestAt: null });
-  const NEW_WORDS = ["glimpse", "verdict", "linger", "thrive", "plead", "subtle", "wither", "forge", "ample", "dwell", "exert", "notion"];
   const localDate = () => {
     const d = new Date();
     return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
   };
-  const planOf = (c) => ({ enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false, ...(c.plan || {}) });
-  const todayOf = (c, date) => {
-    const d = dailies.get(c.id + ":" + date);
-    return { date, exists: Boolean(d), count: d ? d.words.length : 0, completed: d?.completed || null };
-  };
-  const summaryOf = (c) => ({
-    id: c.id, name: c.name, sets: c.sets, anchor: c.anchor, plan: planOf(c), updatedAt: c.updatedAt, lastTestAt: c.lastTestAt, today: todayOf(c, localDate()),
-    records: [...c.records.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt)),
-  });
-  const makeDaily = (c, date) => {
-    const plan = planOf(c);
-    const latest = [...c.records.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt));
-    const review = [];
-    for (const r of latest) for (const m of r.missed || []) if (review.length < 3 && !review.some((x) => x.en === m.en)) review.push({ en: m.en, ko: m.ko, kind: "review" });
-    const fresh = NEW_WORDS.filter((w) => !review.some((r) => r.en === w)).slice(0, plan.dailyCount - review.length).map((w) => ({ en: w, ko: w + "의 뜻", kind: "new" }));
-    const words = [...review, ...fresh].map((w, i) => ({ id: i + 1, en: w.en, ko: w.ko, ipa: "ˈ" + w.en, aliases: [w.ko, w.en + "뜻"], kind: w.kind }));
-    const daily = { childId: c.id, date, level: plan.level, model: "claude-sonnet-5-5", createdAt: new Date().toISOString(), words, note: "" };
-    dailies.set(c.id + ":" + date, daily);
-    return daily;
-  };
-  await page.route(SERVER + "/**", async (route) => {
-    const req = route.request();
-    if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
-    const url = new URL(req.url());
-    const body = req.postData() ? JSON.parse(req.postData()) : null;
-    const passcode = req.headers()["x-app-passcode"];
-    requests.push({ method: req.method(), path: url.pathname, search: url.search, passcode, body });
-    const family = [FAMILY_CODE, PARENT_CODE].includes(passcode);
-    if (url.pathname === "/join" && req.method() === "POST") {
-      if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      const c = [...children.values()].find((x) => x.joinCode === String(body.code || "").replace(/\D/g, ""));
-      if (!c) return reply(route, 404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요." });
-      if (body.device?.id) c.devices[body.device.id] = { label: body.device.label, joinedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() };
-      return reply(route, 200, { ok: true, childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec, setsLocked: planOf(c).setsLocked });
-    }
-    const sm = /^\/settings\/([A-Za-z0-9-]+)$/.exec(url.pathname);
-    if (sm && req.method() === "GET") {
-      if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      const c = children.get(sm[1]);
-      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      return reply(route, 200, { childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec, setsLocked: planOf(c).setsLocked });
-    }
-    const rm = /^\/records\/([A-Za-z0-9-]+)$/.exec(url.pathname);
-    if (rm && req.method() === "GET") {
-      if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      const c = children.get(rm[1]);
-      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      const since = url.searchParams.get("since") || "";
-      const all = [...c.records.values()].filter((r) => r.completedAt >= since).sort((a, b) => a.completedAt.localeCompare(b.completedAt));
-      return reply(route, 200, { records: all.slice(0, 500), more: all.length > 500, serverTime: new Date().toISOString() });
-    }
-    if (url.pathname === "/sync" && req.method() === "POST") {
-      if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      const c = children.get(body.child.id) || { id: body.child.id, sets: [], records: new Map(), lastTestAt: null, devices: {} };
-      if (!c.name) c.name = body.child.name;
-      if (body.sets) c.sets = body.sets;
-      if (body.anchor) {
-        if (body.anchor.words.length) c.anchor = body.anchor;
-        else delete c.anchor; // 빈 앵커 = 수준 기준 삭제(Worker와 같은 규칙)
-      }
-      c.updatedAt = new Date().toISOString();
-      for (const r of body.records) {
-        c.records.set(r.id, r);
-        if (!c.lastTestAt || r.completedAt > c.lastTestAt) c.lastTestAt = r.completedAt;
-        const d = r.daily && !r.partial ? dailies.get(c.id + ":" + r.daily) : null;
-        if (d) d.completed = { recordId: r.id, correct: r.correct, total: r.total, completedAt: r.completedAt };
-      }
-      children.set(c.id, c);
-      return reply(route, 200, { ok: true, stored: body.records.length, trimmed: 0, syncedAt: c.updatedAt });
-    }
-    const dm = /^\/daily\/([A-Za-z0-9-]+)$/.exec(url.pathname);
-    if (dm) {
-      if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
-      const c = children.get(dm[1]);
-      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      const date = (req.method() === "GET" ? url.searchParams.get("date") : body?.date) || localDate();
-      const existing = dailies.get(c.id + ":" + date);
-      if (existing) return reply(route, 200, existing);
-      if (!planOf(c).enabled) return reply(route, 409, { error: "plan_disabled", message: "보호자가 아직 오늘의 단어를 켜지 않았어요." });
-      if (req.method() === "GET") return reply(route, 404, { error: "no_daily", message: "오늘의 단어가 아직 없어요." });
-      return reply(route, 200, makeDaily(c, date));
-    }
-    const pm = /^\/family\/([A-Za-z0-9-]+)\/plan$/.exec(url.pathname);
-    const m = /^\/family(?:\/([A-Za-z0-9-]+))?$/.exec(url.pathname);
-    if (!pm && !m) return reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
-    if (passcode !== PARENT_CODE) return reply(route, 401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." });
-    if (pm) {
-      const c = children.get(pm[1]);
-      if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      c.plan = { ...planOf(c), ...body, updatedAt: new Date().toISOString() };
-      return reply(route, 200, { ok: true, child: { ...summaryOf(c), records: undefined } });
-    }
-    if (!m[1]) return reply(route, 200, { children: [...children.values()].map(summaryOf), serverTime: new Date().toISOString() });
-    const c = children.get(m[1]);
-    if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-    if (req.method() === "DELETE") {
-      children.delete(m[1]);
-      return reply(route, 200, { ok: true, deleted: c.records.size });
-    }
-    const s = summaryOf(c);
-    const d = dailies.get(c.id + ":" + localDate());
-    return reply(route, 200, {
-      child: { id: s.id, name: s.name, sets: s.sets, anchor: s.anchor, plan: s.plan },
-      records: s.records,
-      today: { date: localDate(), exists: Boolean(d), words: d?.words || [], note: "", completed: d?.completed || null },
-    });
-  });
-  const paths = (p, method) => requests.filter((r) => r.path === p && (!method || r.method === method));
+  // 가짜 가족 Worker(tests/lib/fake-family-worker.cjs): 옛 Worker처럼 /sets 는 404 not_found(예제 세트 유지), 오늘의 단어는 계획을 켜면 복습 최대 3개 + 새 단어로 만든다.
+  const { children, paths, seedChild } = await createFakeWorker(page, { server: SERVER, familyCode: FAMILY_CODE, parentCode: PARENT_CODE, setSync: false });
+  seedChild(HANEUL, "하늘", HANEUL_CODE);
   const openFamilySettings = () => page.evaluate(() => { document.getElementById("familySettings").open = true; });
   const statusHas = (id, text) => page.evaluate(([i, t]) => document.getElementById(i).textContent.includes(t), [id, text]);
   const url = process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/";
