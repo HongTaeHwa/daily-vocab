@@ -1022,6 +1022,95 @@
     }
   }
 
+  // ===== [daily] 오늘의 단어 탭 =====
+  function fillPlanSelects() {
+    $("planLevel").append(...PLAN_LEVELS.map((l) => h("option", { value: l }, l)), h("option", { value: "__custom" }, "직접 입력…"));
+    $("planCount").append(...[5, 10, 15, 20].map((n) => h("option", { value: String(n) }, n + "개")));
+    for (let hr = 0; hr < 24; hr++) $("planHour").append(h("option", { value: String(hr) }, hourLabel(hr)));
+  }
+  fillPlanSelects();
+  // 폼 값은 아이가 바뀌거나 서버 계획이 바뀔 때만 채운다(고치는 중에 뒤에서 새로 받아도 입력이 지워지지 않게).
+  function fillPlanForm(c) {
+    const plan = planDefaults(c.plan);
+    const key = c.id + JSON.stringify([plan.enabled, plan.level, plan.dailyCount, plan.hour]);
+    if ($("planBox").dataset.key === key) return;
+    $("planBox").dataset.key = key;
+    $("planEnabled").checked = plan.enabled;
+    const known = PLAN_LEVELS.includes(plan.level);
+    $("planLevel").value = known ? plan.level : "__custom";
+    $("planLevelCustom").classList.toggle("hidden", known);
+    $("planLevelCustom").value = known ? "" : plan.level;
+    $("planCount").value = String(plan.dailyCount);
+    $("planHour").value = String(plan.hour);
+  }
+  formResets.push(() => delete $("planBox").dataset.key);
+  panels.daily = (c, d) => {
+    const plan = planDefaults(c.plan);
+    fillPlanForm(c);
+    const anchor = c.anchor;
+    $("planAnchor").textContent = anchor?.words?.length
+      ? `수준 기준 세트: ${anchor.setName || "(이름 없음)"} · ${anchor.words.length}단어 (아이 기기가 기록을 보낼 때 최근 세트에서 가져와요)`
+      : "수준 기준 세트가 아직 없어요. 아이 기기가 기록을 한 번 보내면 최근 세트의 단어를 수준 기준으로 삼아요.";
+    const today = d?.today || mergeToday(null, c.today);
+    const words = Array.isArray(today?.words) ? today.words : [];
+    const box = $("dailyPreview");
+    box.textContent = "";
+    let head;
+    if (!plan.enabled) head = `오늘의 단어가 꺼져 있어요. 켜고 저장하면 매일 ${hourLabel(plan.hour)}에 만들어요.`;
+    else if (!today?.exists) head = `오늘 것은 아직 없어요. ${hourLabel(plan.hour)}에 만들거나 아이가 앱을 열면 바로 만들어요.`;
+    else head = `오늘의 단어 ${words.length ? words.length + "개" : ""}` + (today.completed ? ` · ✅ ${today.completed.correct} / ${today.completed.total} 맞았어요` : " · 아직 안 풀었어요");
+    box.append(h("p", { class: "muted" }, head));
+    if (today?.exists && !words.length && detailLoading.has(c.id)) box.append(h("p", { class: "muted" }, "단어를 불러오는 중…"));
+    for (const w of words)
+      box.append(h("div", { class: "daily-word" }, h("span", { class: "tag" + (w.kind === "review" ? " review" : "") }, w.kind === "review" ? "복습" : "새"), h("span", null, `${w.en} — ${w.ko}`)));
+  };
+  $("planLevel").onchange = () => $("planLevelCustom").classList.toggle("hidden", $("planLevel").value !== "__custom");
+  $("savePlan").onclick = async () => {
+    const id = router.current.id;
+    if (!id || !childById(id)) return;
+    const choice = $("planLevel").value;
+    const level = choice === "__custom" ? tidy($("planLevelCustom").value).slice(0, 40) : choice;
+    if (!level) {
+      note(id, "planStatus", "bad", "수준을 고르거나 적어 주세요.");
+      return;
+    }
+    const body = { enabled: $("planEnabled").checked, level, dailyCount: Number($("planCount").value), hour: Number($("planHour").value) };
+    $("savePlan").disabled = true;
+    note(id, "planStatus", "info", "저장하는 중…");
+    try {
+      putPlan(id, await api.savePlan(id, body), body);
+      const text = body.enabled ? `저장했어요. 매일 ${hourLabel(body.hour)}에 ${body.dailyCount}개를 만들어요.` : "저장했어요. 오늘의 단어를 만들지 않아요.";
+      note(id, "planStatus", "good", text);
+      toast(text, "good");
+    } catch (e) {
+      note(id, "planStatus", "bad", "저장 실패: " + failure(e));
+    } finally {
+      $("savePlan").disabled = false;
+    }
+  };
+  $("makeDailyNow").onclick = async () => {
+    const id = router.current.id;
+    if (!id || !childById(id)) return;
+    $("makeDailyNow").disabled = true;
+    note(id, "planStatus", "info", "오늘의 단어를 만드는 중… (10초쯤 걸려요)");
+    try {
+      const d = await api.makeDaily(id);
+      const words = Array.isArray(d?.words) ? d.words : [];
+      const today = { date: d?.date || "", exists: true, words, note: d?.note || "", completed: d?.completed || null };
+      store.patch((s) => ({
+        details: s.details[id] ? { ...s.details, [id]: { ...s.details[id], today } } : s.details,
+        children: s.children.map((c) => (c.id === id ? { ...c, today: { date: today.date, exists: true, count: words.length, completed: today.completed } } : c)),
+      }));
+      const text = `오늘의 단어 ${words.length}개가 준비됐어요.` + (d?.note ? " " + d.note : "");
+      note(id, "planStatus", "good", text);
+      toast(text, "good");
+    } catch (e) {
+      note(id, "planStatus", "bad", "만들지 못했어요: " + failure(e));
+    } finally {
+      $("makeDailyNow").disabled = false;
+    }
+  };
+
   // ===== [start] 시작: 탭·새로고침·라우터·자동 갱신 =====
   $("tabToday").onclick = () => router.go("#/");
   $("tabChildren").onclick = () => router.go("#/children");
