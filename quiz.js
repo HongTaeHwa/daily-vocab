@@ -59,7 +59,7 @@ let cacheKey = "daily_vocab_missed_day04";
 let lastMissed = [];
 let mode = "read_meaning", queue = [], position = 0, results = [], question = {}, recognition = null, permissionPending = false;
 let sessionMeta = null, historyRecords = [], sessionRunning = false;
-let prefs = { mode: "read_meaning", range: "all", shuffle: true, setId: null };
+let prefs = { mode: "read_meaning", range: "all", shuffle: true, setId: null, combo: { setIds: null, count: 20, pick: "random" } }; // combo.setIds null = 전체 세트
 
 // ---- 저장 자료 읽기·이전 (검증 실패 시 덮어쓰지 않는다) ----
 try {
@@ -220,6 +220,7 @@ function populateSets() {
   range.value = [...range.options].some((o) => o.value === wanted) ? wanted : "all";
   refreshReview();
   renderSetSummary();
+  renderCombo();
 }
 function selectSet(id) {
   if (!sets.some((s) => s.id === id)) id = sets[0]?.id ?? null;
@@ -270,6 +271,98 @@ function changeMode(m) {
 document.querySelectorAll(".mode").forEach((b) => b.addEventListener("click", () => changeMode(b.dataset.mode)));
 $("range").addEventListener("change", () => savePrefs({ range: $("range").value }));
 $("shuffle").addEventListener("change", () => savePrefs({ shuffle: $("shuffle").checked }));
+
+// ---- 종합 시험: 여러 세트를 묶어 한 번에 ----
+// 홈의 #comboCard(세트 2개 이상일 때만). 단어마다 출처 세트를 _setId 로 붙여 뽑고(번호가 세트끼리 겹칠 수 있다), 기록은 setId "combo",
+// 틀린 단어는 finishRecords 가 출처 세트별 오답 목록에 반영한다. 마지막 설정은 prefs.combo 에 남는다.
+const COMBO_SET_ID = "combo";
+const COMBO_COUNTS = [10, 20, 30, 50, 0]; // 0 = 전부
+const COMBO_PICK_LABELS = { random: "무작위", missed: "틀린 단어 먼저", even: "세트별 골고루" };
+function missedIdsOf(setId) {
+  try {
+    const v = JSON.parse(localStorage.getItem("daily_vocab_missed_" + setId) || "[]");
+    return Array.isArray(v) ? v : [];
+  } catch { return []; }
+}
+function comboSelectedIds() {
+  return [...document.querySelectorAll("#comboSets input:checked")].map((i) => i.value).filter((id) => sets.some((s) => s.id === id));
+}
+function updateComboSummary() {
+  const ids = comboSelectedIds();
+  const total = sets.filter((s) => ids.includes(s.id)).reduce((n, s) => n + s.words.length, 0);
+  $("comboSummary").textContent = ids.length ? `세트 ${ids.length}개 · ${total}단어` : "세트를 골라 주세요";
+  $("comboStart").disabled = sessionRunning || !ids.length;
+}
+// 세트 목록이 바뀔 때(populateSets) 체크박스를 다시 그린다. 저장된 선택(prefs.combo.setIds, null = 전부)을 복원한다.
+function renderCombo() {
+  $("comboCard").classList.toggle("hidden", sets.length < 2);
+  const saved = prefs.combo && typeof prefs.combo === "object" ? prefs.combo : {};
+  const chosen = Array.isArray(saved.setIds) ? saved.setIds : null;
+  const box = $("comboSets");
+  box.textContent = "";
+  for (const s of sets) {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = s.id;
+    input.checked = chosen ? chosen.includes(s.id) : true;
+    input.disabled = sessionRunning;
+    input.addEventListener("change", updateComboSummary);
+    const name = document.createElement("span");
+    name.textContent = s.name;
+    const small = document.createElement("small");
+    small.textContent = `${s.words.length}단어`;
+    label.append(input, name, small);
+    box.append(label);
+  }
+  const count = $("comboCount");
+  if (!count.options.length) for (const n of COMBO_COUNTS) { const o = document.createElement("option"); o.value = String(n); o.textContent = n ? `${n}문제` : "전부"; count.append(o); }
+  count.value = String(COMBO_COUNTS.includes(saved.count) ? saved.count : 20);
+  $("comboPick").value = COMBO_PICK_LABELS[saved.pick] ? saved.pick : "random";
+  updateComboSummary();
+}
+// 뽑기: 무작위 / 틀린 단어 먼저(각 세트의 오답 목록에 있는 단어부터, 모자라면 나머지) / 세트별 골고루(세트를 번갈아 가며).
+function buildComboPool(setIds, count, pick) {
+  const tagged = sets.filter((s) => setIds.includes(s.id)).map((s) => ({ set: s, words: s.words.map((w) => ({ ...w, _setId: s.id })) }));
+  const all = tagged.flatMap((t) => t.words);
+  const limit = count > 0 ? Math.min(count, all.length) : all.length;
+  if (pick === "missed") {
+    const first = tagged.flatMap((t) => { const m = missedIdsOf(t.set.id); return t.words.filter((w) => m.includes(w.id)); });
+    const rest = all.filter((w) => !first.includes(w));
+    return [...shuffleArray(first.slice()), ...shuffleArray(rest.slice())].slice(0, limit);
+  }
+  if (pick === "even") {
+    const queues = tagged.map((t) => shuffleArray(t.words.slice())).filter((q) => q.length);
+    const out = [];
+    for (let i = 0; out.length < limit && queues.some((q) => q.length); i++) {
+      const q = queues[i % queues.length];
+      if (q.length) out.push(q.shift());
+    }
+    return out;
+  }
+  return shuffleArray(all.slice()).slice(0, limit);
+}
+function startCombo(settings) {
+  if (sessionRunning) return false;
+  const setIds = (settings.setIds || sets.map((s) => s.id)).filter((id) => sets.some((s) => s.id === id));
+  if (!setIds.length) { $("comboStatus").textContent = "세트를 하나 이상 골라 주세요."; return false; }
+  const pick = COMBO_PICK_LABELS[settings.pick] ? settings.pick : "random";
+  const pool = buildComboPool(setIds, settings.count, pick);
+  if (!pool.length) { $("comboStatus").textContent = "고른 세트에 단어가 없어요."; return false; }
+  $("comboStatus").textContent = "";
+  return newSession(false, pool, { setId: COMBO_SET_ID, setName: `종합 시험 (세트 ${setIds.length}개)` }, {
+    rangeLabel: `세트 ${setIds.length}개 · ${pool.length}문제 · ${COMBO_PICK_LABELS[pick]}`,
+    shuffle: false, // 뽑은 순서(틀린 단어 먼저·골고루)를 지킨다. 무작위는 이미 섞여 있다.
+    combo: { setIds, count: settings.count, pick },
+  });
+}
+$("comboStart").addEventListener("click", () => {
+  const ids = comboSelectedIds();
+  const count = Number($("comboCount").value);
+  const pick = $("comboPick").value;
+  savePrefs({ combo: { setIds: ids.length === sets.length ? null : ids, count, pick } }); // 전부 골랐으면 null: 나중에 생긴 세트도 포함
+  startCombo({ setIds: ids, count, pick });
+});
 
 // ---- 홈 ----
 function renderHome() {
@@ -439,6 +532,7 @@ function newSession(missedOnly = false, snapshot = null, source = null, options 
     id: crypto.randomUUID(), setId: source?.setId || activeSetId,
     setName: source?.setName || sets.find((s) => s.id === activeSetId)?.name || "이력 복습",
     mode, range: rangeLabel, rangeValue: missedOnly ? "missed" : startNum, shuffle,
+    combo: options.combo || null, // 종합 시험 설정 {setIds, count, pick} — ‘같은 범위 다시’가 같은 설정으로 다시 뽑는다
     daily: typeof options.daily === "string" ? options.daily : null, // 오늘의 단어(family.js)로 시작한 시험이면 그 날짜
     startedAt: new Date().toISOString(), saved: false, activeMs: 0, resumedAt: Date.now(),
   };
@@ -720,7 +814,7 @@ function finishGrade(localPass, value, origin, verdict) {
 // AI가 인정한 답은 그 단어의 허용 답안에 넣어 둔다: 다음부터는 기기에서 바로 정답이고, 같은 아이의 다른 기기에도 세트 동기화로 전해진다.
 function learnAlias(w, value) {
   const alias = value.replace(/\s+/g, " ").trim().slice(0, 60);
-  const set = sets.find((s) => s.id === sessionMeta?.setId);
+  const set = sets.find((s) => s.id === (w._setId || sessionMeta?.setId)); // 종합 시험이면 단어의 출처 세트
   if (!alias || !set) return; // 오늘의 단어·기록 복습처럼 세트가 아닌 시험은 건너뛴다
   const word = set.words.find((x) => x.id === w.id && x.en === w.en);
   if (!word || word.aliases.some((a) => normKo(a) === normKo(alias))) return;
@@ -799,8 +893,24 @@ function advance() {
 function finishRecords(partial) {
   saveSession(partial);
   const missed = results.filter((x) => !x.pass).map((x) => x.id);
+  // 종합 시험: 단어마다 붙은 출처 세트(_setId)별로 그 세트의 오답 목록에 반영한다(이번에 푼 단어는 결과로 갱신, 안 푼 단어는 그대로).
+  if (sessionMeta.setId === COMBO_SET_ID) {
+    const bySet = new Map();
+    for (const x of results) {
+      const sid = x.word?._setId;
+      if (!sid || !sets.some((s) => s.id === sid)) continue;
+      if (!bySet.has(sid)) bySet.set(sid, []);
+      bySet.get(sid).push(x);
+    }
+    for (const [sid, list] of bySet) {
+      const tested = list.map((x) => x.id);
+      const merged = [...new Set([...missedIdsOf(sid).filter((id) => !tested.includes(id)), ...list.filter((x) => !x.pass).map((x) => x.id)])];
+      try { localStorage.setItem("daily_vocab_missed_" + sid, JSON.stringify(merged)); } catch (_) { setFeedback($("historyStatus"), "bad", "오답 저장 실패. JSON 백업을 이용하세요."); }
+      if (sid === activeSetId) lastMissed = merged;
+    }
+  }
   // 틀린 단어는 시험을 본 세트에 저장한다(지금 선택된 세트와 다를 수 있다).
-  if (sets.some((s) => s.id === sessionMeta.setId)) {
+  else if (sets.some((s) => s.id === sessionMeta.setId)) {
     const setKey = "daily_vocab_missed_" + sessionMeta.setId;
     let merged = missed;
     if (partial) {
@@ -850,7 +960,7 @@ function showResult(missed, partial) {
   $("retryMissed").classList.toggle("hidden", !missed.length);
   $("retryMissed").disabled = !missed.length;
   $("againSame").classList.toggle("primary", !missed.length);
-  $("againSame").disabled = sessionMeta.rangeValue === "missed" || sessionMeta.setId !== activeSetId;
+  $("againSame").disabled = sessionMeta.rangeValue === "missed" || (!sessionMeta.combo && sessionMeta.setId !== activeSetId);
   showView("finish");
 }
 
@@ -946,8 +1056,9 @@ function renderHistory() {
 }
 $("historyFilter").addEventListener("change", renderHistory);
 function setSettingsLocked(locked) {
-  ["range", "shuffle", "start", "review", "setSelect", "createSet", "editSet", "deleteSet", "renameSet", "saveSet", "importSets"].forEach((id) => ($(id).disabled = locked));
-  document.querySelectorAll(".mode").forEach((button) => (button.disabled = locked));
+  ["range", "shuffle", "start", "review", "setSelect", "createSet", "editSet", "deleteSet", "renameSet", "saveSet", "importSets", "comboCount", "comboPick"].forEach((id) => ($(id).disabled = locked));
+  document.querySelectorAll(".mode, #comboSets input").forEach((button) => (button.disabled = locked));
+  updateComboSummary();
   refreshReview();
   $("retryMissed").disabled = locked || !lastMissed.length;
   document.querySelectorAll(".history-retry").forEach((button) => (button.disabled = locked));
@@ -979,7 +1090,11 @@ $("retryMissed").addEventListener("click", () => {
   if (!missedWords.length || !sessionMeta) return;
   newSession(true, missedWords, { setId: sessionMeta.setId, setName: sessionMeta.setName });
 });
-$("againSame").addEventListener("click", () => { if (!sessionMeta) return; newSession(false, null, null, { rangeValue: sessionMeta.rangeValue, rangeLabel: sessionMeta.range, shuffle: sessionMeta.shuffle }); });
+$("againSame").addEventListener("click", () => {
+  if (!sessionMeta) return;
+  if (sessionMeta.combo) { startCombo(sessionMeta.combo); return; } // 종합 시험: 같은 세트·문제 수·뽑는 방법으로 다시 뽑는다
+  newSession(false, null, null, { rangeValue: sessionMeta.rangeValue, rangeLabel: sessionMeta.range, shuffle: sessionMeta.shuffle });
+});
 $("newTest").addEventListener("click", () => showView("home"));
 $("micEnglish").addEventListener("click", () => listen("en-US", "en"));
 $("micKorean").addEventListener("click", () => listen("ko-KR", "ko"));

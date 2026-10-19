@@ -161,6 +161,57 @@ const { chromium } = require("playwright");
   assert(await page.isVisible("#home"), "accept discards draft");
   assert((await page.evaluate(() => WORDS.length)) === 2, "discarded draft not saved");
 
+  // 종합 시험: 세트 2개를 세트별 골고루 10문제로 → 번갈아 뽑힘 → 완료 → 기록 ‘종합 시험 (세트 2개)’ → 틀린 단어가 원래 세트 오답에 반영 → 같은 범위 다시
+  const waitFor = async (fn, m, ms = 5000) => {
+    const t0 = Date.now();
+    while (!(await fn())) {
+      if (Date.now() - t0 > ms) throw Error("timeout: " + m);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+  await page.click("#tabHome");
+  assert(await page.isVisible("#comboCard"), "combo card shown with two sets");
+  await page.evaluate(() => { document.getElementById("comboPanel").open = true; });
+  assert((await page.$$eval("#comboSets input", (i) => i.length)) === 2 && (await page.$$eval("#comboSets input:checked", (i) => i.length)) === 2, "all sets checked by default");
+  const totalWords = await page.evaluate(() => sets.reduce((n, s) => n + s.words.length, 0));
+  assert((await page.textContent("#comboSummary")) === `세트 2개 · ${totalWords}단어`, "combo summary: " + (await page.textContent("#comboSummary")));
+  await page.selectOption("#comboCount", "10");
+  await page.selectOption("#comboPick", "even");
+  await page.click('[data-mode="en_ko"]');
+  await page.click("#comboStart");
+  await waitFor(() => page.isVisible("#quiz"), "combo quiz started");
+  const comboSets = await page.evaluate(() => queue.map((w) => w._setId));
+  assert(comboSets.length === 10 && new Set(comboSets).size === 2 && comboSets[0] !== comboSets[1], "even pick alternates between the two sets: " + JSON.stringify(comboSets));
+  assert((await page.textContent("#sessionScope")).includes("종합 시험 (세트 2개)") && (await page.textContent("#sessionScope")).includes("10문제 · 세트별 골고루"), "combo scope label: " + (await page.textContent("#sessionScope")));
+  assert(JSON.stringify((await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_prefs_v1")).combo))) === JSON.stringify({ setIds: null, count: 10, pick: "even" }), "combo prefs remembered (all sets → null)");
+  for (let i = 0; i < 10; i++) {
+    await page.fill("#answerInput", "틀린답");
+    await page.click("#check");
+    await page.click("#next");
+  }
+  await waitFor(() => page.isVisible("#finish"), "combo finished");
+  assert((await page.textContent("#finalScore")).trim() === "0 / 10", "combo score: " + (await page.textContent("#finalScore")));
+  assert(!(await page.isDisabled("#againSame")), "same combo again is allowed");
+  assert(await page.evaluate(() => historyRecords[0].setId === "combo" && historyRecords[0].setName === "종합 시험 (세트 2개)" && historyRecords[0].results.length === 10 && historyRecords[0].combo === undefined), "combo record saved under setId combo");
+  const missedOk = await page.evaluate(() => results.every((x) => JSON.parse(localStorage.getItem("daily_vocab_missed_" + x.word._setId) || "[]").includes(x.id)));
+  assert(missedOk, "missed words written back to each source set");
+  await page.click("#tabHistory");
+  await page.selectOption("#historyFilter", "all");
+  assert((await page.textContent("#historyList")).includes("종합 시험 (세트 2개)"), "combo record listed under all sets");
+  await page.click("#tabHome");
+  await page.evaluate(() => { document.getElementById("comboPanel").open = true; });
+  await page.evaluate(() => { document.querySelector("#comboSets input").checked = false; document.querySelector("#comboSets input").dispatchEvent(new Event("change")); });
+  assert((await page.textContent("#comboSummary")).startsWith("세트 1개"), "unchecking a set updates the summary");
+  await page.evaluate(() => { document.querySelectorAll("#comboSets input").forEach((i) => { i.checked = false; i.dispatchEvent(new Event("change")); }); });
+  assert((await page.isDisabled("#comboStart")) && (await page.textContent("#comboSummary")).includes("골라"), "no set → start disabled");
+  // 결과 화면의 ‘같은 범위 다시’는 같은 설정으로 다시 뽑는다 → 그만하기(푼 문제 없음)
+  await page.evaluate(() => startCombo({ setIds: null, count: 10, pick: "even" }));
+  await waitFor(() => page.isVisible("#quiz"), "combo restarted with the same settings");
+  assert((await page.evaluate(() => sessionMeta.combo && sessionMeta.combo.pick)) === "even" && (await page.evaluate(() => queue.length)) === 10, "combo settings kept on restart");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#backSettings");
+  await waitFor(() => page.isVisible("#home"), "stopped the restarted combo");
+
   // 세트 삭제는 편집 화면에서만, 확인 후 홈으로
   await page.click("#editSet");
   page.once("dialog", (d) => d.accept());
@@ -168,7 +219,7 @@ const { chromium } = require("playwright");
   assert(await page.isVisible("#home") && (await page.evaluate(() => sets.length)) === 1, "delete from editor");
 
   if (errors.length) throw Error(errors.join(","));
-  console.log("PASS: tabs, range labels, pause/resume across reload, finish details, stop with partial record, rename, table editor sync, prefs, editor return");
+  console.log("PASS: tabs, range labels, pause/resume across reload, finish details, stop with partial record, rename, table editor sync, prefs, editor return, combo test (even pick, record, per-set missed, restart)");
   await browser.close();
 })().catch((e) => {
   console.error(e);
