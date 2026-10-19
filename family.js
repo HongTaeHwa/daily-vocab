@@ -1402,29 +1402,29 @@ async function openChildSet(child, s) {
     setFeedback($("setsStatus"), "bad", "세트를 불러오지 못했어요: " + e.message);
   }
 }
-// 보호자 편집기: sets.js 의 편집 화면을 그대로 쓰되 저장은 기기가 아니라 아이의 세트로 서버에 보낸다(editorForChild).
+// 보호자 편집기: editor.js 의 편집 화면을 그대로 쓰되 저장은 기기가 아니라 아이의 세트로 서버에 보낸다(editorForChild).
 function openChildSetEditor(child, set) {
   window.editorForChild = { id: child.id, name: child.name };
   openEditor(set ? { id: set.id, name: set.name, words: set.words } : null); // sets.js
 }
-// sets.js 의 저장 버튼이 보호자 편집 중일 때 부른다.
+// 편집기의 저장(sets.js onSave)이 보호자 편집 중일 때 부른다.
 async function sendSetToChild(set) {
   const target = window.editorForChild;
   if (!target) return;
-  $("saveSet").disabled = true;
-  $("draftWarnings").textContent = `‘${target.name}’에게 보내는 중…`;
+  SetEditor.lockSave(true);
+  SetEditor.setWarning(`‘${target.name}’에게 보내는 중…`);
   try {
     const data = await familyRequest("/family/" + encodeURIComponent(target.id) + "/sets", {
       method: "POST", body: { set: { id: set.id, name: set.name, words: set.words } }, passcode: family.parentCode, timeout: SETS_TIMEOUT_MS,
     });
-    $("draftWarnings").textContent = "";
-    finishEditor(); // sets.js
+    SetEditor.setWarning("");
+    SetEditor.close();
     returnToChild(Array.isArray(data?.summary) ? data.summary : null);
     setFeedback($("setsStatus"), "good", `‘${set.name}’(${set.words.length}단어)을(를) ${target.name}에게 보냈어요. 아이 기기가 다음에 앱을 열 때 들어가요.`);
   } catch (e) {
-    $("draftWarnings").textContent = "보내지 못했어요: " + e.message;
+    SetEditor.setWarning("보내지 못했어요: " + e.message);
   } finally {
-    $("saveSet").disabled = false;
+    SetEditor.lockSave(false);
   }
 }
 // 보호자 편집기를 닫거나 보낸 뒤 아이 상세로 돌아간다(세트 요약을 받았으면 반영).

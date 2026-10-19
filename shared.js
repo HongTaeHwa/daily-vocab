@@ -7,7 +7,7 @@
   const $ = (id) => document.getElementById(id);
   // createElement 축약(innerHTML 은 쓰지 않는다). attrs:
   //   class/className → className, dataset → data-*, style(객체) → style, on<이벤트>(함수) → 프로퍼티 처리기(el.onclick = …),
-  //   불리언 프로퍼티(hidden, disabled, multiple, checked, readOnly …) → 프로퍼티, 그 밖(id, type, for, aria-*, placeholder …) → 속성.
+  //   true(hidden, disabled, multiple, readOnly …) → 같은 이름의 프로퍼티(없으면 빈 속성), 그 밖의 값(id, type, for, aria-*, style 문자열 …) → 속성.
   //   값이 undefined·null·false 면 건너뛴다. children: 노드·문자열·숫자·배열(펼침), null·false 는 건너뛴다.
   function h(tag, attrs, ...children) {
     const el = document.createElement(tag);
@@ -17,8 +17,10 @@
       else if (key === "dataset") Object.assign(el.dataset, value);
       else if (key === "style" && typeof value === "object") Object.assign(el.style, value);
       else if (/^on[a-z]+$/.test(key) && typeof value === "function") el[key] = value;
-      else if (key in el && typeof el[key] === "boolean") el[key] = Boolean(value);
-      else el.setAttribute(key, value === true ? "" : String(value));
+      else if (value === true) {
+        if (key in el) el[key] = true;
+        else el.setAttribute(key, "");
+      } else el.setAttribute(key, String(value));
     }
     for (const child of children.flat(Infinity)) {
       if (child === null || child === undefined || child === false) continue;
@@ -103,6 +105,38 @@
           hangul: "",
         };
       });
+  }
+
+  // ---- 사진 (사진 인식·문제 물어보기 공용) ----
+  // 긴 변을 2000px 이하로 줄인 canvas.
+  async function preparePhoto(file) {
+    const image = await createImageBitmap(file);
+    try {
+      const scale = Math.min(1, 2000 / Math.max(image.width, image.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.width * scale));
+      canvas.height = Math.max(1, Math.round(image.height * scale));
+      canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+      return canvas;
+    } finally {
+      image.close();
+    }
+  }
+  // canvas → JPEG(품질 0.92) base64(머리말 data:… 없이).
+  function canvasToBase64Jpeg(canvas) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) return reject(Error("사진 변환 실패"));
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+          reader.onerror = () => reject(Error("사진 변환 실패"));
+          reader.readAsDataURL(blob);
+        },
+        "image/jpeg",
+        0.92,
+      );
+    });
   }
 
   // ---- 서버 요청 (가족 Worker) ----
@@ -196,7 +230,7 @@
     $, h, setFeedback,
     tidy, formatCode, hourLabel, relativeTime, durationText, dayKey, pctOf, WEEKDAYS, modeLabels,
     AI_SERVER_DEFAULT, normalizeServer, WORD_PATTERN, PLAN_LEVELS, TIME_LIMIT_CHOICES, planDefaults,
-    parseDraft,
+    parseDraft, preparePhoto, canvasToBase64Jpeg,
     ApiError, apiRequest, describeApiError,
     readJson, writeJson,
   });
