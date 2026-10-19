@@ -841,6 +841,187 @@
   $("recordsSet").onchange = () => store.patch((s) => ({ prefs: { ...s.prefs, recordsSet: $("recordsSet").value } }));
   $("recordsDays").onchange = () => store.patch((s) => ({ prefs: { ...s.prefs, recordsDays: Number($("recordsDays").value) } }));
 
+  // ===== [sets] 세트 탭 · 세트 편집기 (#/child/<id>/sets/<new|세트 id>) =====
+  const validWord = (w) => w && ["string", "number"].includes(typeof w.id) && typeof w.en === "string" && w.en.trim() && typeof w.ko === "string" && Array.isArray(w.aliases);
+  const validSet = (s) => Boolean(s && typeof s.id === "string" && typeof s.name === "string" && Array.isArray(s.words) && s.words.length > 0 && s.words.every(validWord));
+  let lockBusy = false;
+  panels.sets = (c) => {
+    if (!lockBusy) $("setsLock").checked = planDefaults(c.plan).setsLocked === true;
+    const list = $("childSets");
+    list.textContent = "";
+    const summary = (Array.isArray(c.sets) ? c.sets : []).filter((s) => s && typeof s.name === "string");
+    if (!summary.length) {
+      list.append(h("p", { class: "muted" }, "아직 세트가 없어요. 아래 ‘세트 만들어 보내기’로 교재 사진에서 만들어 주면 아이 기기가 다음에 앱을 열 때 들어가요."));
+      return;
+    }
+    const bySet = computeStats(recordsOf(c.id), { days: 30 }).bySet;
+    for (const s of summary) {
+      const st = bySet.find((x) => x.name === s.name);
+      const info = [st ? `최근 ${pctOf(st.last)}점 · 30일 시험 ${st.count}회` : "최근 30일 시험 없음", s.id && s.updatedAt ? `고침 ${relativeTime(s.updatedAt)}` : ""].filter(Boolean).join(" · ");
+      list.append(
+        h(
+          "div",
+          { class: "set-row", dataset: { set: s.id || "" } },
+          h("span", { class: "set-info" }, h("span", { class: "set-name" }, `${s.name} · ${s.count}단어`), h("small", null, info)),
+          s.id
+            ? [
+                h("button", { type: "button", class: "btn small", onclick: () => router.go(editorPath(c.id, s.id)) }, "보기·수정"),
+                h("button", { type: "button", class: "btn small outline danger", onclick: () => deleteSet(c, s) }, "삭제"),
+              ]
+            : h("small", { class: "muted" }, "아이 기기가 새 버전으로 보내면 여기서 고칠 수 있어요"),
+        ),
+      );
+    }
+  };
+  async function deleteSet(c, s) {
+    if (!confirm(`‘${s.name}’ 세트를 ${c.name}의 모든 기기에서 지울까요? 시험 기록은 남아요.`)) return;
+    note(c.id, "setsStatus", "info", "지우는 중…");
+    try {
+      const data = await api.deleteSet(c.id, s.id);
+      patchChild(c.id, { sets: Array.isArray(data?.summary) ? data.summary : (childById(c.id)?.sets || []).filter((x) => x.id !== s.id) });
+      const text = `‘${s.name}’을(를) 지웠어요. 아이 기기에서는 다음에 앱을 열 때 사라져요.`;
+      note(c.id, "setsStatus", "good", text);
+      toast(text, "good");
+    } catch (e) {
+      note(c.id, "setsStatus", "bad", "지우지 못했어요: " + failure(e));
+    }
+  }
+  $("sendNewSet").onclick = () => {
+    const id = router.current.id;
+    if (id) router.go(editorPath(id, null));
+  };
+  // 세트 고치기 잠금: 바꾸는 즉시 계획(plan)에 setsLocked 만 저장한다. 아이 기기는 다음에 앱을 열 때 /settings 로 받는다.
+  $("setsLock").onchange = async () => {
+    const id = router.current.id;
+    if (!id || !childById(id)) return;
+    const setsLocked = $("setsLock").checked;
+    $("setsLock").disabled = true;
+    lockBusy = true;
+    note(id, "setsStatus", "info", setsLocked ? "잠그는 중…" : "잠금을 푸는 중…");
+    try {
+      putPlan(id, await api.savePlan(id, { setsLocked }), { setsLocked });
+      const text = setsLocked
+        ? "잠갔어요. 아이 기기가 다음에 앱을 열 때부터 세트를 만들거나 고치거나 지울 수 없고 단어를 보기만 해요."
+        : "잠금을 풀었어요. 아이 기기가 다음에 앱을 열 때부터 세트를 다시 고칠 수 있어요.";
+      note(id, "setsStatus", "good", text);
+      toast(setsLocked ? "🔒 잠갔어요" : "잠금을 풀었어요", "good");
+    } catch (e) {
+      $("setsLock").checked = !setsLocked;
+      note(id, "setsStatus", "bad", "저장 실패: " + failure(e));
+    } finally {
+      $("setsLock").disabled = false;
+      lockBusy = false;
+      scheduleRender();
+    }
+  };
+
+  // 편집기: editor.js 의 화면을 그대로 쓰고, 저장은 아이의 세트로 서버에 보낸다. 사진 인식·AI 사전은 보호자 코드로 부른다.
+  function aiBridge() {
+    const s = store.get();
+    if (!s.parentCode) return null;
+    const call = (path, body, signal) =>
+      apiRequest(s.server, path, { method: "POST", body, passcode: s.parentCode, signal, timeout: AI_TIMEOUT_MS }).catch((e) => {
+        if (e?.status === 401) {
+          const err = Error("보호자 코드가 맞지 않아요. 설정에서 코드를 확인해 주세요.");
+          err.status = 401;
+          throw err;
+        }
+        throw e;
+      });
+    return {
+      recognize: (image, mediaType, signal) => call("/recognize", { image, mediaType }, signal),
+      define: (words, signal) => call("/define", { words }, signal),
+    };
+  }
+  // 고친 세트는 번호·영어가 같은 단어의 원래 id(숫자)·발음을 이어받는다(아이 기기의 틀린 단어 목록이 id 로 이어지게).
+  function keepWordDetails(set, previous) {
+    if (!previous) return;
+    for (const w of set.words) {
+      const old = previous.words.find((x) => String(x.id) === String(w.id) && x.en === w.en);
+      if (old) {
+        w.id = old.id;
+        w.ipa = w.ipa || old.ipa || "";
+        w.hangul = old.hangul || "";
+      }
+    }
+  }
+  async function sendSet(set) {
+    const r = router.current;
+    const c = r.name === "editor" ? childById(r.id) : null;
+    if (!c) return false;
+    keepWordDetails(set, editingSet);
+    SetEditor.lockSave(true);
+    SetEditor.setWarning(`‘${c.name}’에게 보내는 중…`);
+    try {
+      const data = await api.sendSet(c.id, { id: set.id, name: set.name, words: set.words });
+      if (Array.isArray(data?.summary)) patchChild(c.id, { sets: data.summary });
+      const text = `‘${set.name}’(${set.words.length}단어)을(를) ${c.name}에게 보냈어요. 아이 기기가 다음에 앱을 열 때 들어가요.`;
+      SetEditor.setWarning("");
+      SetEditor.close();
+      editorDone = editorKey;
+      editorKey = "";
+      editingSet = null;
+      note(c.id, "setsStatus", "good", text);
+      toast(text, "good");
+      router.back(childPath(c.id, "sets"));
+      return true;
+    } catch (e) {
+      SetEditor.setWarning("보내지 못했어요: " + failure(e));
+      return false;
+    } finally {
+      SetEditor.lockSave(false);
+    }
+  }
+  SetEditor.mount($("editor"), {
+    ai: aiBridge,
+    onSave: sendSet,
+    onClose() {
+      const id = router.current.id;
+      editorDone = editorKey;
+      editorKey = "";
+      editingSet = null;
+      router.back(id ? childPath(id, "sets") : "#/children");
+    },
+  });
+  // render 가 부른다: 편집기가 이 라우트로 열려 있으면 true. 새 세트는 바로 열고, 있는 세트는 서버에서 받은 뒤 연다(그동안은 세트 탭).
+  let editorLoadingKey = "";
+  views.editor = (r) => {
+    const key = editorKeyOf(r);
+    if (editorKey === key && SetEditor.isOpen()) return true;
+    if (editorDone === key) return false;
+    const c = childById(r.id);
+    if (!c) return false;
+    if (!r.setId) {
+      if (!SetEditor.open(null, { targetName: c.name })) return false;
+      editorKey = key;
+      editingSet = null;
+      return true;
+    }
+    if (editorLoadingKey !== key) loadSetForEditor(r, key, c);
+    return false;
+  };
+  async function loadSetForEditor(r, key, c) {
+    editorLoadingKey = key;
+    note(c.id, "setsStatus", "info", "세트를 불러오는 중…");
+    try {
+      const data = await api.getSet(r.id, r.setId);
+      if (!validSet(data?.set)) throw Error("세트 내용이 올바르지 않아요.");
+      if (editorKeyOf(router.current) !== key) return;
+      note(c.id, "setsStatus", "info", "");
+      editingSet = data.set;
+      if (SetEditor.open({ id: data.set.id, name: data.set.name, words: data.set.words }, { targetName: c.name })) {
+        editorKey = key;
+        render();
+        window.scrollTo({ top: 0, behavior: "auto" });
+      }
+    } catch (e) {
+      note(c.id, "setsStatus", "bad", "세트를 불러오지 못했어요: " + failure(e));
+      if (editorKeyOf(router.current) === key && e?.status !== 401) router.replace(childPath(r.id, "sets"));
+    } finally {
+      if (editorLoadingKey === key) editorLoadingKey = "";
+    }
+  }
+
   // ===== [start] 시작: 탭·새로고침·라우터·자동 갱신 =====
   $("tabToday").onclick = () => router.go("#/");
   $("tabChildren").onclick = () => router.go("#/children");
