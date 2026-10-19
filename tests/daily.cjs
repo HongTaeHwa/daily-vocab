@@ -35,7 +35,7 @@ const { chromium } = require("playwright");
     const d = new Date();
     return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
   };
-  const planOf = (c) => ({ enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, ...(c.plan || {}) });
+  const planOf = (c) => ({ enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false, ...(c.plan || {}) });
   const todayOf = (c, date) => {
     const d = dailies.get(c.id + ":" + date);
     return { date, exists: Boolean(d), count: d ? d.words.length : 0, completed: d?.completed || null };
@@ -68,14 +68,14 @@ const { chromium } = require("playwright");
       const c = [...children.values()].find((x) => x.joinCode === String(body.code || "").replace(/\D/g, ""));
       if (!c) return reply(route, 404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요." });
       if (body.device?.id) c.devices[body.device.id] = { label: body.device.label, joinedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() };
-      return reply(route, 200, { ok: true, childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec });
+      return reply(route, 200, { ok: true, childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec, setsLocked: planOf(c).setsLocked });
     }
     const sm = /^\/settings\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (sm && req.method() === "GET") {
       if (!family) return reply(route, 401, { error: "unauthorized", message: "접속 코드가 맞지 않습니다." });
       const c = children.get(sm[1]);
       if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      return reply(route, 200, { childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec });
+      return reply(route, 200, { childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec, setsLocked: planOf(c).setsLocked });
     }
     const rm = /^\/records\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (rm && req.method() === "GET") {
@@ -298,6 +298,47 @@ const { chromium } = require("playwright");
   await waitFor(() => page.evaluate(() => document.getElementById("childRecords").textContent.includes("⏱ 시간 초과 1개")), "parent record shows the timeout");
   assert((await page.textContent("#familyOverview")).includes("⏱ 시간 초과 1개"), "overview warns about the timeout");
   assert((await page.inputValue("#planTimeLimit")) === "10", "plan form shows the current limit");
+
+  // 세트 수정 잠금: 보호자가 📚 세트 상자에서 켜면 plan 에 setsLocked 만 보내고, 아이 기기는 앱을 열 때 /settings 로 받아 새 세트·수정·삭제·가져오기를 막고 단어는 보기만 한다
+  assert(!(await page.isChecked("#setsLock")), "lock unchecked by default");
+  await page.check("#setsLock");
+  await waitFor(() => statusHas("setsStatus", "잠갔어요"), "lock saved");
+  const lockReq = paths("/family/" + childId + "/plan", "POST").slice(-1)[0];
+  assert(lockReq.passcode === PARENT_CODE && JSON.stringify(lockReq.body) === JSON.stringify({ setsLocked: true }), "lock sent alone: " + JSON.stringify(lockReq.body));
+  assert(children.get(childId).plan.timeLimitSec === 10 && children.get(childId).plan.setsLocked === true, "server plan keeps the limit and stores the lock");
+  await page.click("#tabSettings");
+  await openFamilySettings();
+  await page.check("#parentModeOff");
+  await waitFor(() => page.isVisible("#home"), "child UI for the lock check");
+  await page.reload();
+  await waitFor(() => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).settings.setsLocked === true), "lock stored on the device");
+  await page.click("#tabHome");
+  assert((await page.isHidden("#createSet")) && (await page.isVisible("#setsLockNote")) && (await page.textContent("#editSet")).trim() === "📖 단어 보기", "home hides new-set and shows the lock note: " + (await page.textContent("#editSet")));
+  await page.click("#editSet");
+  await waitFor(() => page.isVisible("#editor"), "view-only editor opens");
+  assert((await page.textContent("#editorTitle")).includes("📖 단어 보기") && (await page.textContent("#extractStatus")).includes("잠갔어요"), "editor titled as view-only with the lock notice");
+  for (const id of ["photoRow", "fillMeanings", "toggleDraftText", "addRow", "confirmedRow", "saveSet", "manageBox"]) assert(await page.isHidden("#" + id), id + " hidden in the view-only editor");
+  assert((await page.$eval("#setName", (i) => i.readOnly)) && (await page.$eval("#wordTableBody .cell.en", (i) => i.readOnly)) && (await page.$$eval("#wordTableBody .row-delete", (b) => b.length)) === 0, "name and cells read-only, no delete buttons");
+  assert((await page.$$eval("#wordTableBody tr", (r) => r.length)) === 40, "all words listed for viewing");
+  await page.evaluate(() => document.getElementById("saveSet").click());
+  assert((await page.textContent("#draftWarnings")).includes("잠갔어요"), "save refused even when triggered");
+  await page.click("#closeEditor");
+  await waitFor(() => page.isVisible("#home"), "back home without a discard prompt");
+  await page.click("#tabSettings");
+  assert(await page.isHidden("#importSetsLabel"), "JSON import hidden while locked");
+  await openFamilySettings();
+  assert((await page.textContent("#setsSyncText")).includes("🔒 보호자가 세트 고치기를 잠갔어요"), "family card mentions the lock: " + (await page.textContent("#setsSyncText")));
+  // 보호자가 풀면 다음에 앱을 열 때부터 다시 고칠 수 있다
+  children.get(childId).plan.setsLocked = false;
+  await page.reload();
+  await waitFor(() => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).settings.setsLocked === false), "lock released on the device");
+  await page.click("#tabHome");
+  assert((await page.isVisible("#createSet")) && (await page.isHidden("#setsLockNote")) && (await page.textContent("#editSet")).trim() === "📖 단어 보기·수정", "home editing back after unlocking");
+  await page.click("#tabSettings");
+  assert(await page.isVisible("#importSetsLabel"), "JSON import back");
+  await openFamilySettings();
+  await page.uncheck("#parentModeOff");
+  await waitFor(() => page.isVisible("#family"), "parent mode restored");
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
   console.log("PASS: daily words — child card/generation/quiz/record flag/completion, parent plan form/preview/make-now");

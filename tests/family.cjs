@@ -54,7 +54,7 @@ const { chromium } = require("playwright");
   const summaryOf = (c) => ({
     id: c.id, name: c.name, joinCode: c.joinCode, devices: c.devices, sets: c.setStore ? setSummary(c) : c.sets, anchor: c.anchor, updatedAt: c.updatedAt, lastTestAt: c.lastTestAt,
     questionCount: (c.questions || []).length, lastQuestionAt: (c.questions || [])[0]?.askedAt || null,
-    plan: { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0 }, today: { date: "", exists: false, count: 0, completed: null },
+    plan: { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false }, today: { date: "", exists: false, count: 0, completed: null },
     records: [...c.records.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt)),
   });
   await page.route(SERVER + "/**", async (route) => {
@@ -73,13 +73,13 @@ const { chromium } = require("playwright");
       const c = children.get(codes.get(code));
       if (!c || c.joinCode !== code) return reply(route, 404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요." });
       touchDevice(c, body.device);
-      return reply(route, 200, { ok: true, childId: c.id, name: c.name, timeLimitSec: 0 });
+      return reply(route, 200, { ok: true, childId: c.id, name: c.name, timeLimitSec: 0, setsLocked: false });
     }
     const sm = /^\/settings\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (sm && req.method() === "GET") {
       const c = children.get(sm[1]);
       if (!c) return reply(route, 404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-      return reply(route, 200, { childId: c.id, name: c.name, timeLimitSec: 0 });
+      return reply(route, 200, { childId: c.id, name: c.name, timeLimitSec: 0, setsLocked: false });
     }
     const rm = /^\/records\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (rm && req.method() === "GET") {

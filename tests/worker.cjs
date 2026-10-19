@@ -672,7 +672,7 @@ const { pathToFileURL } = require("url");
   data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
   assert.deepEqual(data.child.anchor.words, ["authority", "devote", "evident"], "anchor cleaned and deduped");
   assert.equal(data.child.anchor.setName, "중등 DAY05");
-  assert.deepEqual(data.child.plan, { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0 }, "default plan");
+  assert.deepEqual(data.child.plan, { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false }, "default plan");
   assert.equal(data.today.exists, false);
   await familyCase("/sync", { body: { child: kid, anchor: { words: "nope" } } }, 400, "anchor");
   // 빈 앵커(기기에 손대지 않은 예제 세트뿐)는 저장된 수준 기준을 지우고, 앵커를 아예 안 보내면 그대로 둔다
@@ -703,10 +703,18 @@ const { pathToFileURL } = require("url");
   assert.equal(data.child.plan.timeLimitSec, 15);
   assert.equal(data.child.plan.dailyCount, 5, "other plan fields kept");
   data = await familyCase("/settings/" + kid.id, { method: "GET" }, 200);
-  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15 }, "settings for the device");
+  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15, setsLocked: false }, "settings for the device");
   await familyCase("/settings/99999999-aaaa-4bbb-8ccc-dddddddddddd", { method: "GET" }, 404, "unknown_child");
   await familyCase("/settings/" + kid.id, { method: "GET", passcode: "nope" }, 401);
   await familyCase("/settings/" + kid.id, { method: "POST", body: {} }, 404);
+  // 세트 수정 잠금: true/false 만 받고 다른 계획 항목은 그대로. 아이 기기는 /settings 로 받아 간다.
+  await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { setsLocked: "yes" } }, 400, "true 또는 false");
+  data = await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { setsLocked: true } }, 200);
+  assert.deepEqual([data.child.plan.setsLocked, data.child.plan.timeLimitSec, data.child.plan.dailyCount], [true, 15, 5], "lock stored without touching the other plan fields");
+  data = await familyCase("/settings/" + kid.id, { method: "GET" }, 200);
+  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15, setsLocked: true }, "settings carry the lock to the device");
+  data = await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { setsLocked: false } }, 200);
+  assert.equal(data.child.plan.setsLocked, false, "lock released");
   await familyCase("/sync", { body: { child: kid, records: [rec("kt", hoursAgo(0.2), { total: 4, correct: 2, timeouts: 2, missed: [] })] } }, 200);
   data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
   assert.equal(data.records.find((r) => r.id === "kt").timeouts, 2, "timeouts kept on the record");
@@ -817,7 +825,7 @@ const { pathToFileURL } = require("url");
   const phone = { id: "aaaaaaaa-1111-4222-8333-444444444444", label: "iPhone" };
   const tablet = { id: "bbbbbbbb-1111-4222-8333-444444444444", label: " Android 태블릿 " };
   data = await familyCase("/join", { body: { code: made.joinCode.slice(0, 3) + " " + made.joinCode.slice(3), device: phone } }, 200);
-  assert.deepEqual([data.childId, data.name, data.timeLimitSec], [made.id, "하늘", 0], "join returns the child id, the server name and the time limit (space in the code tolerated)");
+  assert.deepEqual([data.childId, data.name, data.timeLimitSec, data.setsLocked], [made.id, "하늘", 0, false], "join returns the child id, the server name, the time limit and the lock (space in the code tolerated)");
   await familyCase("/join", { ...PARENT, body: { code: made.joinCode, device: tablet } }, 200); // 보호자 코드로도 연결된다
   await familyCase("/join", { body: { code: made.joinCode, device: { id: "bad id", label: "x" } } }, 200); // 잘못된 기기 정보는 무시
   data = await familyCase("/family/" + made.id, { method: "GET", ...PARENT }, 200);
