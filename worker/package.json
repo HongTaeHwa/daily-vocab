@@ -7,6 +7,7 @@
     "login": "wrangler login",
     "secrets": "wrangler secret put ANTHROPIC_API_KEY && wrangler secret put APP_PASSCODE",
     "parent-code": "wrangler secret put PARENT_PASSCODE",
+    "vapid": "node scripts/vapid.cjs",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "tail": "wrangler tail"

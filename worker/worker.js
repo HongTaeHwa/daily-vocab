@@ -17,21 +17,30 @@
 //   GET  /family/<childId>/records?before=<ISO>&limit=<1~500>  보호자 코드 → { records, more, serverTime }
 //                              보호자 앱의 ‘더 보기’: before 이전(미포함) 기록을 최신순으로 limit개(기본 100). before 가 없으면 최신부터
 //   DELETE /family/<childId>   보호자 코드 → { ok, deleted }
-//   POST /family/<childId>/plan  보호자 코드, JSON {enabled, level, dailyCount, hour} → { ok, child }   (오늘의 단어 계획)
+//   POST /family/<childId>/plan  보호자 코드, JSON {enabled, level, dailyCount, hour, timeLimitSec, setsLocked, remindHour} → { ok, child }   (오늘의 단어 계획·아이 기기 설정, 빠진 항목은 유지)
 //   GET  /daily/<childId>?date=  가족·보호자 코드 → 그날의 단어 { date, words:[{id,en,ko,ipa,aliases,kind}], level, completed? }
 //                                없으면 404 no_daily, 계획이 꺼져 있으면 409 plan_disabled
 //   POST /daily/<childId>        가족·보호자 코드, JSON {date?} → 없으면 Claude로 생성해 저장하고 돌려준다
 //   POST /family/children        보호자 코드, JSON {name} → { ok, child }   (아이 만들기: 6자리 아이 코드 발급)
 //   POST /family/<childId>/code  보호자 코드 → 아이 코드 새로 발급 { ok, child }  (옛 코드는 무효)
 //   POST /family/<childId>/name  보호자 코드, JSON {name} → 이름 바꾸기 { ok, child }
-//   POST /join                   가족·보호자 코드, JSON {code, device:{id,label}} → { ok, childId, name, timeLimitSec, setsLocked }   (아이 기기 연결)
-//   GET  /settings/<childId>     가족·보호자 코드 → { childId, name, timeLimitSec, setsLocked }   (아이 기기가 보호자 설정을 받아 감: 제한 시간·세트 수정 잠금)
+//   POST /join                   가족·보호자 코드, JSON {code, device:{id,label}} → { ok, childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour }   (아이 기기 연결)
+//   GET  /settings/<childId>     가족·보호자 코드 → { childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour }
+//                                (아이 기기가 보호자 설정을 받아 감: 제한 시간·세트 수정 잠금·오늘의 단어 시각·공부 알림 시각)
 //   GET  /records/<childId>?since=<ISO>&limit=<n>  가족·보호자 코드 → { records:[압축 기록…], more, serverTime }
 //                                아이 기기의 기록 복원(새 기기·재설치). since가 있으면 그 시각부터(포함) 오름차순, 없으면 최신순. 최대 500개
-//   (크론, 매시) scheduled() → FamilyStore /cron: 계획 시각이 지난 아이의 그날 단어를 만든다
+//   GET  /push/key               가족·보호자 코드 → { publicKey }   (알림: VAPID 공개 키. 키가 없으면 503 push_unconfigured — 아래 /push/… 모두 같다)
+//   POST /push/subscribe         아이 기기: 가족 코드, JSON {role:"child", childId, device:{id,label}, subscription:{endpoint, keys:{p256dh, auth}}}
+//                                보호자 폰: 보호자 코드, JSON {role:"parent", device:{id,label}, subscription, kinds:{finish, summary}, summaryHour} → { ok }
+//   POST /push/unsubscribe       같은 코드, JSON {role, childId?, device:{id}} → { ok }   (없어도 ok)
+//   POST /push/test              같은 코드, JSON {role, childId?, device:{id}} → { ok, status }   (구독이 없으면 404 no_subscription, 푸시 서비스가 거절하면 502 push_failed)
+//   (크론, 매시) scheduled() → FamilyStore /cron: 계획 시각이 지난 아이의 그날 단어를 만들고(📬 도착 알림), 공부 리마인더·보호자 저녁 요약 알림을 보낸다
+//   알림 4종(Web Push, sendPush): daily(크론·보호자가 만든 오늘의 단어 → 아이 기기), reminder(아이별 remindHour 까지 오늘 시험이 없으면 → 아이 기기),
+//                                finish(/sync 로 방금 끝낸 시험이 오면 → 보호자 폰), summary(보호자 기기별 summaryHour → 아이별 오늘 한 줄), test(/push/test)
 //
-// 비밀값: ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE(선택: 보호자 폰에서 아이들 기록 보기)   (wrangler secret put ...)
-// 변수:   CLAUDE_MODEL(기본 claude-opus-5-5), DAILY_MODEL(오늘의 단어 생성, 기본 claude-sonnet-5-5), ALLOWED_ORIGINS(쉼표 구분), ANTHROPIC_WORKSPACE_ID(선택)   (wrangler.jsonc vars)
+// 비밀값: ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE(선택: 보호자 폰에서 아이들 기록 보기), VAPID_PRIVATE_KEY(선택: 알림)   (wrangler secret put ...)
+// 변수:   CLAUDE_MODEL(기본 claude-opus-5-5), DAILY_MODEL(오늘의 단어 생성, 기본 claude-sonnet-5-5), ALLOWED_ORIGINS(쉼표 구분), ANTHROPIC_WORKSPACE_ID(선택),
+//         VAPID_PUBLIC_KEY·VAPID_SUBJECT(알림, npm run vapid 로 만든 공개 키)   (wrangler.jsonc vars)
 // 바인딩: RATE_LIMITER(선택, ratelimits), RELAY(Durable Object, 아래 참고), FAMILY(Durable Object FamilyStore: 가족 기록함)
 //
 // 왜 Durable Object를 거치나: 한국에서 온 요청은 Cloudflare 홍콩(HKG) 데이터센터에서 실행될 때가 있는데,
@@ -91,7 +100,9 @@ const MAX_DEVICE_LABEL = 40;
 const DAILY_PATH = /^\/daily\/([A-Za-z0-9-]{8,64})$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DAILY_MODEL_DEFAULT = "claude-sonnet-5-5";
-const DAILY_DEFAULTS = { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false }; // hour는 한국 시각, timeLimitSec 0 = 제한 없음(모든 시험에 적용), setsLocked = 아이 기기에서 세트 고치기 잠금
+// hour는 한국 시각, timeLimitSec 0 = 제한 없음(모든 시험에 적용), setsLocked = 아이 기기에서 세트 고치기 잠금,
+// remindHour = 공부 알림 시각(한국 시각 0~23, null 이면 끔: 그 시각까지 오늘 시험이 없으면 아이 기기에 알림 1번)
+const DAILY_DEFAULTS = { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false, remindHour: null };
 const SETTINGS_PATH = /^\/settings\/([A-Za-z0-9-]{8,64})$/; // 아이 기기가 보호자 설정(제한 시간 등)을 받아 가는 경로
 const RECORDS_PATH = /^\/records\/([A-Za-z0-9-]{8,64})$/; // 아이 기기가 자기 기록의 서버 사본을 내려받는 경로(기록 복원, 가족 코드)
 const RECORDS_PAGE_MAX = 500; // GET /records 한 번에 돌려주는 기록 수 상한
@@ -121,6 +132,25 @@ const MAX_SET_WORDS = 2000; // 앱의 세트 저장 상한과 같다
 const MAX_SET_NAME = 120;
 const MAX_WORD_ALIASES = 30;
 const MAX_SET_TOMBSTONES = 200;
+
+// ---- 알림(2B, Web Push) 규칙 ----
+// 구독(FamilyStore): push:child:<childId>:<deviceId> / push:parent:<deviceId> → {endpoint, keys:{p256dh, auth}, label, createdAt, updatedAt, lastOkAt, failures(, kinds, summaryHour)}
+// 하루 1번 표시: sent:<scope(childId 또는 보호자 deviceId)>:<YYYY-MM-DD>:<kind>. 크론이 3일 지난 표시를 지운다.
+// 아이 기기 구독은 가족 코드로, 보호자 구독은 보호자 코드로만 만든다. endpoint 는 비밀처럼 다룬다(응답·로그에 넣지 않는다).
+const PUSH_PATH = /^\/push\/(key|subscribe|unsubscribe|test)$/;
+const MAX_PARENT_PUSH = 5; // 보호자 기기 수(아이 기기는 아이당 MAX_DEVICES). 넘으면 가장 오래 소식이 없는 구독부터 지운다
+const MAX_PUSH_ENDPOINT = 1000;
+const PUSH_TIMEOUT_MS = 10000;
+const PUSH_MAX_FAILURES = 5; // 연달아 이만큼 실패하면 구독을 지운다
+const PUSH_TTL = { daily: 86400, reminder: 86400, summary: 86400, finish: 3600, test: 300 }; // 기기가 꺼져 있을 때 푸시 서비스가 보관하는 시간(초)
+const PUSH_SENT_KEEP_DAYS = 3;
+const FINISH_MAX_AGE_MS = 6 * 3600000; // 이보다 오래전에 끝난 기록은 ‘방금 끝낸 시험’이 아니다(밀린 기록·재연결)
+const FINISH_MAX_SKEW_MS = 10 * 60000; // 기기 시계가 조금 빠른 것은 봐준다
+const FINISH_MAX_BATCH = 3; // 한 번에 이보다 많이 오면 밀린 기록을 올리는 것으로 보고 알리지 않는다
+const SUMMARY_HOUR_DEFAULT = 21;
+const VAPID_SUBJECT_DEFAULT = "https://hongtaehwa.github.io/daily-vocab/";
+const PUSH_UNCONFIGURED = "알림 서버가 아직 준비되지 않았어요. 보호자가 Worker에 알림 키(VAPID)를 등록하면 켤 수 있어요.";
+const MODE_LABELS = { read_meaning: "읽기 + 뜻", en_ko: "영어 → 한글", ko_en: "한글 → 영어·스펠링" };
 
 // 실제 교재(예: 0161 amend [əménd] 동 (법 등을) 수정하다, 개정하다 ⊜ alter, revise / 예문 / ⊕ amendment …) 레이아웃 기준.
 // 영어 단어만 있는 사진(단어 목록·시험지·손글씨)은 뜻이 없으므로 AI가 학습자 사전처럼 채우고 generated 로 표시한다.
@@ -433,6 +463,8 @@ export class AnthropicRelay {
 //   child:<childId>                              {id, name, sets:[{name,count}], createdAt, updatedAt, lastTestAt, recordCount, recordCountExact}
 //                                                (recordCountExact: recordCount 가 실제 기록 수다. 없으면 옛 대략값이라 상세를 처음 볼 때 한 번 센다)
 //   rec:<childId>:<completedAt ISO>:<recordId>   압축 기록 {id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed, receivedAt}
+//   push:child:<childId>:<deviceId> / push:parent:<deviceId>   알림 구독 {endpoint, keys, label, createdAt, updatedAt, lastOkAt, failures(, kinds, summaryHour)}
+//   sent:<childId 또는 보호자 deviceId>:<YYYY-MM-DD>:<kind>   하루 1번 알림(reminder·summary)을 보냈다는 표시(3일 뒤 크론이 지움)
 // 같은 기록을 다시 보내면 같은 키라 덮어쓴다. 키가 완료 시각 순이라 prefix 나열이 곧 시간순이다.
 export class FamilyStore {
   constructor(state, env = {}) {
@@ -464,6 +496,9 @@ export class FamilyStore {
     const setsSync = SETS_PATH.exec(url.pathname);
     if (setsSync && method === "POST") return this.syncSets(setsSync[1], await readBody());
     if (url.pathname === "/question" && method === "POST") return this.addQuestion(await readBody());
+    if (url.pathname === "/push/subscribe" && method === "POST") return this.pushSubscribe(await readBody());
+    if (url.pathname === "/push/unsubscribe" && method === "POST") return this.pushUnsubscribe(await readBody());
+    if (url.pathname === "/push/test" && method === "POST") return this.pushTest(await readBody());
     const childSets = CHILD_SETS_PATH.exec(url.pathname);
     if (childSets && !childSets[2] && method === "GET") return this.listSets(childSets[1]);
     if (childSets && !childSets[2] && method === "POST") return this.putSet(childSets[1], await readBody());
@@ -471,7 +506,10 @@ export class FamilyStore {
     if (childSets && childSets[2] && method === "DELETE") return this.deleteSet(childSets[1], childSets[2]);
     const daily = DAILY_PATH.exec(url.pathname);
     if (daily && method === "GET") return this.getDaily(daily[1], url.searchParams.get("date"));
-    if (daily && method === "POST") return this.generateDaily(daily[1], (await readBody())?.date);
+    if (daily && method === "POST") {
+      const body = await readBody();
+      return this.generateDaily(daily[1], body?.date, body?.origin === "parent" ? "parent" : "child");
+    }
     const match = FAMILY_PATH.exec(url.pathname);
     if (match && method === "GET") return match[1] ? this.child(match[1], url.searchParams) : this.summary(url.searchParams);
     if (match && match[1] && method === "DELETE") return this.remove(match[1]);
@@ -510,9 +548,11 @@ export class FamilyStore {
       entries[this.recordPrefix(child.id) + r.completedAt + ":" + r.id] = { ...r, receivedAt: now };
       if (!lastTestAt || r.completedAt > lastTestAt) lastTestAt = r.completedAt;
     }
-    // 다시 보낸 기록은 같은 키라 덮어쓰므로 새 키만 센다(한 번에 100개 이하라 get 한 번).
+    // 다시 보낸 기록은 같은 키라 덮어쓰므로 새 키만 센다(한 번에 100개 이하라 get 한 번). 시험 마침 알림도 새 기록만 본다.
     const keys = Object.keys(entries);
-    const added = keys.length ? keys.length - (await this.storage.get(keys)).size : 0;
+    const existing = keys.length ? await this.storage.get(keys) : new Map();
+    const added = keys.length - existing.size;
+    const fresh = records.filter((r) => !existing.has(this.recordPrefix(child.id) + r.completedAt + ":" + r.id));
     const next = {
       ...current,
       name: current.name || child.name, // 보호자가 만든 아이의 이름은 서버가 기준이다(기기가 보낸 이름으로 덮어쓰지 않는다)
@@ -535,6 +575,11 @@ export class FamilyStore {
       await this.deleteMany(extra);
       trimmed = extra.length;
       await this.storage.put(key, { ...next, recordCount: all.size - extra.length, recordCountExact: true });
+    }
+    try {
+      await this.notifyFinish({ id: child.id, name: next.name }, fresh, records.length);
+    } catch (e) {
+      console.error("push_finish_failed", e?.name || "", e?.message || "");
     }
     return json(200, { ok: true, stored: records.length, trimmed, syncedAt: now });
   }
@@ -603,7 +648,9 @@ export class FamilyStore {
     const dailies = [...(await this.storage.list({ prefix: "daily:" + childId + ":" })).keys()];
     const setKeys = [...(await this.storage.list({ prefix: this.setPrefix(childId) })).keys()];
     const questionKeys = [...(await this.storage.list({ prefix: this.questionPrefix(childId) })).keys()];
-    await this.deleteMany([...keys, ...dailies, ...setKeys, ...questionKeys, "served:" + childId, "child:" + childId, ...(c.joinCode ? ["code:" + c.joinCode] : [])]);
+    const pushKeys = [...(await this.storage.list({ prefix: this.pushPrefix("child", childId) })).keys()]; // 이 아이 기기들의 알림 구독
+    const sentKeys = [...(await this.storage.list({ prefix: "sent:" + childId + ":" })).keys()];
+    await this.deleteMany([...keys, ...dailies, ...setKeys, ...questionKeys, ...pushKeys, ...sentKeys, "served:" + childId, "child:" + childId, ...(c.joinCode ? ["code:" + c.joinCode] : [])]);
     await this.storage.put("gone:" + childId, { deletedAt: new Date().toISOString() }); // 연결돼 있던 기기의 /sync 가 아이를 되살리지 못하게 묘비를 남긴다
     return json(200, { ok: true, deleted: keys.length });
   }
@@ -656,12 +703,19 @@ export class FamilyStore {
     await this.storage.put("child:" + c.id, { ...c, devices: registerDevice(c.devices, parseDevice(body?.device), now), updatedAt: now });
     return json(200, { ok: true, childId: c.id, name: c.name, ...this.deviceSettingsOf(c) });
   }
-  // 아이 기기가 받아 가는 보호자 설정: 문제당 제한 시간, 세트 수정 잠금. 오늘의 단어 계획(plan)에 함께 저장돼 있다.
+  // 아이 기기가 받아 가는 보호자 설정: 문제당 제한 시간, 세트 수정 잠금, 오늘의 단어 켜짐·시각, 공부 알림 시각. 오늘의 단어 계획(plan)에 함께 저장돼 있다.
+  // (오늘의 단어·공부 알림 시각은 아이 앱의 알림 상태 문구와 갤럭시 앱의 로컬 알림 시각에 쓴다)
   deviceSettingsOf(child) {
     const plan = this.planOf(child);
-    return { timeLimitSec: plan.timeLimitSec, setsLocked: plan.setsLocked === true };
+    return {
+      timeLimitSec: plan.timeLimitSec,
+      setsLocked: plan.setsLocked === true,
+      dailyEnabled: plan.enabled === true,
+      dailyHour: plan.hour,
+      remindHour: Number.isInteger(plan.remindHour) ? plan.remindHour : null,
+    };
   }
-  // 아이 기기용 보호자 설정(이름·문제당 제한 시간·세트 수정 잠금). 가족 코드로 읽는다.
+  // 아이 기기용 보호자 설정(이름·문제당 제한 시간·세트 수정 잠금·알림 시각). 가족 코드로 읽는다.
   async settings(childId) {
     const c = await this.storage.get("child:" + childId);
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
@@ -820,7 +874,8 @@ export class FamilyStore {
     if (!this.planOf(c).enabled) return json(409, { error: "plan_disabled", message: "보호자가 아직 오늘의 단어를 켜지 않았어요." });
     return json(404, { error: "no_daily", message: "오늘의 단어가 아직 없어요." });
   }
-  async generateDaily(childId, dateParam) {
+  // origin: "child"(아이 기기가 앱을 열어 스스로 만듦 → 알림 없음) | "parent"(보호자의 ‘지금 만들기’ → 아이 기기에 📬 알림)
+  async generateDaily(childId, dateParam, origin = "child") {
     const c = await this.storage.get("child:" + childId);
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
     const date = DATE_PATTERN.test(dateParam || "") ? dateParam : kstNow().date;
@@ -828,31 +883,175 @@ export class FamilyStore {
     if (existing) return json(200, existing);
     const plan = this.planOf(c);
     if (!plan.enabled) return json(409, { error: "plan_disabled", message: "보호자가 아직 오늘의 단어를 켜지 않았어요." });
-    const outcome = await this.ensureDaily(c, plan, date);
+    const outcome = await this.ensureDaily(c, plan, date, origin);
     if (outcome.failure) return json(outcome.failure.status, outcome.failure.body);
     return json(200, outcome.daily);
   }
-  ensureDaily(child, plan, date) {
+  // 같은 날짜의 생성이 겹치면 한 번만 만든다(알림 여부는 먼저 시작한 쪽의 origin 을 따른다).
+  ensureDaily(child, plan, date, origin = "child") {
     const key = this.dailyKey(child.id, date);
-    if (!this.generating.has(key)) this.generating.set(key, this.buildDaily(child, plan, date).finally(() => this.generating.delete(key)));
+    if (!this.generating.has(key)) this.generating.set(key, this.buildDaily(child, plan, date, origin).finally(() => this.generating.delete(key)));
     return this.generating.get(key);
   }
-  // 크론(매시): 계획이 켜져 있고 시각이 지났는데 그날 것이 없는 아이에게 만든다.
+  // 크론(매시): 계획이 켜져 있고 시각이 지났는데 그날 것이 없는 아이에게 만들고(📬 도착 알림), 공부 리마인더·저녁 요약 알림을 보낸다.
   async cron({ date, hour }) {
     if (!DATE_PATTERN.test(date || "") || !Number.isInteger(hour)) return json(400, { error: "bad_request", message: "date, hour가 필요합니다." });
     const generated = [], failed = [];
-    for (const c of (await this.storage.list({ prefix: "child:" })).values()) {
+    const children = [...(await this.storage.list({ prefix: "child:" })).values()];
+    for (const c of children) {
       const plan = this.planOf(c);
       if (!plan.enabled || plan.hour > hour) continue;
       if (await this.storage.get(this.dailyKey(c.id, date))) continue;
-      const outcome = await this.ensureDaily(c, plan, date);
+      const outcome = await this.ensureDaily(c, plan, date, "cron");
       (outcome.failure ? failed : generated).push(c.id);
       if (outcome.failure) console.error("daily_generate_failed", c.id, outcome.failure.status, outcome.failure.body?.message || "");
     }
-    return json(200, { date, hour, generated, failed });
+    let pushed = { reminder: 0, summary: 0 };
+    if (this.pushReady()) {
+      try {
+        pushed = await this.cronPush(children, date, hour);
+      } catch (e) {
+        console.error("push_cron_failed", e?.name || "", e?.message || "");
+      }
+    }
+    return json(200, { date, hour, generated, failed, pushed });
+  }
+  // ---- 알림(Web Push) ----
+  pushPrefix(role, childId) {
+    return role === "parent" ? "push:parent:" : "push:child:" + childId + ":";
+  }
+  pushKey(role, childId, deviceId) {
+    return this.pushPrefix(role, childId) + deviceId;
+  }
+  pushReady() {
+    return !vapidProblem(this.env);
+  }
+  // 구독 저장(같은 기기는 덮어씀). 같은 브라우저(endpoint)가 다른 기기 id 로 남아 있으면 지우고(알림이 두 번 오지 않게),
+  // 상한(아이 기기 MAX_DEVICES·보호자 MAX_PARENT_PUSH)을 넘으면 가장 오래 소식이 없는 구독부터 지운다.
+  async pushSubscribe({ role, childId, device, subscription, kinds, summaryHour }) {
+    if (role === "child" && !(await this.storage.get("child:" + childId)))
+      return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 보호자 폰에서 아이를 다시 만들어 주세요." });
+    const now = new Date().toISOString();
+    const key = this.pushKey(role, childId, device.id);
+    const listed = [...(await this.storage.list({ prefix: this.pushPrefix(role, childId) }))];
+    const current = listed.find(([k]) => k === key)?.[1];
+    const duplicates = listed.filter(([k, s]) => k !== key && s.endpoint === subscription.endpoint).map(([k]) => k);
+    const others = listed.filter(([k]) => k !== key && !duplicates.includes(k));
+    const max = role === "parent" ? MAX_PARENT_PUSH : MAX_DEVICES;
+    const seen = (s) => String(s.lastOkAt || s.updatedAt || s.createdAt || "");
+    const stale = others.sort(([, a], [, b]) => seen(a).localeCompare(seen(b))).slice(0, Math.max(0, others.length + 1 - max)).map(([k]) => k);
+    if (duplicates.length || stale.length) await this.deleteMany([...duplicates, ...stale]);
+    await this.storage.put(key, {
+      endpoint: subscription.endpoint,
+      keys: subscription.keys,
+      label: device.label,
+      createdAt: current?.createdAt || now,
+      updatedAt: now,
+      lastOkAt: current?.endpoint === subscription.endpoint ? current.lastOkAt || null : null,
+      failures: 0,
+      ...(role === "parent" ? { kinds, summaryHour } : {}),
+    });
+    return json(200, { ok: true });
+  }
+  async pushUnsubscribe({ role, childId, device }) {
+    await this.storage.delete(this.pushKey(role, childId, device.id));
+    return json(200, { ok: true });
+  }
+  async pushTest({ role, childId, device }) {
+    const key = this.pushKey(role, childId, device.id);
+    const sub = await this.storage.get(key);
+    if (!sub) return json(404, { error: "no_subscription", message: "서버에 이 기기의 알림 등록이 없어요. 알림을 껐다가 다시 켜 주세요." });
+    const result = await this.deliver(key, sub, PUSH_TEXT.test(role), { kind: "test", topic: "test" });
+    if (!result.ok)
+      return json(502, {
+        error: "push_failed",
+        status: result.status,
+        message: result.gone ? "알림 주소가 만료됐어요. 알림을 껐다가 다시 켜 주세요." : `알림을 보내지 못했어요(푸시 서비스 응답 ${result.status || "없음"}). 잠시 뒤 다시 해 보세요.`,
+      });
+    return json(200, { ok: true, status: result.status });
+  }
+  // 구독 하나에 보내고 결과를 반영: 성공 → lastOkAt·failures 0, 404·410(만료) → 지움, 그 밖 → failures+1(PUSH_MAX_FAILURES 번 연달아면 지움).
+  // 보내는 사이 기기가 다시 구독했으면(endpoint 가 바뀜) 새 구독은 건드리지 않는다.
+  async deliver(key, sub, message, options) {
+    const result = await sendPush(this.env, sub, message, options);
+    const cur = await this.storage.get(key);
+    if (!cur || cur.endpoint !== sub.endpoint) return result;
+    if (result.gone) await this.storage.delete(key);
+    else if (result.ok) await this.storage.put(key, { ...cur, lastOkAt: new Date().toISOString(), failures: 0 });
+    else if ((cur.failures || 0) + 1 >= PUSH_MAX_FAILURES) await this.storage.delete(key);
+    else await this.storage.put(key, { ...cur, failures: (cur.failures || 0) + 1 });
+    return result;
+  }
+  // 아이의 모든 기기(구독)에 순서대로 보낸다 → 보낸 구독 수.
+  async pushToChild(childId, kind, message) {
+    if (!this.pushReady()) return 0;
+    const subs = await this.storage.list({ prefix: this.pushPrefix("child", childId) });
+    for (const [key, sub] of subs) await this.deliver(key, sub, message, { kind, topic: kind });
+    return subs.size;
+  }
+  // 시험 마침(보호자 폰): 이번 /sync 로 처음 들어온 기록 중 방금(6시간 안) 끝낸 완료 기록의 가장 최근 1건.
+  // 한 번에 FINISH_MAX_BATCH 개보다 많이 오면 밀린 기록을 올리는 것(재연결·오프라인 뒤)으로 보고 알리지 않는다. 같은 아이 것은 Topic 으로 합쳐진다.
+  async notifyFinish(child, fresh, total) {
+    if (!this.pushReady() || total > FINISH_MAX_BATCH) return;
+    const now = Date.now();
+    const latest = fresh
+      .filter((r) => !r.partial && now - Date.parse(r.completedAt) <= FINISH_MAX_AGE_MS && Date.parse(r.completedAt) - now <= FINISH_MAX_SKEW_MS)
+      .sort((a, b) => b.completedAt.localeCompare(a.completedAt))[0];
+    if (!latest) return;
+    const message = PUSH_TEXT.finish(child.id, child.name || "아이", latest);
+    for (const [key, sub] of await this.storage.list({ prefix: this.pushPrefix("parent") }))
+      if (sub.kinds?.finish !== false) await this.deliver(key, sub, message, { kind: "finish", topic: pushTopic("finish", child.id) });
+  }
+  // 크론의 알림: 공부 리마인더(아이 기기)·저녁 요약(보호자 폰)을 하루 1번씩, 그리고 3일 지난 ‘보냄’ 표시 정리. 시각·날짜는 한국 시각.
+  async cronPush(children, date, hour) {
+    const pushed = { reminder: 0, summary: 0 };
+    const dayStart = Date.parse(date + "T00:00:00+09:00");
+    // 그날(한국 날짜) 끝낸(중단 아닌) 기록
+    const doneOn = async (childId) => {
+      const prefix = this.recordPrefix(childId);
+      const listed = await this.storage.list({ prefix, start: prefix + new Date(dayStart).toISOString(), end: prefix + new Date(dayStart + 86400000).toISOString() });
+      return [...listed.values()].filter((r) => !r.partial);
+    };
+    const mark = async (key) => {
+      if (await this.storage.get(key)) return false;
+      await this.storage.put(key, { at: new Date().toISOString() });
+      return true;
+    };
+    // ✏️ 공부 리마인더: 보호자가 정한 시각(remindHour)에 그날 끝낸 시험이 없으면 아이의 모든 기기에 한 번
+    for (const c of children) {
+      if (this.planOf(c).remindHour !== hour) continue;
+      if (!(await this.storage.list({ prefix: this.pushPrefix("child", c.id), limit: 1 })).size) continue;
+      if ((await doneOn(c.id)).length) continue;
+      if (!(await mark(`sent:${c.id}:${date}:reminder`))) continue;
+      pushed.reminder += await this.pushToChild(c.id, "reminder", PUSH_TEXT.reminder());
+    }
+    // 🌙 저녁 요약: 보호자 기기마다 정한 시각(summaryHour)에 아이별 오늘 한 줄(기기도 기록도 없는 아이는 뺀다). 보낼 아이가 없으면 보내지 않는다.
+    const parents = [...(await this.storage.list({ prefix: this.pushPrefix("parent") }))].filter(([, s]) => s.kinds?.summary !== false && (s.summaryHour ?? SUMMARY_HOUR_DEFAULT) === hour);
+    if (parents.length) {
+      const lines = [];
+      for (const c of [...children].sort((a, b) => String(a.name).localeCompare(String(b.name), "ko"))) {
+        const done = await doneOn(c.id);
+        if (!done.length && !Object.keys(c.devices || {}).length) continue;
+        const avg = done.length ? Math.round(done.reduce((s, r) => s + (r.correct / r.total) * 100, 0) / done.length) : 0;
+        const daily = done.length ? await this.storage.get(this.dailyKey(c.id, date)) : null;
+        lines.push(done.length ? `${c.name} ✅ ${done.length}회 · 평균 ${avg}점` + (daily?.completed ? " · 오늘의 단어 ✅" : "") : `${c.name} ⬜ 아직`);
+      }
+      if (lines.length)
+        for (const [key, sub] of parents) {
+          if (!(await mark(`sent:${key.slice(this.pushPrefix("parent").length)}:${date}:summary`))) continue;
+          await this.deliver(key, sub, PUSH_TEXT.summary(lines), { kind: "summary", topic: "summary" });
+          pushed.summary++;
+        }
+    }
+    // 3일 지난 ‘보냄’ 표시(sent:<scope>:<날짜>:<종류>)를 지운다
+    const cutoff = new Date(Date.parse(date + "T00:00:00Z") - PUSH_SENT_KEEP_DAYS * 86400000).toISOString().slice(0, 10);
+    const old = [...(await this.storage.list({ prefix: "sent:" })).keys()].filter((k) => (k.split(":")[2] || "") < cutoff);
+    if (old.length) await this.deleteMany(old);
+    return pushed;
   }
   // 복습(최근 14일 틀린 단어, 최대 3개) + 새 단어(Claude 제안에서 앵커·이미 낸 단어·규칙 위반을 걸러 채움).
-  async buildDaily(child, plan, date) {
+  // origin 이 크론·보호자면 만든 뒤 아이 기기에 📬 도착 알림을 보낸다(아이 기기가 스스로 만든 때는 이미 앱을 보고 있으니 보내지 않는다).
+  async buildDaily(child, plan, date, origin = "child") {
     const childId = child.id;
     const prefix = this.recordPrefix(childId);
     const since = new Date(Date.parse(date + "T00:00:00+09:00") - DAILY_REVIEW_DAYS * 86400000).toISOString();
@@ -921,6 +1120,13 @@ export class FamilyStore {
     const entries = Object.entries(served.words);
     if (entries.length > DAILY_SERVED_MAX) served.words = Object.fromEntries(entries.sort((a, b) => b[1].localeCompare(a[1])).slice(0, DAILY_SERVED_MAX));
     await this.storage.put({ [this.dailyKey(childId, date)]: daily, ["served:" + childId]: served });
+    if (origin === "cron" || origin === "parent") {
+      try {
+        await this.pushToChild(childId, "daily", PUSH_TEXT.daily(words));
+      } catch (e) {
+        console.error("push_daily_failed", e?.name || "", e?.message || "");
+      }
+    }
     return { daily };
   }
 }
@@ -956,6 +1162,12 @@ function parsePlan(body, current) {
     // 아이 기기에서 세트 고치기 잠금(UI 잠금: 아이 기기는 GET /settings 로 받아 새 세트·수정·삭제·가져오기를 숨긴다. /sets 업로드는 막지 않는다 — 찾아본 단어·AI가 인정한 답은 계속 올라와야 한다)
     if (typeof body.setsLocked !== "boolean") return { error: "세트 수정 잠금(setsLocked)은 true 또는 false여야 합니다." };
     plan.setsLocked = body.setsLocked;
+  }
+  if (body?.remindHour !== undefined) {
+    // 공부 알림 시각(한국 시각): 그 시각까지 오늘 끝낸 시험이 없으면 아이 기기에 알림 한 번. null 이면 보내지 않는다.
+    const h = body.remindHour;
+    if (h !== null && (!Number.isInteger(h) || h < 0 || h > 23)) return { error: "공부 알림 시각(remindHour)은 없음(null) 또는 0~23시여야 합니다." };
+    plan.remindHour = h;
   }
   plan.updatedAt = new Date().toISOString();
   return { plan };
@@ -1127,13 +1339,182 @@ function parseSetUpload(body) {
   return { set: p.set };
 }
 
-// /sync, /join, /sets, /daily…, /family… 처리. 오늘의 단어 생성 외에는 Anthropic을 부르지 않는다.
+// ---- 알림 (Web Push: VAPID 서명 + RFC 8291 aes128gcm 암호화, 외부 라이브러리 없이 WebCrypto) ----
+const utf8 = (s) => new TextEncoder().encode(s);
+function concatBytes(...parts) {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+function b64urlEncode(bytes) {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+// base64url(패딩 있어도 됨) → 바이트. 형식이 틀리면 null.
+function b64urlDecode(text) {
+  const s = String(text ?? "").trim().replace(/=+$/, "");
+  if (!/^[A-Za-z0-9_-]*$/.test(s) || s.length % 4 === 1) return null;
+  try {
+    const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+    return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+// VAPID 키 검사: 공개 키는 비압축 P-256 점(65바이트, 0x04로 시작), 비밀 키는 32바이트. 문제가 없으면 null.
+function vapidProblem(env) {
+  const pub = b64urlDecode(env.VAPID_PUBLIC_KEY);
+  const priv = b64urlDecode(env.VAPID_PRIVATE_KEY);
+  if (!String(env.VAPID_PUBLIC_KEY || "").trim() || !String(env.VAPID_PRIVATE_KEY || "").trim()) return "missing";
+  if (!pub || pub.length !== 65 || pub[0] !== 4 || !priv || priv.length !== 32) return "bad_format";
+  return null;
+}
+let vapidCache = null; // {publicKey, privateKey, key}: 같은 isolate 안에서 서명 키를 다시 만들지 않는다
+async function vapidSigningKey(env) {
+  const publicKey = String(env.VAPID_PUBLIC_KEY).trim();
+  const privateKey = String(env.VAPID_PRIVATE_KEY).trim().replace(/=+$/, "");
+  if (vapidCache?.publicKey === publicKey && vapidCache.privateKey === privateKey) return vapidCache.key;
+  const pub = b64urlDecode(publicKey);
+  const jwk = { kty: "EC", crv: "P-256", x: b64urlEncode(pub.slice(1, 33)), y: b64urlEncode(pub.slice(33, 65)), d: privateKey, ext: true };
+  const key = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  vapidCache = { publicKey, privateKey, key };
+  return key;
+}
+// VAPID(RFC 8292): ES256 JWT {aud: 푸시 서비스 origin, exp: 12시간 뒤, sub: 연락처 URL}. WebCrypto ECDSA 서명은 JWT 가 쓰는 raw r||s(64바이트)다.
+async function vapidAuthorization(endpoint, env, now = Date.now()) {
+  const header = b64urlEncode(utf8(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const claims = b64urlEncode(utf8(JSON.stringify({ aud: new URL(endpoint).origin, exp: Math.floor(now / 1000) + 12 * 3600, sub: String(env.VAPID_SUBJECT || "").trim() || VAPID_SUBJECT_DEFAULT })));
+  const unsigned = header + "." + claims;
+  const signature = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, await vapidSigningKey(env), utf8(unsigned)));
+  return `vapid t=${unsigned}.${b64urlEncode(signature)}, k=${String(env.VAPID_PUBLIC_KEY).trim()}`;
+}
+async function hkdf(salt, ikm, info, length) {
+  const key = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, key, length * 8));
+}
+// 본문 암호화(RFC 8291 + RFC 8188 aes128gcm): 임시 ECDH 키 → 기기 키(p256dh)와 공유 비밀 → auth 로 IKM → 무작위 salt 로 CEK·NONCE → AES-128-GCM.
+// 본문 = salt(16) | rs 4096(4) | idlen 65(1) | 임시 공개 키(65) | 암호문(평문 + 0x02 구분자 + 태그 16)
+async function encryptPushPayload(keys, plaintext) {
+  const uaPublic = b64urlDecode(keys.p256dh);
+  const authSecret = b64urlDecode(keys.auth);
+  const local = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const asPublic = new Uint8Array(await crypto.subtle.exportKey("raw", local.publicKey));
+  const uaKey = await crypto.subtle.importKey("raw", uaPublic, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: uaKey }, local.privateKey, 256));
+  const ikm = await hkdf(authSecret, shared, concatBytes(utf8("WebPush: info\0"), uaPublic, asPublic), 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await hkdf(salt, ikm, utf8("Content-Encoding: aes128gcm\0"), 16);
+  const nonce = await hkdf(salt, ikm, utf8("Content-Encoding: nonce\0"), 12);
+  const aes = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, ["encrypt"]);
+  const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aes, concatBytes(plaintext, new Uint8Array([2]))));
+  const head = new Uint8Array(16 + 4 + 1 + asPublic.length);
+  head.set(salt, 0);
+  new DataView(head.buffer).setUint32(16, 4096);
+  head[20] = asPublic.length;
+  head.set(asPublic, 21);
+  return concatBytes(head, sealed);
+}
+// 푸시 하나 보내기 → {ok, status, gone}. status 0 = 네트워크 오류·시간 초과. 북미 중계(RELAY)는 쓰지 않는다(푸시 서비스는 지역 제한이 없다).
+// endpoint·키는 로그에 남기지 않는다(상태 코드와 종류만).
+async function sendPush(env, sub, message, { kind, topic }) {
+  let status = 0;
+  try {
+    const body = await encryptPushPayload(sub.keys, utf8(JSON.stringify(message)));
+    const headers = {
+      authorization: await vapidAuthorization(sub.endpoint, env),
+      "content-encoding": "aes128gcm",
+      "content-type": "application/octet-stream",
+      ttl: String(PUSH_TTL[kind] ?? 86400),
+      urgency: "normal",
+      ...(topic ? { topic } : {}),
+    };
+    const response = await fetch(sub.endpoint, { method: "POST", headers, body, signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) });
+    status = response.status;
+  } catch (e) {
+    console.error("push_unreachable", kind, e?.name || "");
+  }
+  const ok = status >= 200 && status < 300;
+  const gone = status === 404 || status === 410; // 구독 만료(앱을 지움·권한을 끔·브라우저가 바꿈)
+  if (!ok && status) console.error(gone ? "push_expired" : "push_rejected", kind, status, [400, 401, 403].includes(status) ? "(VAPID 키·서명 문제일 수 있음)" : "");
+  return { ok, status, gone };
+}
+// Topic 헤더는 RFC 8030에 따라 base64url 글자 32자 이하: 종류 첫 글자 + 아이 id(하이픈 뺌) 앞 31자.
+const pushTopic = (kind, childId) => (childId ? kind[0] + String(childId).replace(/[^A-Za-z0-9]/g, "").slice(0, 31) : kind);
+// 알림 문구(앱은 받은 title·body·url 을 그대로 띄운다). 아이 이름·세트 이름·점수·경고 횟수 외에는 넣지 않는다(단어·틀린 단어·사진 없음).
+const PUSH_TEXT = {
+  daily(words) {
+    const review = words.filter((w) => w.kind === "review").length;
+    return {
+      title: `📬 오늘의 단어 ${words.length}개가 도착했어요`,
+      body: (review ? `복습 ${review}개 + ` : "") + `새 단어 ${words.length - review}개 · 앱을 열어 풀어 보세요`,
+      url: "./",
+      tag: "daily",
+    };
+  },
+  reminder: () => ({ title: "✏️ 오늘 아직 단어 시험을 안 봤어요", body: "짧게라도 한 번 풀어 볼까요?", url: "./", tag: "reminder" }),
+  finish(childId, name, r) {
+    const pct = Math.round((r.correct / r.total) * 100);
+    const warnings = [r.awayCount ? `⚠️ 화면 이탈 ${r.awayCount}회` : "", r.timeouts ? `⏱ 시간 초과 ${r.timeouts}개` : ""].filter(Boolean).join(" · ");
+    return {
+      title: `🧒 ${name} · ${String(r.setName).slice(0, 40)} ${r.correct}/${r.total} (${pct}점)`,
+      body: [MODE_LABELS[r.mode] || r.mode, r.range].filter(Boolean).join(" · ") + (warnings ? " " + warnings : ""),
+      url: `./parent.html#/child/${childId}/records`,
+      tag: "finish-" + childId,
+    };
+  },
+  summary: (lines) => ({ title: "🌙 오늘 공부", body: lines.join("\n"), url: "./parent.html#/", tag: "summary" }),
+  test: (role) => ({ title: "🔔 알림이 잘 와요", body: "매일 영단어 알림 설정이 끝났어요", url: role === "parent" ? "./parent.html#/settings" : "./", tag: "test" }),
+};
+// 구독 요청(/push/subscribe·unsubscribe·test) 검사. 하나라도 틀리면 거절한다. 코드 역할(보호자 구독은 보호자 코드만)은 family() 가 본다.
+function parsePushRequest(action, body) {
+  const role = body?.role;
+  if (role !== "child" && role !== "parent") return { error: "role은 child 또는 parent여야 합니다." };
+  const deviceId = typeof body?.device?.id === "string" ? body.device.id : "";
+  if (!CHILD_ID_PATTERN.test(deviceId)) return { error: "기기 id(device.id)가 올바르지 않습니다." };
+  const out = { role, device: { id: deviceId, label: clean(body.device.label).slice(0, MAX_DEVICE_LABEL) || "기기" } };
+  if (role === "child") {
+    if (typeof body.childId !== "string" || !CHILD_ID_PATTERN.test(body.childId)) return { error: "아이 id(childId)가 필요합니다." };
+    out.childId = body.childId;
+  }
+  if (action !== "subscribe") return out;
+  const sub = body.subscription;
+  const endpoint = typeof sub?.endpoint === "string" ? sub.endpoint.trim() : "";
+  let url = null;
+  try {
+    url = new URL(endpoint);
+  } catch {}
+  if (!url || url.protocol !== "https:" || endpoint.length > MAX_PUSH_ENDPOINT) return { error: `알림 주소(endpoint)는 ${MAX_PUSH_ENDPOINT.toLocaleString("en-US")}자 이하의 https 주소여야 합니다.` };
+  const p256dh = typeof sub?.keys?.p256dh === "string" ? sub.keys.p256dh.trim() : "";
+  const auth = typeof sub?.keys?.auth === "string" ? sub.keys.auth.trim() : "";
+  const point = b64urlDecode(p256dh), secret = b64urlDecode(auth);
+  if (p256dh.length < 87 || p256dh.length > 88 || point?.length !== 65 || point[0] !== 4 || auth.length < 22 || auth.length > 24 || secret?.length !== 16)
+    return { error: "알림 키(keys.p256dh·keys.auth) 형식이 올바르지 않습니다." };
+  out.subscription = { endpoint, keys: { p256dh, auth } };
+  if (role === "parent") {
+    const kinds = body.kinds === undefined ? {} : body.kinds;
+    if (!kinds || typeof kinds !== "object" || [kinds.finish, kinds.summary].some((v) => v !== undefined && typeof v !== "boolean"))
+      return { error: "kinds의 finish·summary는 true 또는 false여야 합니다." };
+    const hour = body.summaryHour === undefined ? SUMMARY_HOUR_DEFAULT : body.summaryHour;
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) return { error: "저녁 요약 시각(summaryHour)은 0~23시여야 합니다." };
+    out.kinds = { finish: kinds.finish !== false, summary: kinds.summary !== false };
+    out.summaryHour = hour;
+  }
+  return out;
+}
+
+// /sync, /join, /sets, /daily…, /family…, /push… 처리. 오늘의 단어 생성 외에는 Anthropic을 부르지 않는다.
 // kind: sync·join·sets·daily·settings·records(가족 또는 보호자 코드) / view(보호자 코드만: 기록 보기·‘더 보기’ 페이지·삭제·아이 만들기·계획·코드·이름·세트)
+//       push(알림: 키는 두 코드 모두, 아이 기기 구독은 가족 코드, 보호자 구독은 보호자 코드만. VAPID 키가 없으면 503 push_unconfigured)
 async function family(request, env, path, cors) {
   if (!env.APP_PASSCODE)
     return json(500, { error: "misconfigured", message: "AI 서버에 비밀값(APP_PASSCODE)이 설정되지 않았습니다." }, cors);
   const kind =
-    path === "/sync" ? "sync" : path === "/join" ? "join" : SETS_PATH.test(path) ? "sets" : DAILY_PATH.test(path) ? "daily" : SETTINGS_PATH.test(path) ? "settings" : RECORDS_PATH.test(path) ? "records" : "view";
+    path === "/sync" ? "sync" : path === "/join" ? "join" : SETS_PATH.test(path) ? "sets" : DAILY_PATH.test(path) ? "daily" : SETTINGS_PATH.test(path) ? "settings" : RECORDS_PATH.test(path) ? "records" : PUSH_PATH.test(path) ? "push" : "view";
   const setsRoute = kind === "sets" || (kind === "view" && CHILD_SETS_PATH.test(path)); // 세트 본문은 크다(2MB까지)
   if (kind === "view" && !env.PARENT_PASSCODE)
     return json(500, {
@@ -1145,6 +1526,12 @@ async function family(request, env, path, cors) {
   if (kind === "view" && role !== "parent") return json(401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." }, cors);
   const limited = await rateLimited(request, env, "/" + (kind === "view" ? "family" : kind), cors);
   if (limited) return limited;
+  if (kind === "push") {
+    const problem = vapidProblem(env);
+    if (problem)
+      return json(503, { error: "push_unconfigured", message: PUSH_UNCONFIGURED + (problem === "bad_format" ? " (등록된 키 형식이 올바르지 않아요: npm run vapid 로 다시 만들어 등록)" : "") }, cors);
+    if (path === "/push/key") return json(200, { publicKey: String(env.VAPID_PUBLIC_KEY).trim() }, cors);
+  }
   if (!env.FAMILY)
     return json(500, { error: "misconfigured", message: "AI 서버에 가족 기록함(FAMILY)이 아직 없습니다. 보호자가 Worker를 새 버전으로 다시 배포해 주세요." }, cors);
   let payload;
@@ -1164,7 +1551,14 @@ async function family(request, env, path, cors) {
       const parsed = kind === "sync" ? parseSync(body) : kind === "sets" ? parseSetsSync(body) : parseSetUpload(body);
       if (parsed.error) return json(400, { error: "bad_request", message: parsed.error }, cors);
       payload = parsed;
+    } else if (kind === "push") {
+      const parsed = parsePushRequest(path.slice("/push/".length), body);
+      if (parsed.error) return json(400, { error: "bad_request", message: parsed.error }, cors);
+      if (parsed.role === "parent" && role !== "parent") return json(401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." }, cors);
+      payload = parsed;
     } else payload = body && typeof body === "object" ? body : {};
+    // 오늘의 단어를 누가 만들게 했는지(보호자의 ‘지금 만들기’면 아이 기기에 📬 알림, 아이 기기가 스스로 만들면 알림 없음). 본문의 값은 믿지 않는다.
+    if (kind === "daily") payload = { ...payload, origin: role === "parent" ? "parent" : "child" };
   }
   try {
     const stub = env.FAMILY.get(env.FAMILY.idFromName("family"));
@@ -1627,7 +2021,8 @@ export default {
       (CHILD_SETS_PATH.test(path) && ["GET", "POST", "DELETE"].includes(request.method)) ||
       (DAILY_PATH.test(path) && ["GET", "POST"].includes(request.method)) ||
       (SETTINGS_PATH.test(path) && request.method === "GET") ||
-      (RECORDS_PATH.test(path) && request.method === "GET");
+      (RECORDS_PATH.test(path) && request.method === "GET") ||
+      (PUSH_PATH.test(path) && request.method === (path === "/push/key" ? "GET" : "POST"));
     const aiRoute = request.method === "POST" && ["/ping", "/recognize", "/define", "/grade", "/lookup", "/tutor"].includes(path);
     if (!familyRoute && !aiRoute)
       return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." }, cors);
