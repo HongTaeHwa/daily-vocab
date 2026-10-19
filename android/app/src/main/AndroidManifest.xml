@@ -5,6 +5,9 @@
     <!-- 음성 인식(안드로이드 기본 인식기). 카메라는 기본 카메라 앱을 부르므로 권한이 필요 없다. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- 로컬 알림(v1.5): 오늘의 단어 도착·공부 리마인더. Android 13+ 는 알림 권한을 묻는다. 재부팅 뒤 알람을 다시 건다. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Android 11+ 패키지 가시성: 음성 인식 서비스와 카메라 앱을 찾을 수 있게 한다. -->
     <queries>
@@ -46,6 +49,19 @@
                 <data android:scheme="https" android:host="hongtaehwa.github.io" android:pathPrefix="/daily-vocab/" />
             </intent-filter>
         </activity>
+
+        <!-- 로컬 알림: 알람이 울리면(앱 안의 명시적 브로드캐스트) 알림을 띄우고, 재부팅·앱 업데이트 뒤에는 알람을 다시 건다. -->
+        <receiver
+            android:name=".NotifyReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- 세트 만들기의 ‘사진 찍기’용 카메라 결과 파일 -->
         <provider

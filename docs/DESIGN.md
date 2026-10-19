@@ -411,3 +411,12 @@
 - **보호자 앱**: ⚙️ 설정 🔔 카드(이 폰에서 받기·시험 마침·저녁 요약 18~23시·테스트 알림, `prefs.push`·`prefs.deviceId`, 코드 삭제 때 해지), 아이 설정 탭 ⏰ 공부 알림 시각(`#planRemindHour`, 즉시 저장).
 - **테스트**: `tests/worker.cjs`가 가짜 푸시 서비스로 받은 요청의 VAPID JWT 를 공개 키로 검증하고 본문을 RFC 8291로 복호화한다(암호화 구현의 자동 검증). `family.cjs`·`parent.cjs`는 가짜 구독(`tests/lib/fake-push.cjs`)으로 켜기·끄기·재등록·미설정 Worker 를, `family.cjs`는 가짜 갤럭시 브리지도 확인. 11개 PASS. `sw.js`의 알림 표시·누르기는 실기기 확인 항목.
 - 설계와 다르게 한 결정은 `docs/NOTIFICATIONS.md` 11절 ‘결정 변경(2026-10-19, N1 구현)’.
+
+### 25.2 N2 완료 — 갤럭시 앱 로컬 알림 (2026-10-19, 앱 v1.5)
+
+웹앱·Worker 변경 없음(N1 이 정한 브리지 계약을 앱이 채움), 앱 versionCode 6 / 1.5. 머지하면 Android APK 워크플로가 Release `android-vN`에 APK를 붙이고, 정식 서명이라 기존 앱 위에 덮어쓰기 설치된다.
+
+- **`NotifyBridge.kt`**(`AndroidNotify`) + `bridge.js` 어댑터 `window.DailyVocabNotify`: `permission()`(Android 13+ 권한을 묻고 답을 기다림, 동기 결과), `schedule(JSON)`, `skipToday(kind)`, `cancel()`.
+- **`NotifyScheduler.kt`**: SharedPreferences 에 시각, `AlarmManager.setAndAllowWhileIdle`로 다음 한 번(Asia/Seoul; 오늘의 단어 :05, 리마인더 :00), 울리면 조건 확인(그날 건너뛰기·이미 띄움·3시간 넘게 늦음) 뒤 채널 ‘공부 알림’에 표시하고 다음 날 예약. `NotifyReceiver`(exported=false), `BootReceiver`(BOOT_COMPLETED·MY_PACKAGE_REPLACED). 매니페스트 `POST_NOTIFICATIONS`·`RECEIVE_BOOT_COMPLETED`.
+- **검증**: Kotlin 은 PR 의 Android APK 워크플로 빌드. JS 어댑터는 로컬 Playwright 로 가짜 `AndroidNotify` + 실제 `bridge.js` + 실제 아이 앱을 묶어 확인(허용: permission → schedule `{daily:{enabled:true,hour:17}, reminder:{hour:20}}` 문자열·상태 문구·Web Push 요청 없음 → skipToday → 끄기 cancel / 거부: 안내 문구). 실제 알림 표시·권한 대화상자·재부팅 뒤 재예약은 실기기 확인 항목.
+- 설계와 다르게 한 결정은 `docs/NOTIFICATIONS.md` 12절.
