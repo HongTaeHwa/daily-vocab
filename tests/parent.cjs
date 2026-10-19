@@ -1,0 +1,340 @@
+// 보호자 앱(parent.html): 코드 입력(짧은 코드·틀린 코드 401·옛 Worker 404) → 저장하면 GET /family 한 번으로 오늘 카드까지
+// → 오늘 카드(연결된 아이: 오늘 횟수·평균·연속·오늘의 단어·화면 이탈·시간 초과·질문·7일 띠·이번 주 vs 지난주 / 연결 안 된 아이: 코드·링크 복사)
+// → 해시 뒤로 가기 → 아이 화면 하위 탭 5개(기록 요약·자주 틀린 단어·필터·날짜별 기록 / 세트 목록·잠금 즉시 저장 / 오늘의 단어 계획 저장·지금 만들기·끄기
+//   / 연결 코드·링크·기기·이름·제한 시간 즉시 저장·코드 새로 만들기 / 질문) → 아이 추가 → 이름 2단계 확인 삭제 → 오프라인 캐시 → 보호자 코드 삭제(캐시 삭제·#/setup)
+// → 옛 설치 호환(index.html?mode=parent → parent.html, 옛 보호자 코드·서버 주소·목록 캐시 이전, 아이 키의 다른 필드 보존, ?mode=child, 보호자 코드만 있던 기기).
+// 가족 Worker 는 tests/lib/fake-family-worker.cjs 가 가짜로 응답한다(보호자 앱 기본 서버 주소를 가로챈다).
+const { chromium } = require("playwright");
+const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
+(async () => {
+  const browser = await chromium.launch({
+    headless: true,
+    ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
+    args: ["--no-sandbox"],
+  });
+  const context = await browser.newContext({ viewport: { width: 420, height: 900 }, serviceWorkers: "block" });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const assert = (v, m) => {
+    if (!v) throw Error(m);
+  };
+  const waitFor = async (fn, m, ms = 5000) => {
+    const t0 = Date.now();
+    while (!(await fn())) {
+      if (Date.now() - t0 > ms) throw Error("timeout: " + m);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+  const url = process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/";
+  const DEFAULT_SERVER = "https://daily-vocab-ai.reonwipe.workers.dev"; // shared.js AI_SERVER_DEFAULT (라우트로 가로채 실제로는 나가지 않는다)
+  const FAMILY_CODE = "family-1234", PARENT_CODE = "parent-9999";
+  const HANEUL = "11111111-2222-4333-8444-555555555555", HANEUL_CODE = "483921";
+  const DUL = "22222222-3333-4444-8555-666666666666", DUL_CODE = "555666";
+  const fake = await createFakeWorker(page, { server: DEFAULT_SERVER, familyCode: FAMILY_CODE, parentCode: PARENT_CODE });
+  const { requests, children, dailies, paths, setMode } = fake;
+  const localDate = () => {
+    const d = new Date();
+    return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
+  };
+  const noonDaysAgo = (n) => {
+    const d = new Date();
+    d.setHours(12, 0, 0, 0);
+    d.setDate(d.getDate() - n);
+    return d.toISOString();
+  };
+  const minutesAgo = (n) => new Date(Date.now() - n * 60000).toISOString();
+  const rec = (id, completedAt, extra) => ({ id, setName: "하늘 DAY04", mode: "en_ko", range: "121~130번", startedAt: completedAt, completedAt, total: 10, correct: 8, partial: false, activeMs: 65000, missed: [], ...extra });
+  // 하늘: 기기 2대 연결, 오늘 2회(화면 이탈 1·시간 초과 1)·어제 1회·8일 전 1회·40일 전 1회(옛 세트), 질문 1개, 세트 1개, 오늘의 단어 켜짐(7/10 완료)
+  const haneul = fake.seedChild(HANEUL, "하늘", HANEUL_CODE);
+  haneul.devices = { "dev-a": { label: "iPhone", joinedAt: noonDaysAgo(3), lastSeenAt: minutesAgo(1) }, "dev-b": { label: "Android 태블릿(앱)", joinedAt: noonDaysAgo(3), lastSeenAt: noonDaysAgo(1) } };
+  for (const r of [
+    rec("r1", minutesAgo(1), { correct: 6, awayCount: 1, awayMs: 3000, timeouts: 1, missed: [{ en: "authority", ko: "권위", unknown: true }, { en: "devote", ko: "바치다" }, { en: "indicate", ko: "나타내다" }, { en: "function", ko: "기능" }] }),
+    rec("r2", minutesAgo(2), { mode: "read_meaning", correct: 9, missed: [{ en: "strike", ko: "치다" }] }),
+    rec("r3", noonDaysAgo(1), { missed: [{ en: "authority", ko: "권위" }, { en: "devote", ko: "바치다" }] }),
+    rec("r4", noonDaysAgo(8), { correct: 5, missed: [{ en: "linger", ko: "머무르다" }] }),
+    rec("r5", noonDaysAgo(40), { setName: "옛 세트", range: "전체 5단어", total: 5, correct: 5 }),
+  ])
+    haneul.records.set(r.id, r);
+  haneul.questions.push({ id: "q1", kind: "grammar", question: "왜 aids 인가요?", problem: "UNT 02 2) 어법", summary: "주어가 3인칭 단수라 aids 가 맞아요.", askedAt: minutesAgo(60) });
+  haneul.setStore.set("haneul-day04", { id: "haneul-day04", name: "하늘 DAY04", words: [{ id: 121, en: "authority", ko: "권위", aliases: [], ipa: "əˈθɔːrəti" }], updatedAt: noonDaysAgo(2) });
+  haneul.plan = { enabled: true, level: "중2 상위권", dailyCount: 10, hour: 16 };
+  haneul.anchor = { setName: "하늘 DAY04", words: ["authority", "devote", "indicate"] };
+  const dailyWords = Array.from({ length: 10 }, (_, i) => ({ id: i + 1, en: "word" + i, ko: "뜻" + i, ipa: "", aliases: [], kind: i < 3 ? "review" : "new" }));
+  dailies.set(HANEUL + ":" + localDate(), { childId: HANEUL, date: localDate(), level: "중2 상위권", words: dailyWords, note: "", completed: { recordId: "r1", correct: 7, total: 10, completedAt: minutesAgo(1) } });
+  fake.seedChild(DUL, "둘째", DUL_CODE); // 아직 기기가 없다
+  const parentState = () => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_parent_v1") || "null"));
+  const hash = () => page.evaluate(() => location.hash);
+  const text = (sel) => page.textContent(sel);
+  const textHas = (sel, t) => page.evaluate(([s, x]) => (document.querySelector(s)?.textContent || "").includes(x), [sel, t]);
+
+  // ---- 코드 입력: 코드가 없으면 어떤 주소로 열어도 #/setup, 탭은 숨김, 요청 없음 ----
+  await page.goto(url + "parent.html#/children");
+  await waitFor(() => page.isVisible("#parentSetup"), "setup screen first");
+  assert((await hash()) === "#/setup", "no code → #/setup: " + (await hash()));
+  assert((await page.isHidden(".tabbar")) && (await page.isHidden("#refreshFamily")), "tabs and refresh hidden without a code");
+  assert((await page.title()) === "매일 영단어 보호자" && (await page.getAttribute('link[rel="manifest"]', "href")) === "./manifest-parent.webmanifest", "parent page title and manifest");
+  assert(requests.length === 0, "no requests without a code");
+  assert(await page.evaluate(() => typeof window.ParentApp === "object" && typeof ParentApp.computeStats === "function"), "ParentApp exposed");
+  await page.fill("#parentCodeStart", "abc");
+  await page.click("#saveParentStart");
+  assert(await textHas("#parentSetupStatus", "4자"), "short code refused");
+  await page.fill("#parentCodeStart", "wrong-code");
+  await page.click("#saveParentStart");
+  await waitFor(() => textHas("#parentSetupStatus", "보호자 코드가 맞지 않아요"), "wrong code → 401 message");
+  assert((await parentState()).parentCode === "", "wrong code is not saved");
+  setMode("notfound");
+  await page.fill("#parentCodeStart", PARENT_CODE);
+  await page.click("#saveParentStart");
+  await waitFor(() => textHas("#parentSetupStatus", "다시 배포"), "old Worker → redeploy message");
+  setMode("ok");
+  const before = requests.length;
+  await page.fill("#parentCodeStart", PARENT_CODE);
+  await page.press("#parentCodeStart", "Enter");
+  await waitFor(() => page.isVisible("#today"), "today screen after saving the code");
+  await waitFor(() => page.evaluate(() => document.querySelectorAll("#familyOverview .child-card").length === 2), "two child cards");
+  await new Promise((r) => setTimeout(r, 500));
+  const startup = requests.slice(before);
+  assert(startup.length === 1 && startup[0].method === "GET" && startup[0].path === "/family" && startup[0].passcode === PARENT_CODE, "code → today cards with one GET /family: " + JSON.stringify(startup.map((r) => r.method + " " + r.path)));
+  assert((await parentState()).parentCode === PARENT_CODE && (await hash()) === "#/", "code saved, route #/");
+  assert((await page.isVisible(".tabbar")) && (await textHas("#familyLoadStatus", "방금 확인했어요")), "tabs and the checked time shown");
+  assert((await textHas("#toast", "연결 성공")) && (await textHas("#toast", "2명")), "toast reports the children: " + (await text("#toast")));
+
+  // ---- 오늘 카드 ----
+  const card = '#familyOverview .child-card[data-child="' + HANEUL + '"]';
+  const haneulCard = await text(card);
+  for (const part of ["🧒 하늘", "오늘 시험 ✅ 2회 · 평균 75점", "🔥 2일", "오늘의 단어 ✅ 7 / 10", "⚠️ 오늘 화면 이탈 1회", "⏱ 시간 초과 1개", "📷 물어본 문제 1개", "이번 주 3회 · 평균 77점", "지난주 1회 · 50점", "▲ 27점", "마지막 시험"])
+    assert(haneulCard.includes(part), "card has ‘" + part + "’: " + haneulCard);
+  assert((await page.$$eval(card + " .day", (d) => d.length)) === 7 && (await page.$$eval(card + " .day.done", (d) => d.length)) === 2 && (await page.$$eval(card + " .day.today.done", (d) => d.length)) === 1, "7-day strip with today and yesterday done");
+  const dulCard = await text('#familyOverview .child-card[data-child="' + DUL + '"]');
+  assert(dulCard.includes("📲 아이 기기를 연결해 주세요") && dulCard.includes("아이 코드 555 666") && dulCard.includes("링크 복사") && !dulCard.includes("오늘 시험"), "unlinked child card shows one action: " + dulCard);
+
+  // ---- 카드 → 아이 화면 → 뒤로 가기(해시) ----
+  await page.click(card);
+  await waitFor(() => page.isVisible("#child"), "child screen");
+  assert((await hash()) === "#/child/" + HANEUL && (await page.isVisible("#panelRecords")) && (await page.isHidden("#panelSets")), "records tab by default: " + (await hash()));
+  await waitFor(() => paths("/family/" + HANEUL, "GET").length === 1, "detail requested once");
+  await page.goBack();
+  await waitFor(() => page.isVisible("#today"), "back to today");
+  assert((await hash()) === "#/", "hash back to #/");
+  await page.click(card);
+  await waitFor(() => page.isVisible("#child"), "child screen again");
+  await new Promise((r) => setTimeout(r, 300));
+  assert(paths("/family/" + HANEUL, "GET").length === 1, "fresh detail cache is reused (no second detail request)");
+
+  // ---- 기록 탭: 요약 띠·자주 틀린 단어·필터·날짜별 기록 ----
+  await waitFor(() => page.evaluate(() => document.querySelectorAll("#childRecords .history-entry").length === 4), "four records in the last 30 days");
+  const summary = await text("#recordsSummary");
+  assert(summary.includes("이번 주3회평균 77점") && summary.includes("지난주1회평균 50점") && summary.includes("🔥 2일"), "summary strip: " + summary);
+  assert((await text("#childDetailTitle")) === "🧒 하늘" && (await textHas("#childDetailSummary", "전체 시험 5회")) && (await textHas("#childDetailSummary", "세트 1개")) && (await textHas("#childDetailSummary", "연결 기기 2대")), "child head: " + (await text("#childDetailSummary")));
+  const missed = await text("#missedTop");
+  assert(missed.includes("authority") && missed.includes("2회") && missed.includes("권위") && missed.includes("linger"), "most-missed chips (2 weeks): " + missed);
+  assert((await page.$$eval("#missedTop .chip", (c) => c.length)) === 6, "six distinct missed words in two weeks");
+  const recordsText = await text("#childRecords");
+  assert(recordsText.includes("6 / 10 · 60점 · ⏱ 시간 초과 1개") && recordsText.includes("⚠️ 문제 중 화면 이탈 1회") && recordsText.includes("읽기 + 뜻"), "record rows: " + recordsText.slice(0, 300));
+  assert((await page.$$eval("#childRecords .day-group", (g) => g.length)) === 3 && (await text("#childRecords .day-group .day-title")).includes("2회 · 평균 75점"), "grouped by day");
+  await page.click("#childRecords .history-entry summary");
+  assert(await textHas("#childRecords", "authority — 권위 [모름]"), "missed words expand");
+  await page.selectOption("#recordsDays", "7");
+  await waitFor(() => page.evaluate(() => document.querySelectorAll("#childRecords .history-entry").length === 3), "7-day filter");
+  await page.selectOption("#recordsDays", "0");
+  await waitFor(() => page.evaluate(() => document.querySelectorAll("#childRecords .history-entry").length === 5), "all-time filter");
+  await page.selectOption("#recordsSet", "옛 세트");
+  await waitFor(() => page.evaluate(() => document.querySelectorAll("#childRecords .history-entry").length === 1), "set filter");
+  assert((await parentState()).prefs.recordsSet === "옛 세트" && (await parentState()).prefs.recordsDays === 0, "filters remembered");
+  await page.selectOption("#recordsSet", "all");
+  await page.selectOption("#recordsDays", "30");
+
+  // ---- 세트 탭: 목록(최근 점수·시험 횟수)·잠금 즉시 저장 ----
+  await page.click("#subSets");
+  await waitFor(() => page.isVisible("#panelSets"), "sets tab");
+  assert((await hash()) === "#/child/" + HANEUL + "/sets", "sets tab route");
+  const setsText = await text("#childSets");
+  assert(setsText.includes("하늘 DAY04 · 1단어") && setsText.includes("최근 60점 · 30일 시험 4회") && setsText.includes("고침"), "set row with stats: " + setsText);
+  assert(!(await page.isChecked("#setsLock")), "lock off by default");
+  await page.check("#setsLock");
+  await waitFor(() => textHas("#setsStatus", "잠갔어요"), "lock saved");
+  let planReqs = paths("/family/" + HANEUL + "/plan", "POST");
+  assert(planReqs.length === 1 && planReqs[0].passcode === PARENT_CODE && JSON.stringify(planReqs[0].body) === JSON.stringify({ setsLocked: true }), "lock sent alone: " + JSON.stringify(planReqs.map((r) => r.body)));
+  await page.uncheck("#setsLock");
+  await waitFor(() => textHas("#setsStatus", "잠금을 풀었어요"), "unlock saved");
+  assert(JSON.stringify(paths("/family/" + HANEUL + "/plan", "POST")[1].body) === JSON.stringify({ setsLocked: false }), "unlock body");
+  assert(fake.planOf(children.get(HANEUL)).enabled === true && fake.planOf(children.get(HANEUL)).setsLocked === false, "other plan fields kept");
+
+  // ---- 오늘의 단어 탭: 계획 폼·미리보기·저장 본문·직접 입력 수준·지금 만들기·끄기 ----
+  await page.click("#subDaily");
+  await waitFor(() => page.isVisible("#panelDaily"), "daily tab");
+  await waitFor(() => page.evaluate(() => document.querySelectorAll("#dailyPreview .daily-word").length === 10), "preview lists today's words");
+  assert((await page.$$eval("#dailyPreview .tag.review", (t) => t.length)) === 3 && (await textHas("#dailyPreview", "✅ 7 / 10 맞았어요")), "preview with review tags and completion");
+  assert((await page.isChecked("#planEnabled")) && (await page.inputValue("#planLevel")) === "중2 상위권" && (await page.inputValue("#planCount")) === "10" && (await page.inputValue("#planHour")) === "16", "plan fields");
+  assert((await textHas("#planAnchor", "하늘 DAY04")) && (await textHas("#planAnchor", "3단어")), "level anchor: " + (await text("#planAnchor")));
+  await page.selectOption("#planCount", "15");
+  await page.selectOption("#planLevel", "고1·수능 기초");
+  await page.click("#savePlan");
+  await waitFor(() => textHas("#planStatus", "저장했어요"), "plan saved");
+  planReqs = paths("/family/" + HANEUL + "/plan", "POST");
+  assert(JSON.stringify(planReqs[2].body) === JSON.stringify({ enabled: true, level: "고1·수능 기초", dailyCount: 15, hour: 16 }) && planReqs[2].passcode === PARENT_CODE, "plan body: " + JSON.stringify(planReqs[2].body));
+  assert(await textHas("#planStatus", "15개"), "status mentions the count");
+  await page.selectOption("#planLevel", "__custom");
+  assert(await page.isVisible("#planLevelCustom"), "custom level input appears");
+  await page.fill("#planLevelCustom", "중3 상위권");
+  await page.click("#savePlan");
+  await waitFor(() => paths("/family/" + HANEUL + "/plan", "POST").length === 4, "second plan save");
+  assert(paths("/family/" + HANEUL + "/plan", "POST")[3].body.level === "중3 상위권", "custom level sent");
+  await page.click("#makeDailyNow");
+  await waitFor(() => textHas("#planStatus", "준비됐어요"), "make-now reports the words");
+  assert(paths("/daily/" + HANEUL, "POST").length === 1 && paths("/daily/" + HANEUL, "POST")[0].passcode === PARENT_CODE, "make-now uses the parent code");
+  await page.uncheck("#planEnabled");
+  await page.click("#savePlan");
+  await waitFor(() => textHas("#planStatus", "만들지 않아요"), "plan disabled message");
+  assert(await textHas("#dailyPreview", "꺼져 있어요"), "preview reflects the disabled plan");
+  await page.click("#tabToday");
+  await waitFor(() => page.isVisible("#today"), "today again");
+  assert(await textHas(card, "오늘의 단어 꺼짐"), "card follows the saved plan: " + (await text(card)));
+  await page.click(card);
+  await waitFor(() => page.isVisible("#child"), "child again");
+
+  // ---- 설정 탭: 연결 코드·링크·기기, 제한 시간 즉시 저장, 이름, 코드 새로 만들기 ----
+  await page.click("#subSettings");
+  await waitFor(() => page.isVisible("#panelSettings"), "settings tab");
+  assert((await text("#childCodeText")) === "483 921" && (await text("#childLinkText")) === url + "?child=" + HANEUL_CODE, "code and child link: " + (await text("#childLinkText")));
+  assert((await textHas("#deviceList", "연결된 기기: iPhone")) && (await textHas("#deviceList", "Android 태블릿(앱)")), "device list");
+  await page.selectOption("#planTimeLimit", "20");
+  await waitFor(() => textHas("#limitStatus", "저장했어요"), "time limit saved at once");
+  const limitReq = paths("/family/" + HANEUL + "/plan", "POST").slice(-1)[0];
+  assert(JSON.stringify(limitReq.body) === JSON.stringify({ timeLimitSec: 20 }) && (await textHas("#limitStatus", "20초")), "time limit sent alone: " + JSON.stringify(limitReq.body));
+  assert(fake.planOf(children.get(HANEUL)).level === "중3 상위권" && fake.planOf(children.get(HANEUL)).timeLimitSec === 20, "server plan keeps the level and stores the limit");
+  await page.fill("#renameChild", "하늘이");
+  await page.click("#saveChildName");
+  await waitFor(() => page.evaluate(() => document.getElementById("childDetailTitle").textContent === "🧒 하늘이"), "renamed");
+  assert(paths("/family/" + HANEUL + "/name", "POST")[0].body.name === "하늘이" && (await textHas("#nameStatus", "바꿨어요")), "rename request and message");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#regenCode");
+  await waitFor(() => page.evaluate(() => document.getElementById("childCodeText").textContent === "777 777"), "new code shown");
+  assert((await text("#childLinkText")).endsWith("?child=777777") && (await textHas("#linkStatus", "새 아이 코드 777 777")), "link follows the new code");
+
+  // ---- 질문 탭 ----
+  await page.click("#subQuestions");
+  await waitFor(() => page.isVisible("#panelQuestions"), "questions tab");
+  const questions = await text("#childQuestions");
+  assert((await text("#childQuestionCount")) === "1개" && (await textHas("#questionsSummary", "이번 주 1개")) && questions.includes("UNT 02 2) 어법") && questions.includes("어법 설명 · 왜 aids 인가요?") && questions.includes("3인칭 단수"), "question rows: " + questions);
+  // ← 뒤로: 하위 탭은 history 를 늘리지 않으므로 아이 화면을 연 곳(오늘)으로 돌아간다
+  await page.click("#closeChildDetail");
+  await waitFor(() => page.isVisible("#today"), "back closes the child screen");
+
+  // ---- 아이들: 목록·아이 추가(→ 설정 탭에 코드)·이름 확인 2단계 삭제 ----
+  await page.click("#tabChildren");
+  await waitFor(() => page.isVisible("#children"), "children screen");
+  const list = await text("#childrenList");
+  assert(list.includes("🧒 하늘이") && list.includes("연결 기기: iPhone 1 · Android 태블릿(앱) 1") && list.includes("아직 연결된 기기 없음 · 아이 코드 555 666"), "children list: " + list);
+  await page.click("#addChild");
+  assert(await textHas("#addChildStatus", "이름"), "name required");
+  await page.fill("#newChildName", " 셋째 ");
+  await page.click("#addChild");
+  await waitFor(() => page.evaluate(() => location.hash === "#/child/child-777778/settings"), "new child's settings tab opened");
+  assert(paths("/family/children", "POST")[0].body.name === "셋째" && paths("/family/children", "POST")[0].passcode === PARENT_CODE, "create request");
+  await waitFor(() => page.evaluate(() => document.getElementById("childCodeText").textContent === "777 778"), "new code shown");
+  assert((await textHas("#addChildStatus", "아이 코드 777 778")) && (await textHas("#deviceList", "아직 연결된 기기가 없어요")), "new child's code and no devices");
+  await page.click("#deleteChild");
+  assert((await page.isVisible("#deleteConfirm")) && (await page.isDisabled("#deleteChildGo")), "delete asks for the name first");
+  await page.fill("#deleteConfirmName", "셋");
+  assert(await page.isDisabled("#deleteChildGo"), "wrong name keeps delete disabled");
+  await page.fill("#deleteConfirmName", "셋째");
+  await page.click("#deleteChildGo");
+  await waitFor(() => page.evaluate(() => location.hash === "#/children"), "back to the list after deleting");
+  assert(paths("/family/child-777778", "DELETE").length === 1 && !children.has("child-777778"), "delete request");
+  await waitFor(() => page.evaluate(() => !document.getElementById("childrenList").textContent.includes("셋째")), "deleted child removed from the list");
+  assert(!JSON.stringify(await parentState()).includes("child-777778"), "deleted child removed from the cache");
+
+  // ---- 오프라인: 서버에 닿지 못해도 마지막으로 받은 카드가 보인다 ----
+  setMode("abort");
+  await page.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem("daily_vocab_parent_v1"));
+    s.fetchedAt = new Date(Date.now() - 3600000).toISOString(); // 오래된 캐시 → 열 때 새로 받으려 한다
+    localStorage.setItem("daily_vocab_parent_v1", JSON.stringify(s));
+  });
+  await page.evaluate(() => (location.hash = "#/"));
+  await page.reload(); // 해시만 바꾸면 같은 문서라서 다시 연다
+  await waitFor(() => page.evaluate(() => document.querySelectorAll("#familyOverview .child-card").length === 2), "cached cards while offline");
+  await waitFor(() => textHas("#toast", "연결하지 못했어요"), "one offline toast");
+  assert((await textHas("#familyLoadStatus", "새로 불러오지 못했어요")) && (await textHas(card, "오늘 시험 ✅ 2회")), "status line and cached stats");
+  setMode("ok");
+
+  // ---- 보호자 설정: 상태·코드 삭제(캐시도 삭제 → #/setup) ----
+  await page.click("#tabSettings");
+  await waitFor(() => page.isVisible("#settings"), "settings screen");
+  assert((await textHas("#parentState", "연결됨 · 아이 2명")) && (await page.inputValue("#parentServer")) === DEFAULT_SERVER, "parent state and server");
+  assert((await page.getAttribute("#openChildApp", "href")) === "./", "child app link");
+  await page.click("#checkApp");
+  assert((await textHas("#appStatus", "앱 준비 완료")) && (await textHas("#appStatus", "편집기 연결됨")), "app check: " + (await text("#appStatus")));
+  page.once("dialog", (d) => d.accept());
+  await page.click("#clearParent");
+  await waitFor(() => page.isVisible("#parentSetup"), "setup after clearing");
+  const cleared = await parentState();
+  assert((await hash()) === "#/setup" && cleared.parentCode === "" && cleared.children.length === 0 && Object.keys(cleared.details).length === 0 && !cleared.fetchedAt, "code and cache cleared: " + JSON.stringify(cleared).slice(0, 160));
+  assert(await page.isHidden(".tabbar"), "tabs hidden again");
+
+  // ---- 옛 설치 호환: 보호자 아이콘(…/?mode=parent)으로 열면 parent.html 로 옮기고 옛 키를 이전한다 ----
+  const old = await browser.newContext({ viewport: { width: 420, height: 900 }, serviceWorkers: "block" });
+  const oldPage = await old.newPage();
+  oldPage.on("pageerror", (e) => errors.push("old: " + e.message));
+  const OLD_SERVER = "https://ai.test";
+  const oldFake = await createFakeWorker(oldPage, { server: OLD_SERVER, familyCode: FAMILY_CODE, parentCode: PARENT_CODE });
+  oldFake.seedChild(HANEUL, "하늘", HANEUL_CODE);
+  await oldPage.goto(url + "manifest.webmanifest"); // 앱이 아닌 같은 출처 페이지에서 옛 키를 심는다
+  await oldPage.evaluate(
+    ([server, code, id]) => {
+      localStorage.setItem("daily_vocab_family_v1", JSON.stringify({ childId: "", deviceId: "dev-12345678", sendEnabled: false, pending: [], lastSyncAt: "2026-10-01T00:00:00.000Z", parentCode: code, parentModeOff: true }));
+      localStorage.setItem("daily_vocab_ai_v2", JSON.stringify({ server, passcode: "family-1234" }));
+      localStorage.setItem("daily_vocab_family_cache_v1", JSON.stringify({ children: [{ id, name: "하늘(캐시)", devices: {}, records: [], joinCode: "483921" }], fetchedAt: new Date(Date.now() - 3600000).toISOString() }));
+      localStorage.setItem("daily_vocab_mode_v1", "parent");
+    },
+    [OLD_SERVER, PARENT_CODE, HANEUL],
+  );
+  await oldPage.goto(url + "?mode=parent");
+  await oldPage.waitForURL(/parent\.html/);
+  await waitFor(() => oldPage.evaluate(() => typeof window.ParentApp === "object"), "parent app after the redirect");
+  const migrated = await oldPage.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_parent_v1")));
+  assert(migrated.parentCode === PARENT_CODE && migrated.server === OLD_SERVER, "code and server migrated: " + JSON.stringify(migrated).slice(0, 160));
+  const leftovers = await oldPage.evaluate(() => ({
+    cache: localStorage.getItem("daily_vocab_family_cache_v1"),
+    mode: localStorage.getItem("daily_vocab_mode_v1"),
+    family: JSON.parse(localStorage.getItem("daily_vocab_family_v1")),
+    ai: JSON.parse(localStorage.getItem("daily_vocab_ai_v2")),
+  }));
+  assert(leftovers.cache === null && leftovers.mode === null, "old parent cache and mode removed");
+  assert(!("parentCode" in leftovers.family) && !("parentModeOff" in leftovers.family) && leftovers.family.deviceId === "dev-12345678" && leftovers.family.lastSyncAt === "2026-10-01T00:00:00.000Z", "child key keeps its other fields: " + JSON.stringify(leftovers.family));
+  assert(leftovers.ai.passcode === "family-1234", "child AI settings untouched");
+  await waitFor(() => oldPage.evaluate(() => document.querySelector("#familyOverview")?.textContent.includes("🧒 하늘")), "cards shown after migration");
+  await waitFor(() => oldFake.paths("/family", "GET").length === 1, "stale migrated cache refreshed from the old server");
+  assert(oldFake.paths("/family", "GET")[0].passcode === PARENT_CODE, "refreshed with the migrated code");
+  // 이전 뒤에는 아이용 앱 주소가 그대로 아이 앱이고(보호자 모드 화면 없음), 옛 보호자 아이콘 주소는 계속 보호자 앱으로 간다
+  await oldPage.goto(url);
+  await waitFor(() => oldPage.evaluate(() => typeof sets !== "undefined" && document.getElementById("appStatus").textContent.includes("준비")), "child app opens normally");
+  assert(oldPage.url() === url && (await oldPage.isVisible("#home")) && (await oldPage.$("#tabFamily")) === null && (await oldPage.$("#family")) === null, "child app without a parent mode");
+  await oldPage.goto(url + "?mode=parent");
+  await oldPage.waitForURL(/parent\.html/);
+  await waitFor(() => oldPage.isVisible("#today"), "old parent icon keeps opening the parent app");
+  // ?mode=child 는 기억한 모드를 지우고 아이 앱을 연다
+  await oldPage.evaluate(() => localStorage.setItem("daily_vocab_mode_v1", "parent"));
+  await oldPage.goto(url + "?mode=child");
+  await waitFor(() => oldPage.evaluate(() => typeof sets !== "undefined"), "child app with ?mode=child");
+  assert(!oldPage.url().includes("parent.html") && !oldPage.url().includes("mode=") && (await oldPage.evaluate(() => localStorage.getItem("daily_vocab_mode_v1"))) === null, "mode cleared: " + oldPage.url());
+  // 보호자 코드만 있고 아이로 연결되지 않은 기기(옛 설정 화면에서 코드를 넣은 보호자 폰)도 보호자 앱으로 옮긴다
+  const bare = await browser.newContext({ serviceWorkers: "block" });
+  const barePage = await bare.newPage();
+  barePage.on("pageerror", (e) => errors.push("bare: " + e.message));
+  await barePage.goto(url + "manifest.webmanifest");
+  await barePage.evaluate((code) => localStorage.setItem("daily_vocab_family_v1", JSON.stringify({ parentCode: code })), PARENT_CODE);
+  await barePage.route(DEFAULT_SERVER + "/**", (r) => r.abort());
+  await barePage.goto(url);
+  await barePage.waitForURL(/parent\.html/);
+  await waitFor(() => barePage.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_parent_v1") || "{}").parentCode === "parent-9999"), "parent-code-only device migrated");
+
+  assert(errors.length === 0, "page errors: " + errors.join(" | "));
+  console.log("PASS: parent app — setup (length/401/404, one GET /family to the cards), today cards (linked/unlinked), hash back, child tabs (records summary/missed/filters, sets/lock, daily plan/make-now/off, link/code/devices/time limit/rename/regen, questions), add/delete child (name confirm), offline cache, clear code, old-install redirect + migration");
+  await browser.close();
+})().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

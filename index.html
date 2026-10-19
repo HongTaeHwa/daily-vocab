@@ -6,6 +6,30 @@
 <meta name="color-scheme" content="light" />
 <title>매일 영단어</title>
 <link rel="manifest" href="./manifest.webmanifest"><meta name="theme-color" content="#133263"><link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<script>
+// 보호자 앱은 parent.html 이다. 옛 보호자 설치(start_url …/?mode=parent)·보호자로 기억된 기기·보호자 코드만 있고 아이로 연결되지 않은 기기는
+// 화면·스크립트를 불러오기 전에(동기) 그리로 옮긴다. 옛 보호자 코드를 지우지 않도록 아래 문서는 읽지 않는다(plaintext). ?mode=child 는 기억한 모드를 지우고 아이 앱을 연다.
+(function () {
+  try {
+    var params = new URLSearchParams(location.search);
+    var mode = params.get('mode');
+    if (mode === 'child') {
+      localStorage.removeItem('daily_vocab_mode_v1');
+      params.delete('mode');
+      var query = params.toString();
+      history.replaceState(history.state, '', location.pathname + (query ? '?' + query : '') + location.hash);
+      return;
+    }
+    var family = null;
+    try { family = JSON.parse(localStorage.getItem('daily_vocab_family_v1') || 'null'); } catch (e) {}
+    var parentOnly = Boolean(family && typeof family.parentCode === 'string' && family.parentCode && !family.childId);
+    if (mode === 'parent' || localStorage.getItem('daily_vocab_mode_v1') === 'parent' || parentOnly) {
+      location.replace('./parent.html');
+      document.write('<plaintext style="display:none">');
+    }
+  } catch (e) {}
+})();
+</script>
 <style>
 :root{--navy:#133263;--blue:#265cc3;--blue-dark:#1d4ea8;--pale:#edf4ff;--ink:#1d2a3d;--muted:#61728a;--border:#dbe5f1;--yellow:#ffdc72;--green:#168459;--red:#b83a48;--bg:#f3f6fb;--card:#fff;--radius:18px;--tab-h:66px}
 *{box-sizing:border-box}
@@ -130,31 +154,12 @@ details.help ol{padding-left:18px;margin:8px 0}
 /* 설정 */
 .ai-settings summary,.settings-section summary{cursor:pointer;font-weight:800;color:var(--navy);display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:16px}
 .ai-settings .controls{margin-top:10px}
-#aiServer,#aiPasscode,#childName,#parentCode{max-width:460px;min-width:0}
+#aiServer,#aiPasscode,#childName{max-width:460px;min-width:0}
 .mic-diagnosis{margin-top:9px;border-radius:12px;padding:12px;background:#eff5ff;border:1px solid #d4e3fc;font-weight:650;color:#26436e;font-size:13px;white-space:pre-line}.mic-diagnosis.warn{background:#fff3e7;border-color:#f3d2a4;color:#88541f}.mic-diagnosis.good{background:#e9f8ef;border-color:#b9e6cb;color:#176847}
 .kbd-hint{margin-top:10px;border:1px dashed #acc4e4;border-radius:11px;background:#f7faff;padding:11px;color:#2a4b79;font-size:13px}.kbd-hint b{color:#174d9e}
-/* 아이들(보호자 폰) */
-.child-card{border:1px solid var(--border);border-radius:14px;padding:14px;margin-top:12px;background:#fbfdff}
-.child-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
-.child-name{font-size:18px;color:var(--navy)}
-.pill.ok{background:#e3f4ea;color:#176847}.pill.warn{background:#fff3e7;color:#88541f}
-.week-dots{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:10px 0 4px}
-.day{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;border-radius:10px;background:#f1f5fb;color:#8a9ab0;font-size:12px;min-width:0}
-.day b{font-size:13px;color:inherit;white-space:nowrap}.day.done{background:#e3f4ea;color:#176847}.day.today{box-shadow:0 0 0 2px #2466cf55}
-.parent-box{margin-top:16px;padding-top:12px;border-top:1px dashed var(--border)}
-/* 보호자 모드: 아이용 화면·설정은 숨긴다(body.parent-mode 는 family.js 가 토글) */
-body.parent-mode .child-only{display:none!important}
-.overview{display:flex;flex-direction:column;gap:8px}
-.overview-row{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;align-items:center;width:100%;text-align:left;border:1px solid var(--border);border-radius:14px;padding:12px 14px;background:#fbfdff;cursor:pointer;font:inherit;color:var(--ink)}
-.overview-row:active{transform:scale(.99)}
-.overview-row .ov-name{font-size:17px;font-weight:900;color:var(--navy);grid-row:span 3}
-.overview-row .ov-main{font-weight:700}
-.overview-row .ov-sub{font-size:13px;color:var(--muted)}
-.overview-row .ov-warn{font-size:13px;color:#b83a48;font-weight:800}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 4px}
 .chip{display:inline-flex;align-items:baseline;gap:6px;background:#fff7f0;border:1px solid #f3d2a4;border-radius:999px;padding:4px 11px;font-size:14px;color:#4e3a1c}
 .chip b{color:#b83a48}.chip small{color:#88541f}
-.plan-box{margin:12px 0 16px;padding:12px;border:1px dashed var(--border);border-radius:12px;background:#f8fbff}
 .combo-panel summary{cursor:pointer;font-weight:800;color:var(--navy);font-size:17px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .combo-sets{display:flex;flex-direction:column;gap:6px;margin-top:10px}
 .combo-sets label{display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer}.combo-sets input{accent-color:#245fcb;width:20px;height:20px;flex:none}.combo-sets small{color:var(--muted)}
@@ -177,20 +182,7 @@ button.chip{cursor:pointer;font:inherit;font-size:14px}button.chip:disabled{opac
 .lookup-row details{margin-top:4px}.lookup-row summary{cursor:pointer;color:var(--blue);font-weight:700;font-size:13px}.lookup-row details p{margin:4px 0;font-size:14px}
 .empty-sets{border:1px dashed var(--border);border-radius:14px;padding:16px;background:#fbfdff;text-align:center;margin:6px 0 10px}
 .empty-sets strong{display:block;font-size:17px;color:var(--navy)}.empty-sets p{margin:6px 0 0;color:var(--muted);font-size:14px}
-.set-list .set-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border)}
-.set-list .set-row:last-child{border-bottom:0}.set-row .set-name{flex:1 1 160px;font-weight:700;min-width:0;overflow-wrap:anywhere}
-.plan-box .controls select{flex:0 1 auto;min-width:120px}
-.plan-box h3{margin:0 0 6px}
-.daily-word{display:flex;gap:8px;padding:6px 0;border-top:1px solid #eef2f8;font-size:14px;align-items:center}
-.daily-word .tag{font-size:11px;border-radius:6px;padding:1px 6px;background:#eef4ff;color:#2c558f;font-weight:800;flex-shrink:0}
-.daily-word .tag.review{background:#fff3e7;color:#88541f}
-.mono{font-family:ui-monospace,Consolas,monospace;font-size:13px;word-break:break-all}
-.away-flag{color:#b83a48;font-weight:700;font-size:13px;margin:4px 0}
-.code-text{font-size:22px;letter-spacing:.08em;color:var(--navy)}
-.add-child{margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)}
-.add-child .controls input{flex:1;min-width:160px}
 #childCode{max-width:200px;min-width:0;font-size:18px;letter-spacing:.08em}
-#renameChild{max-width:240px;min-width:0}
 /* 하단 탭 */
 .tabbar{position:fixed;left:0;right:0;bottom:0;height:var(--tab-h);display:flex;background:#fff;border-top:1px solid var(--border);z-index:30;padding-bottom:env(safe-area-inset-bottom)}
 .tab{flex:1;border:0;background:none;color:#6b7c93;font-weight:800;font-size:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer}
@@ -333,7 +325,6 @@ body.in-quiz main{padding-bottom:30px}
   </div>
 </section>
 
-<!-- 아이들 (보호자 폰: 보호자 코드를 저장했을 때만 탭이 보인다) -->
 <!-- 단어 찾기 (아이 기기): AI 사전으로 뜻·발음·예문을 보고, 찾은 단어는 ‘찾아본 단어’ 세트에 자동 저장되어 시험으로 이어진다 -->
 <section class="view" id="lookup" tabindex="-1" aria-label="단어 찾기">
   <div class="card">
@@ -390,75 +381,6 @@ body.in-quiz main{padding-bottom:30px}
   </div>
 </section>
 
-<section class="view" id="family" tabindex="-1" aria-label="아이들 관리">
-  <div class="card hidden" id="parentSetup">
-    <h2 class="section-title">👨‍👩‍👧 보호자 모드</h2>
-    <p class="muted">아이들의 시험 기록·오늘의 단어·제한 시간을 관리하는 화면이에요. 시작하려면 보호자 코드(Worker 비밀값 <code>PARENT_PASSCODE</code>)를 넣어 주세요. 아이 기기에는 넣지 마세요.</p>
-    <div class="controls"><label for="parentCodeStart">보호자 코드</label> <input id="parentCodeStart" type="password" autocomplete="off" spellcheck="false" placeholder="보호자만 아는 코드"> <button type="button" class="btn primary" id="saveParentStart">시작</button></div>
-    <div id="parentSetupStatus" class="feedback info" role="status"></div>
-  </div>
-  <div class="card" id="familyMain">
-    <div class="row-between"><h2 class="section-title" style="margin:0">👀 오늘 한눈에</h2><button type="button" class="btn small outline" id="refreshFamily">새로고침</button></div>
-    <div id="familyLoadStatus" class="feedback info" role="status"></div>
-    <div id="familyOverview" class="overview"></div>
-  </div>
-  <div class="card" id="childrenCard">
-    <h2 class="section-title">🧒 아이들</h2>
-    <div id="childrenList"></div>
-    <div class="add-child">
-      <label for="newChildName">아이 추가</label>
-      <div class="controls"><input id="newChildName" type="text" maxlength="20" autocomplete="off" placeholder="아이 이름 (예: 하늘)"><button type="button" class="btn" id="addChild">➕ 아이 추가</button></div>
-      <div id="addChildStatus" class="feedback info" role="status"></div>
-      <p class="muted">아이를 만들면 6자리 아이 코드와 전용 링크가 생겨요. 아이 기기(아이폰·태블릿 모두)에서 그 코드를 넣거나 링크를 열면 같은 아이로 연결됩니다.</p>
-    </div>
-    <p class="muted">아이 기기가 시험을 마칠 때마다 보낸 기록이에요. ‘오늘’과 ‘최근 7일’은 이 폰의 날짜 기준입니다.</p>
-  </div>
-  <div class="card hidden" id="childDetail">
-    <div class="row-between"><h2 class="section-title" id="childDetailTitle" style="margin:0"></h2><button type="button" class="link-btn" id="closeChildDetail">← 목록으로</button></div>
-    <p id="childDetailSummary" class="muted"></p>
-    <div class="plan-box" id="linkBox">
-      <h3 class="section-title">🔗 아이 기기 연결</h3>
-      <p>아이 코드: <strong id="childCodeText" class="code-text"></strong></p>
-      <p class="muted">아이 전용 링크: <span id="childLinkText" class="mono"></span></p>
-      <div class="actionbar"><button type="button" class="btn small" id="copyLink">링크 복사</button><button type="button" class="btn small outline" id="copyCode">코드 복사</button><button type="button" class="btn small outline" id="regenCode">코드 새로 만들기</button></div>
-      <p class="muted">갤럭시 태블릿은 이 링크를 Chrome에서 열면 바로 연결돼요. 아이폰은 홈 화면에 설치한 앱을 연 뒤 설정 → 가족 기록함에 코드를 넣어 주세요(Safari와 홈 화면 앱은 저장 공간이 달라요).</p>
-      <p id="deviceList" class="muted"></p>
-      <div class="controls"><label for="renameChild">이름</label><input id="renameChild" type="text" maxlength="20" autocomplete="off"><button type="button" class="btn small" id="saveChildName">이름 저장</button></div>
-      <div id="linkStatus" class="feedback info" role="status"></div>
-    </div>
-    <div class="plan-box" id="setsBox">
-      <h3 class="section-title">📚 세트</h3>
-      <p class="muted">여기 있는 세트가 이 아이의 모든 기기(아이폰·태블릿)에 똑같이 들어가요. 아이 기기에서 만들거나 고친 세트도 여기로 올라와요. 보호자가 만들어 보내면 아이 기기가 다음에 앱을 열 때 들어가요.</p>
-      <div id="childSets" class="set-list"></div>
-      <div class="actionbar"><button type="button" class="btn primary" id="sendNewSet">➕ 세트 만들어 보내기 (사진)</button></div>
-      <div class="controls"><label class="check"><input type="checkbox" id="setsLock"> 🔒 아이 기기에서 세트 고치기 잠금</label></div>
-      <p class="muted">잠그면 아이 기기에서는 세트를 만들거나 고치거나 지울 수 없고 단어를 보기만 해요(찾아본 단어 세트와 AI가 인정한 답은 계속 쌓여요). 세트는 여기서 만들어 보내거나 고쳐 주세요. 아이 기기가 다음에 앱을 열 때부터 적용돼요.</p>
-      <div id="setsStatus" class="feedback info" role="status"></div>
-    </div>
-    <div class="plan-box" id="planBox">
-      <h3 class="section-title">📬 오늘의 단어 설정</h3>
-      <p class="muted">켜 두면 매일 정한 시각에 아이 수준에 맞는 단어를 만들어 아이 홈에 ‘오늘의 단어’ 카드로 보여 줘요. 복습(최근 틀린 단어) 최대 3개 + 새 단어로 채우고, 새 단어는 아이의 최근 세트(교재) 수준을 기준으로 AI가 고릅니다.</p>
-      <div class="controls"><label class="check"><input type="checkbox" id="planEnabled"> 매일 오늘의 단어 만들기</label></div>
-      <div class="controls"><label for="planLevel">수준</label><select id="planLevel"></select><input id="planLevelCustom" type="text" maxlength="40" autocomplete="off" placeholder="예: 중3 상위권" class="hidden"></div>
-      <div class="controls"><label for="planCount">하루 단어 수</label><select id="planCount"></select><label for="planHour">만드는 시각</label><select id="planHour"></select></div>
-      <div class="controls"><label for="planTimeLimit">문제당 제한 시간</label><select id="planTimeLimit"></select></div>
-      <p class="muted">제한 시간은 이 아이의 <b>모든 시험</b>에 적용돼요(오늘의 단어가 꺼져 있어도). 시간이 지나면 그 문제는 ‘모름’으로 기록되고, 앱 밖에 나가 있어도 시간은 흐릅니다. 아이 기기가 다음에 앱을 열 때부터 적용돼요.</p>
-      <div class="actionbar"><button type="button" class="btn primary" id="savePlan">저장</button><button type="button" class="btn outline" id="makeDailyNow">오늘 것 지금 만들기</button></div>
-      <p id="planAnchor" class="muted"></p>
-      <div id="planStatus" class="feedback info" role="status"></div>
-      <div id="dailyPreview"></div>
-    </div>
-    <h3 class="section-title">📉 자주 틀린 단어 (최근 2주)</h3>
-    <div id="missedTop" class="chips"></div>
-    <h3 class="section-title" style="margin-top:16px">📷 물어본 문제 <span class="pill" id="childQuestionCount">0개</span></h3>
-    <p class="muted">아이가 찾기 탭의 ‘문제 물어보기’로 AI 선생님에게 물은 문제예요. 사진은 저장되지 않고 어떤 문제를 무엇 때문에 물었는지 요약만 남아요.</p>
-    <div id="childQuestions" class="lookup-recent"></div>
-    <h3 class="section-title" style="margin-top:16px">🕒 기록</h3>
-    <div id="childRecords"></div>
-    <div class="actionbar"><button type="button" class="btn outline danger small" id="deleteChild">이 아이 기록 서버에서 삭제</button></div>
-  </div>
-</section>
-
 <!-- 설정 -->
 <section class="view" id="settings" tabindex="-1" aria-label="설정">
   <div class="card">
@@ -473,9 +395,8 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <details id="familySettings" class="settings-section">
-      <summary>👨‍👩‍👧 가족 기록함 <span id="familyState" class="pill child-only">꺼짐</span></summary>
-      <div id="familyChildPart" class="child-only">
-      <p class="muted"><b>아이 기기:</b> 보호자 폰의 ‘아이들’ 탭에서 만든 <b>아이 코드 6자리</b>를 넣거나 아이 전용 링크를 열면 이 기기가 그 아이로 연결돼요. 연결되면 시험을 마칠 때마다 점수·틀린 단어가 가족용 AI 서버에 저장되어 보호자 폰에서 볼 수 있고, 오늘의 단어도 받아요. <b>세트도 아이 단위로 맞춰져요</b>: 이 기기에서 만든 세트는 같은 아이의 다른 기기와 보호자 폰에 올라가고, 보호자가 보낸 세트는 여기에 들어와요(기본 예제 세트는 연결 뒤 사라져요). 단어별 전체 답안은 보내지 않아요. 위의 AI 연결(접속 코드)이 먼저 필요해요. 같은 아이의 아이폰·태블릿에는 같은 코드를 넣으세요.</p>
+      <summary>👨‍👩‍👧 가족 기록함 <span id="familyState" class="pill">꺼짐</span></summary>
+      <p class="muted"><b>아이 기기:</b> 보호자 앱(‘매일 영단어 보호자’)의 ‘아이들’에서 만든 <b>아이 코드 6자리</b>를 넣거나 아이 전용 링크를 열면 이 기기가 그 아이로 연결돼요. 연결되면 시험을 마칠 때마다 점수·틀린 단어가 가족용 AI 서버에 저장되어 보호자 폰에서 볼 수 있고, 오늘의 단어도 받아요. <b>세트도 아이 단위로 맞춰져요</b>: 이 기기에서 만든 세트는 같은 아이의 다른 기기와 보호자 폰에 올라가고, 보호자가 보낸 세트는 여기에 들어와요(기본 예제 세트는 연결 뒤 사라져요). 단어별 전체 답안은 보내지 않아요. 위의 AI 연결(접속 코드)이 먼저 필요해요. 같은 아이의 아이폰·태블릿에는 같은 코드를 넣으세요.</p>
       <div id="joinBox">
         <div class="controls"><label for="childCode">아이 코드</label> <input id="childCode" type="text" inputmode="numeric" maxlength="7" autocomplete="off" placeholder="예: 483921"> <button type="button" class="btn primary" id="joinChild">연결</button></div>
       </div>
@@ -487,17 +408,9 @@ body.in-quiz main{padding-bottom:30px}
         <div class="actionbar"><button type="button" class="btn primary" id="saveFamily">저장</button><button type="button" class="btn outline" id="syncNow" disabled>지금 보내기</button><button type="button" class="btn outline" id="restoreRecords" disabled>☁️ 서버 기록 다시 가져오기</button><button type="button" class="btn outline danger" id="unlinkChild">연결 해제</button></div>
       </div>
       <div id="familyStatus" class="feedback info" role="status"></div>
-      </div>
-      <div class="parent-box hidden" id="parentBox">
-        <p class="muted"><b>보호자:</b> 보호자 코드(Worker 비밀값 <code>PARENT_PASSCODE</code>)를 저장하면 보호자 모드(아이들 화면)로 바뀌어요. 이 칸은 보호자 화면(parent.html)으로 연 기기에서만 보여요. <span id="parentState" class="pill"></span></p>
-        <div class="controls"><label for="parentCode">보호자 코드</label> <input id="parentCode" type="password" autocomplete="off" spellcheck="false" placeholder="보호자만 아는 코드"></div>
-        <div class="actionbar"><button type="button" class="btn primary" id="saveParent">저장</button><button type="button" class="btn outline" id="clearParent" disabled>삭제</button></div>
-        <div id="parentStatus" class="feedback info" role="status"></div>
-        <div class="controls hidden" id="parentModeRow"><label class="check"><input type="checkbox" id="parentModeOff"> 아이 기기처럼 보기 (홈·시험·기록 화면 표시)</label></div>
-      </div>
     </details>
   </div>
-  <div class="card child-only">
+  <div class="card">
     <details id="micPanel" class="settings-section">
       <summary>🎤 마이크·음성 인식 점검</summary>
       <div id="micEnvironment" class="mic-diagnosis" role="status">현재 브라우저의 마이크 사용 가능 여부를 확인하는 중…</div>
@@ -512,7 +425,7 @@ body.in-quiz main{padding-bottom:30px}
       <div class="kbd-hint"><b>바로 쓸 수 있는 대안:</b> 시험에서 입력칸을 터치 → 휴대폰 <b>키보드의 🎤</b>로 말하면 앱이 채점합니다. 키보드의 🎤는 앱의 파란 마이크 버튼과 다른 기능입니다.</div>
     </details>
   </div>
-  <div class="card child-only">
+  <div class="card">
     <h2 class="section-title">💾 백업</h2>
     <div class="actionbar"><button type="button" class="btn" id="exportSets">전체 백업 JSON</button><label class="btn" for="importSets" id="importSetsLabel">JSON 가져오기</label><input id="importSets" type="file" accept="application/json" hidden><button type="button" class="btn outline danger" id="clearHistory" disabled>시험 기록 전체 삭제</button><button type="button" class="btn hidden" id="installApp">홈 화면에 설치</button></div>
     <div id="backupStatus" class="feedback info" role="status"></div>
@@ -520,7 +433,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-20 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-21 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -530,13 +443,12 @@ body.in-quiz main{padding-bottom:30px}
   <button type="button" class="tab active" id="tabHome" aria-current="page"><span class="ico">🏠</span>홈</button>
   <button type="button" class="tab" id="tabLookup" aria-current="false"><span class="ico">🔍</span>찾기</button>
   <button type="button" class="tab" id="tabHistory" aria-current="false"><span class="ico">🕒</span>기록</button>
-  <button type="button" class="tab hidden" id="tabFamily" aria-current="false"><span class="ico">👨‍👩‍👧</span>아이들</button>
   <button type="button" class="tab" id="tabSettings" aria-current="false"><span class="ico">⚙️</span>설정</button>
 </nav>
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-20';
+  var release = '20261018-21';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -573,10 +485,10 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./shared.js?v=20261018-20" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./quiz.js?v=20261018-20" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-20" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./editor.js?v=20261018-20" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-20" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./shared.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./editor.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

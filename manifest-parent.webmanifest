@@ -3,7 +3,7 @@
   "name": "매일 영단어 보호자",
   "short_name": "영단어 보호자",
   "lang": "ko",
-  "start_url": "/daily-vocab/?mode=parent",
+  "start_url": "/daily-vocab/parent.html",
   "scope": "/daily-vocab/",
   "display": "standalone",
   "theme_color": "#133263",

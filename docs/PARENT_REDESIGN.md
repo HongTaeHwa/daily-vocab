@@ -220,6 +220,13 @@ parent.js
 - **오류 처리**: 401이면 `#/setup`으로 보내고 코드가 틀렸다고 안내(코드는 지우지 않음). 404 `not_found`면 ‘Worker를 다시 배포’ 안내. 네트워크 오류는 캐시를 그대로 두고 토스트 1회.
 - **뒤로 가기**: 해시 변경이 곧 history 항목이므로 Android 뒤로 가기가 상세 → 목록 → 앱 종료 순으로 동작한다. 편집기에서 뒤로 가기는 `SetEditor.confirmDiscard()`를 거친다.
 
+- **결정 변경(2026-10-19, B단계 구현)**
+  - `api`에 `childRecords`·`childSets`는 두지 않았다. 세트 요약은 아이 항목(`child.sets`)에 이미 있고, 기록 페이지 읽기는 Worker 가 생기는 C단계에서 더한다. `loadMoreRecords`·`sendMissedAsSet`·`applyLevelSuggestion`도 C단계.
+  - `computeStats`의 `week`는 오늘을 포함한 **최근 7일**, `prevWeek`는 그 앞 7일이다(달력의 월~일 주가 아님 — 예전 카드의 ‘최근 7일’과 같은 기준). 반환값에 `window`(days 창 요약)를 더했고 `bySet`은 배열 `[{name, count, avg, last}]`이다. 오늘 카드는 목록(최근 14일)과 상세(최신 200개)를 합친 기록으로 계산한다.
+  - 라우터는 `history.state.idx`로 앱 안에서 연 화면인지 기억해 `router.back(fallback)`이 앱 밖으로 나가지 않게 했다(편집기 주소로 바로 열고 닫아도 세트 탭으로). 하위 탭 전환은 `replace`라 뒤로 가기는 아이 화면 전체를 닫는다.
+  - 상세 캐시 `details[id]`는 `{child, records(최신 200), recordTotal, questions, today, fetchedAt, viewedAt}`. Worker 가 아직 30일 창을 주지 않아 전체를 받아 최신 200개만 둔다.
+  - 저장 직후·해시가 바뀌기 전 사이에 그리기가 편집기를 다시 열지 않도록 `editorDone` 표시를 둔다.
+
 ### 5.5 화면 설계 (IA)
 
 하단 탭 3개: **🏠 오늘 · 🧒 아이들 · ⚙️ 설정**. 상단 바: 앱 이름 ‘매일 영단어 보호자’ + 새로고침 + 마지막 확인 시각.
@@ -247,6 +254,14 @@ parent.js
 
 - **토스트**: `#toast`(role=status) 하나. 저장·전송·오류 결과 3초. 폼 검증 오류는 폼 아래 인라인(`#planStatus #linkStatus #setsStatus #addChildStatus`는 호환을 위해 유지하되 토스트와 같은 문구를 쓴다).
 - **반응형**: 폰 세로 기준. 760px 이상에서는 오늘 카드 2열. 편집기 표는 기존 가로 스크롤.
+
+- **결정 변경(2026-10-19, B단계 구현)**
+  - 보호자 코드는 `GET /family`로 **확인한 뒤에만** 저장한다(틀린 코드·옛 Worker·연결 실패면 저장하지 않고 그 자리에 안내). 확인 응답이 곧 첫 화면 캐시라 코드 → 오늘 카드까지 요청은 1회.
+  - 오늘의 단어 계획 저장 본문은 `{enabled, level, dailyCount, hour}`이고, 제한 시간(`{timeLimitSec}`)과 잠금(`{setsLocked}`)은 각자 바꾸는 즉시 따로 저장한다(설계대로 제한 시간은 설정 탭, 잠금은 세트 탭).
+  - 칸 아래 문구는 호환용 `#planStatus #linkStatus #setsStatus #addChildStatus`에 `#nameStatus #limitStatus #deleteStatus`를 더했다(이름·제한 시간·삭제가 각자 다른 상자에 있어서). 잠금 결과(“잠갔어요”/“잠금을 풀었어요”)는 예전처럼 `#setsStatus`. 문구는 아이별로 기억해 다른 탭을 다녀와도 남는다.
+  - 아이 삭제의 2단계 확인은 confirm 창 대신 이름 입력 칸(`#deleteConfirm`)으로 했다(이름이 정확해야 ‘삭제’가 눌린다).
+  - 공통 스타일은 `shared.css`로 빼지 않고 `parent.css` 하나에 필요한 토큰·편집기 규칙을 복사했다(두 앱 CSS를 합치는 리팩터링은 하지 않음).
+  - ‘아이용 앱 열기’는 새 창(`target=_blank`)으로 연다(보호자 앱 화면을 덮지 않게).
 
 ### 5.6 데이터·저장소·캐시
 
@@ -280,6 +295,10 @@ B단계에서 아이 앱(`index.html`·`quiz.js`·`family.js`·`sets.js`)에서 
 - 보호자 폰에서 ‘아이 기기처럼 보기’(`parentModeOff`)는 없어진다. 대신 설정의 ‘아이용 앱 열기’ 링크(`./`)로 아이 앱을 연다.
 - 갤럭시 래퍼 앱(`android/`)은 `index.html` 주소만 알고 보호자는 쓰지 않으므로 영향 없음.
 
+- **결정 변경(2026-10-19, B단계 구현)**
+  - 이동 스크립트는 body 의 부트스트랩이 아니라 **`<head>` 맨 앞**에 두었다(화면이 그려지기 전). `location.replace` 뒤에도 문서 파싱이 이어져 아이 앱 스크립트가 실행되면 `initFamily`가 옛 보호자 코드를 지울 수 있으므로, `document.write('<plaintext style="display:none">')`로 나머지 문서를 읽지 않게 했다(오류 없이 멈춤).
+  - 이동 조건에 **보호자 코드만 있고 아이로 연결되지 않은 기기**(`daily_vocab_family_v1.parentCode`가 있고 `childId`가 없음)를 더했다. 보호자 모드 이전의 일반 아이콘으로 쓰던 보호자 폰도 코드를 잃지 않고 옮겨진다. 연결된 아이 기기에 남은 보호자 코드(비정상)는 설계대로 아이 앱이 지운다. `?mode=child`로 연 기기도 지운다(보호자 코드가 필요하면 parent.html 에서 다시 입력).
+
 ### 5.9 서비스워커·버전·배포
 
 - `sw.js` SHELL: `./parent.html`, `./shared.js?v=…`, `./editor.js?v=…`, `./parent.js?v=…`, `./parent.css?v=…` 추가. 내비게이션 폴백: 요청 URL 경로가 `parent.html`로 끝나면 `./parent.html`, 아니면 `./index.html`.
@@ -295,6 +314,8 @@ B단계에서 아이 앱(`index.html`·`quiz.js`·`family.js`·`sets.js`)에서 
 - `tests/family.cjs`: 보호자 부분(현재 439~600행)을 삭제하고 아이 기기 흐름만 남긴다. `daily.cjs`의 보호자 계획 폼 부분은 `parent.cjs`로 옮기고, 아이 기기 쪽(카드·풀기·제한 시간 수신)은 남긴다(보호자 코드 대신 가짜 Worker에 plan을 직접 심는다).
 - 아이 앱 테스트(`browser session ai-recognition ten-photos pwa app-update`)는 편집기 추출(A) 뒤에도 그대로 PASS 여야 한다(ID·문구 계약).
 - `node .claude/run-tests.cjs`가 새 파일을 포함하도록 목록 갱신(실행기는 `tests/*.cjs`를 읽는지 확인하고, 아니면 추가).
+
+- **결정 변경(2026-10-19, B단계 구현)**: `tests/parent-sets.cjs`에는 B단계 범위(보내기·보기·수정·미저장 확인·삭제·편집기 주소로 바로 열기)만 넣었다. 틀린 단어로 복습 세트 보내기·오늘의 단어 미리보기 세트로 저장은 C단계에서 더한다. 가짜 Worker 에 `/recognize`·`/define`을 더해 편집기가 보호자 코드로 부르는지 확인한다. 보호자 기본 서버 주소(`AI_SERVER_DEFAULT`)를 라우트로 가로채므로 테스트가 실제로 나가지 않는다.
 
 ### 5.11 2B 알림 · 2C 수준 조절 연결 지점
 
@@ -322,6 +343,7 @@ B단계에서 아이 앱(`index.html`·`quiz.js`·`family.js`·`sets.js`)에서 
 5. 테스트: `tests/parent.cjs`, `tests/parent-sets.cjs` 신설, `family.cjs`·`daily.cjs`에서 보호자 부분 이동, `pwa.cjs`에 parent.html 반응형·오프라인 셸 추가.
 6. 문서: README ‘보호자 폰에서 아이들 기록 보기’·‘오늘의 단어’·‘백업·설치’ 절을 새 화면 기준으로 다시 쓰기, `CLAUDE.md` 화면 구조·ID·문구·파일 구조·테스트 표·버전 체크리스트, `DESIGN.md` 24절 갱신, 메모리.
 - **완료 기준**: 새 테스트 2개 + 기존 9개 PASS. `parent.html`을 열면 코드 입력 → 오늘 카드까지 네트워크 1회(`GET /family`). `index.html`에 `parent-mode`·`child-only`·`editorForChild` 문자열이 없다. 폰 폭(390px)에서 가로 스크롤 없음.
+- **진행 상태(2026-10-19)**: 구현 완료(PR #36, 브랜치 `claude/parent-app-27b8f2`, 머지 대기, 릴리스 `20261018-21`·캐시 v30, Worker 변경 없음). 11개 테스트 PASS(`tests/parent.cjs`가 코드 입력 → 오늘 카드까지 요청 1회를 확인, `pwa.cjs`가 390px 포함 3가지 폭에서 모든 보호자 화면의 가로 스크롤 없음을 확인). `index.html`·`quiz.js`·`family.js`·`sets.js`에 `parent-mode`·`child-only`·`editorForChild`·`isParentMode` 문자열 없음. 커밋은 화면별(setup → today → children/records → sets → daily → settings → questions → 아이 앱 정리 → sw/버전 → 테스트 → 문서). 설계와 다르게 한 결정은 5.4·5.5·5.8·5.10의 ‘결정 변경(2026-10-19, B단계 구현)’.
 
 ### C. Worker 보강과 보호자 기능 — `feat/parent-insights`
 1. Worker: `GET /family/<id>?days&limit`(+`recordCount`·`more`), `GET /family/<id>/records?before&limit`, 테스트.

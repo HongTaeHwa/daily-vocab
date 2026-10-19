@@ -119,14 +119,10 @@ function loadMissed() {
 loadMissed();
 
 // ---- 화면(뷰) 전환 ----
-const VIEWS = ["home", "quiz", "finish", "editor", "lookup", "history", "settings", "family"];
+const VIEWS = ["home", "quiz", "finish", "editor", "lookup", "history", "settings"];
 let currentView = "home";
 function showView(name, options = {}) {
   if (!VIEWS.includes(name)) name = "home";
-  // 보호자 모드(family.js): 아이용 화면(홈·시험·결과·편집·기록) 대신 아이들 화면을 보여 준다.
-  // 보호자가 아이에게 보낼 세트를 만들거나 고칠 때(family.js 의 editorForChild)만 편집 화면을 허용한다.
-  if (typeof isParentMode === "function" && isParentMode() && !sessionRunning && ["home", "quiz", "finish", "editor", "lookup", "history"].includes(name) && !(name === "editor" && window.editorForChild))
-    name = "family";
   if (sessionRunning && name !== "quiz") {
     pauseQuiz();
     return;
@@ -141,7 +137,7 @@ function showView(name, options = {}) {
   }
   for (const v of VIEWS) $(v).classList.toggle("active", v === name);
   document.body.classList.toggle("in-quiz", name === "quiz");
-  for (const [tab, view] of [["tabHome", "home"], ["tabLookup", "lookup"], ["tabHistory", "history"], ["tabFamily", "family"], ["tabSettings", "settings"]]) {
+  for (const [tab, view] of [["tabHome", "home"], ["tabLookup", "lookup"], ["tabHistory", "history"], ["tabSettings", "settings"]]) {
     const active = view === name || (view === "home" && (name === "finish" || name === "editor"));
     $(tab).classList.toggle("active", active);
     $(tab).setAttribute("aria-current", active ? "page" : "false");
@@ -149,7 +145,6 @@ function showView(name, options = {}) {
   if (name === "history") renderHistory();
   if (name === "home") renderHome();
   if (name === "lookup" && typeof renderLookup === "function") renderLookup(); // sets.js (단어 찾기)
-  if (name === "family" && typeof renderFamily === "function") renderFamily(); // family.js (보호자 폰)
   window.scrollTo({ top: 0, behavior: "auto" });
   try { $(name).focus({ preventScroll: true }); } catch {}
 }
@@ -161,7 +156,6 @@ window.addEventListener("popstate", (e) => {
 $("tabHome").addEventListener("click", () => showView("home"));
 $("tabLookup").addEventListener("click", () => showView("lookup"));
 $("tabHistory").addEventListener("click", () => showView("history"));
-$("tabFamily").addEventListener("click", () => showView("family"));
 $("tabSettings").addEventListener("click", () => showView("settings"));
 $("openSettings").addEventListener("click", () => showView("settings"));
 $("seeHistory").addEventListener("click", () => showView("history"));
@@ -657,7 +651,7 @@ document.addEventListener("visibilitychange", () => (document.hidden ? awayStart
 window.addEventListener("blur", awayStart);
 window.addEventListener("focus", awayEnd);
 
-// ---- 문제당 제한 시간: 보호자가 아이들 탭에서 정한 초(family.js의 childTimeLimitSec, 0이면 없음). 시간이 지나면 모름 처리. ----
+// ---- 문제당 제한 시간: 보호자가 보호자 앱에서 정한 초(family.js의 childTimeLimitSec, 0이면 없음). 시간이 지나면 모름 처리. ----
 // 마감은 절대 시각이라 앱 밖에 나가 있어도 시간이 흐른다(인터넷 검색 방지). 채점이 끝나면 멈춘다.
 let questionTimer = null;
 function stopQuestionTimer() {

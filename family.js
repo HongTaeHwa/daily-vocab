@@ -1,18 +1,16 @@
 "use strict";
-// family.js — 가족 기록함 + 오늘의 단어 + 아이 코드 연결.
-// 보호자 폰은 보호자 코드를 저장하면 생기는 ‘아이들’ 탭에서 아이를 만들고(6자리 아이 코드·전용 링크), 아이별 기록을 보고, 오늘의 단어 계획을 정한다.
+// family.js — 아이 기기의 가족 기록함 + 오늘의 단어 + 아이 코드 연결.
+// 보호자는 보호자 앱(parent.html · parent.js)에서 아이를 만들고(6자리 아이 코드·전용 링크), 아이별 기록을 보고, 오늘의 단어·제한 시간·세트 잠금을 정한다.
 // 아이 기기(아이폰·태블릿)는 아이 코드나 전용 링크(?child=코드)로 연결되어 시험을 마칠 때마다 압축 기록을 보내고 매일 ‘오늘의 단어’를 받는다.
 // 같은 코드를 넣은 기기는 한 아이로 묶인다. shared.js·quiz.js 다음, editor.js·sets.js 앞에 불러오고 sets.js가 마지막에 initFamily()를 부른다.
 // 세트는 아이에게 속한다: 연결된 기기는 POST /sets/<childId>로 세트를 올리고 다른 기기·보호자가 바꾼 것을 받아 같은 아이의 기기가 항상 같은 세트를 본다(아래 ‘세트 동기화’).
 // 기록 복원: 새 기기나 다시 설치한 앱은 기록이 비어 있으므로 GET /records/<childId>로 서버 사본(압축 기록)을 내려받아 ‘요약 기록’(restored: true)으로 기록 탭에 넣는다(아래 ‘기록 복원’).
-// 저장 키 daily_vocab_family_v1 = {childId, childName, joinCode, pendingCode, deviceId, sendEnabled, lastSyncAt, lastError, pending:[기록 id], parentCode,
+// 저장 키 daily_vocab_family_v1 = {childId, childName, joinCode, pendingCode, deviceId, sendEnabled, lastSyncAt, lastError, pending:[기록 id],
 //        setsAcked:{세트 id: 수정 시각}, setsDeleted:[{id, deletedAt}], setsSyncedAt, setsError, restoreCheckedAt, restoreError,
 //        childGone(보호자가 서버에서 지운 아이: 연결 해제 → 새 코드로 다시 연결할 때까지 서버 요청 중단)}
 //        daily_vocab_daily_v1  = {childId, date, words, level, note, fetchedAt, result?, disabled?, lastCheckedAt, lastError?}
-// 보호자 코드·아이 코드·아이 이름은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다.
+// 아이 코드·아이 이름은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다. 옛 보호자 모드가 이 키에 두던 parentCode·parentModeOff 는 보호자 앱으로 옮겨 갔고, 남아 있으면 지운다(initFamily).
 const FAMILY_KEY = "daily_vocab_family_v1";
-const MODE_KEY = "daily_vocab_mode_v1"; // "parent": 보호자 전용 아이콘(parent.html → ?mode=parent)으로 설치된 기기
-const FAMILY_CACHE_KEY = "daily_vocab_family_cache_v1";
 const DAILY_KEY = "daily_vocab_daily_v1";
 const FAMILY_BATCH = 50; // 한 번에 보내는 기록 수 (Worker 상한 100)
 const FAMILY_TIMEOUT_MS = 20000;
@@ -21,10 +19,8 @@ const FAMILY_MISSED_LIMIT = 200; // 기록 하나에 담는 틀린 단어 수 (W
 const ANCHOR_LIMIT = 60; // 교재 앵커: 최근 세트에서 보내는 영어 단어 수 (Worker 상한과 같음)
 const DAILY_CHECK_MS = 10 * 60 * 1000; // 오늘 것이 없거나 꺼져 있을 때, 또는 다른 기기의 완료를 확인할 때 다시 물어보는 간격
 const JOIN_CODE_PATTERN = /^\d{6}$/;
-// shared.js 의 서식·날짜·계획 상수. $·setFeedback·modeLabels 는 quiz.js, AI_SERVER_DEFAULT·normalizeServer·WORD_PATTERN 은 sets.js 머리에서 꺼낸다.
-const { tidy, formatCode, hourLabel, relativeTime, durationText, dayKey, pctOf, WEEKDAYS, PLAN_LEVELS, TIME_LIMIT_CHOICES, planDefaults } = Shared;
-const appBaseUrl = () => new URL("./", location.href).href;
-const linkFor = (code) => appBaseUrl() + "?child=" + code;
+// shared.js 의 서식. $·setFeedback·modeLabels 는 quiz.js, AI_SERVER_DEFAULT·normalizeServer·WORD_PATTERN 은 sets.js 머리에서 꺼낸다(sets.js 의 clean 도 tidy 를 쓴다).
+const { tidy, formatCode } = Shared;
 
 function readFamily() {
   let saved = null;
@@ -43,8 +39,6 @@ function readFamily() {
     lastSyncAt: typeof f.lastSyncAt === "string" ? f.lastSyncAt : "",
     lastError: typeof f.lastError === "string" ? f.lastError : "",
     pending: Array.isArray(f.pending) ? f.pending.filter((x) => typeof x === "string").slice(0, 5000) : [],
-    parentCode: typeof f.parentCode === "string" ? f.parentCode : "",
-    parentModeOff: f.parentModeOff === true, // 보호자 코드가 있어도 아이용 화면을 쓰고 싶을 때(설정의 ‘아이 기기처럼 보기’)
     // 세트 동기화: 서버가 아는 세트 id → 수정 시각(이와 다르면 다시 올림), 아직 못 보낸 삭제 묘비, 마지막 동기화·오류
     setsAcked:
       f.setsAcked && typeof f.setsAcked === "object" && !Array.isArray(f.setsAcked)
@@ -66,41 +60,6 @@ function readFamily() {
   };
 }
 let family = readFamily();
-// ---- 보호자 모드: 보호자 코드가 있거나 보호자 아이콘으로 설치된 기기는 아이들 화면이 첫 화면이고 홈·시험·기록 탭이 숨는다 ----
-let appMode = "";
-try {
-  appMode = localStorage.getItem(MODE_KEY) === "parent" ? "parent" : "";
-} catch {}
-// ?mode=parent(보호자 아이콘 설치)·?mode=child 를 읽어 기억하고 주소에서 지운다.
-function modeFromUrl() {
-  try {
-    const u = new URL(location.href);
-    const m = u.searchParams.get("mode");
-    if (!m) return "";
-    u.searchParams.delete("mode");
-    history.replaceState(history.state, "", u.pathname + u.search + u.hash);
-    return m;
-  } catch {
-    return "";
-  }
-}
-function isParentMode() {
-  return (appMode === "parent" || Boolean(family.parentCode)) && !family.parentModeOff;
-}
-// 모드에 따라 탭·문구·아이용 요소를 토글한다. 화면 이동은 하지 않는다(모드가 바뀌는 곳에서 showView).
-function applyParentMode() {
-  const on = isParentMode();
-  document.body.classList.toggle("parent-mode", on);
-  $("tabHome").classList.toggle("hidden", on);
-  $("tabLookup").classList.toggle("hidden", on);
-  $("tabHistory").classList.toggle("hidden", on);
-  $("tabFamily").classList.toggle("hidden", !(on || family.parentCode));
-  $("brandTagline").textContent = on ? "보호자 · 아이들 관리" : "사진으로 만드는 나만의 단어장";
-  const parentDevice = appMode === "parent" || Boolean(family.parentCode);
-  $("parentBox").classList.toggle("hidden", !parentDevice); // 아이 기기에는 보호자 코드 칸을 보이지 않는다(parent.html로 연 기기에서만)
-  $("parentModeRow").classList.toggle("hidden", !parentDevice);
-  $("parentModeOff").checked = Boolean(family.parentModeOff);
-}
 // quiz.js 가 문제마다 부른다: 보호자가 정한 문제당 제한 시간(초). 연결되지 않은 기기는 0.
 function childTimeLimitSec() {
   return isLinked() ? family.settings.timeLimitSec : 0;
@@ -168,9 +127,9 @@ function ensureDeviceId() {
 function familyServer() {
   return normalizeServer(savedAi()?.server || AI_SERVER_DEFAULT);
 }
-// 기록 보내기·연결·오늘의 단어 받기는 가족 코드(AI 접속 코드)로, 없으면 보호자 코드로 보낸다.
+// 기록 보내기·연결·오늘의 단어 받기는 가족 코드(AI 접속 코드)로 보낸다.
 function syncPasscode() {
-  return aiConfig()?.passcode || family.parentCode || "";
+  return aiConfig()?.passcode || "";
 }
 // 요청·오류 문구는 shared.js apiRequest/describeApiError(오류는 ApiError{status, code, message}).
 async function familyRequest(path, { method = "POST", body, passcode, timeout = FAMILY_TIMEOUT_MS } = {}) {
@@ -431,7 +390,7 @@ function linkCodeFromUrl() {
 async function joinChild(code) {
   code = String(code || "").replace(/\D/g, "");
   if (!JOIN_CODE_PATTERN.test(code)) {
-    setFeedback($("familyStatus"), "bad", "아이 코드는 숫자 6자리예요. 보호자 폰의 아이들 탭에서 확인하세요.");
+    setFeedback($("familyStatus"), "bad", "아이 코드는 숫자 6자리예요. 보호자 앱의 ‘아이들’에서 확인하세요.");
     return false;
   }
   const passcode = syncPasscode();
@@ -475,7 +434,7 @@ async function joinChild(code) {
     setFeedback(
       $("familyStatus"),
       "bad",
-      e.code === "unknown_code" ? "그 아이 코드를 찾을 수 없어요. 보호자 폰의 아이들 탭에서 코드를 다시 확인해 주세요." : "연결 실패: " + e.message,
+      e.code === "unknown_code" ? "그 아이 코드를 찾을 수 없어요. 보호자 앱의 ‘아이들’에서 코드를 다시 확인해 주세요." : "연결 실패: " + e.message,
     );
     return false;
   } finally {
@@ -744,7 +703,7 @@ $("startDaily").onclick = () => {
   newSession(false, words, { setId: "daily:" + daily.date, setName: "오늘의 단어 " + dailyLabel(daily.date) }, { rangeLabel: "오늘의 단어", daily: daily.date });
 };
 
-// ---- 설정 화면(아이 기기 + 보호자 폰) ----
+// ---- 설정 화면(가족 기록함) ----
 function renderFamilySettings(progress) {
   const linked = isLinked();
   applySetsLock();
@@ -795,9 +754,9 @@ function renderFamilySettings(progress) {
     if (!linked)
       text = family.pendingCode
         ? `아이 코드 ${formatCode(family.pendingCode)}을(를) 연결하려면 먼저 위의 ‘보호자 설정 · AI 연결’에서 접속 코드를 저장하세요.`
-        : "보호자 폰의 아이들 탭에서 만든 아이 코드 6자리를 넣고 ‘연결’을 누르세요. 아이 전용 링크를 열어도 돼요.";
+        : "보호자 앱의 ‘아이들’에서 만든 아이 코드 6자리를 넣고 ‘연결’을 누르세요. 아이 전용 링크를 열어도 돼요.";
     else if (family.childGone) {
-      text = `보호자가 이 아이(${family.childName})를 서버에서 지웠어요. 아래 ‘연결 해제’를 누른 뒤, 보호자 폰의 아이들 탭에서 새로 만든 아이 코드로 다시 연결하세요. 이 기기의 세트와 기록은 그대로 남고, 다시 연결하면 기록도 함께 올라가요.`;
+      text = `보호자가 이 아이(${family.childName})를 서버에서 지웠어요. 아래 ‘연결 해제’를 누른 뒤, 보호자 앱의 ‘아이들’에서 새로 만든 아이 코드로 다시 연결하세요. 이 기기의 세트와 기록은 그대로 남고, 다시 연결하면 기록도 함께 올라가요.`;
       type = "bad";
     } else if (!family.sendEnabled) text = "연결은 되어 있지만 보내기가 꺼져 있어요. 스위치를 켜고 저장하면 시험을 마칠 때마다 기록을 보내요.";
     else if (!syncPasscode()) {
@@ -814,9 +773,6 @@ function renderFamilySettings(progress) {
     }
   }
   setFeedback($("familyStatus"), type, text);
-  $("parentState").textContent = family.parentCode ? "보호자 코드 저장됨" : "";
-  $("clearParent").disabled = !family.parentCode;
-  applyParentMode();
 }
 $("saveFamily").onclick = () => {
   if (!isLinked()) return;
@@ -846,807 +802,14 @@ $("syncNow").onclick = () => {
   flushFamilySync({ force: true });
   syncSets({ force: true });
 };
-// 보호자 코드 저장(설정의 보호자 폰 칸과 보호자 모드 첫 화면이 함께 쓴다). 저장되면 보호자 모드로 바뀌고 아이들 화면으로 간다.
-async function saveParentCode(input, button, status) {
-  const code = input.value.trim();
-  if (code.length < 4) {
-    setFeedback(status, "bad", "보호자 코드를 4자 이상 입력하세요.");
-    return;
-  }
-  family.parentCode = code;
-  family.parentModeOff = false;
-  if (!writeFamily()) {
-    setFeedback(status, "bad", "저장 실패: 브라우저 저장 공간을 확인하세요.");
-    return;
-  }
-  input.value = "";
-  renderFamilySettings();
-  if (typeof renderAiSettings === "function") renderAiSettings(); // 보호자 코드로 사진 인식도 쓸 수 있다
-  setFeedback(status, "info", "저장했어요. 아이들 기록을 확인하는 중…");
-  button.disabled = true;
-  try {
-    const data = await familyRequest("/family", { method: "GET", passcode: code });
-    cacheFamily(data);
-    setFeedback(status, "good", `연결 성공 · 등록된 아이 ${familyData.children.length}명. 보호자 모드로 바뀌었어요.`);
-    showView("family");
-  } catch (e) {
-    setFeedback(status, "bad", "연결 실패: " + e.message);
-    if (currentView === "family") renderFamily();
-  } finally {
-    button.disabled = false;
-  }
-}
-$("saveParent").onclick = () => saveParentCode($("parentCode"), $("saveParent"), $("parentStatus"));
-$("saveParentStart").onclick = () => saveParentCode($("parentCodeStart"), $("saveParentStart"), $("parentSetupStatus"));
-$("parentCodeStart").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") $("saveParentStart").click();
-});
-$("parentModeOff").onchange = () => {
-  family.parentModeOff = $("parentModeOff").checked;
-  writeFamily();
-  applyParentMode();
-  showView(family.parentModeOff ? "home" : "family");
-};
-$("clearParent").onclick = () => {
-  family.parentCode = "";
-  family.parentModeOff = false;
-  writeFamily();
-  if (typeof renderAiSettings === "function") renderAiSettings();
-  familyData = null;
-  try {
-    localStorage.removeItem(FAMILY_CACHE_KEY);
-  } catch {}
-  renderFamilySettings();
-  setFeedback($("parentStatus"), "info", appMode === "parent" ? "보호자 코드를 삭제했어요. 아이들 화면에서 다시 입력할 수 있어요." : "보호자 코드를 삭제했어요. ‘아이들’ 탭이 사라져요.");
-  if (currentView === "family") showView(isParentMode() ? "family" : "settings");
-  else if (isParentMode()) renderFamily();
-};
 
-// ---- 보호자 폰: 아이들 화면 ----
-let familyData = null; // 마지막 /family 응답 {children, serverTime, fetchedAt}
-let familyDetail = null; // 열어 둔 아이 {child, records, today}
-let familyLoading = false;
-function cacheFamily(data) {
-  familyData = { children: Array.isArray(data?.children) ? data.children : [], serverTime: data?.serverTime || "", fetchedAt: new Date().toISOString() };
-  try {
-    localStorage.setItem(FAMILY_CACHE_KEY, JSON.stringify(familyData));
-  } catch {}
-}
-function loadFamilyCache() {
-  if (familyData) return;
-  try {
-    const cached = JSON.parse(localStorage.getItem(FAMILY_CACHE_KEY) || "null");
-    if (cached && Array.isArray(cached.children)) familyData = cached;
-  } catch {}
-}
-// 목록 캐시 안의 아이 하나를 바꾼다(이름·코드·기기 갱신 뒤).
-function updateCachedChild(child) {
-  if (!familyData) return;
-  cacheFamily({ ...familyData, children: familyData.children.map((c) => (c.id === child.id ? { ...c, ...child, records: c.records, today: child.today ?? c.today } : c)) });
-}
-async function refreshFamily() {
-  if (!family.parentCode || familyLoading) return;
-  familyLoading = true;
-  $("refreshFamily").disabled = true;
-  setFeedback($("familyLoadStatus"), "info", "아이들 기록을 불러오는 중…");
-  try {
-    cacheFamily(await familyRequest("/family", { method: "GET", passcode: family.parentCode }));
-    renderChildren();
-    setFeedback($("familyLoadStatus"), "info", "방금 확인했어요 · " + new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }));
-  } catch (e) {
-    setFeedback($("familyLoadStatus"), "bad", e.message + (familyData ? " · 마지막으로 확인한 내용을 보여 줘요." : ""));
-  } finally {
-    familyLoading = false;
-    $("refreshFamily").disabled = false;
-  }
-}
-// showView("family") 가 부른다: 보호자 코드가 없으면 코드 입력 화면만, 있으면 캐시를 먼저 그리고 새로 불러온다.
-function renderFamily() {
-  const hasCode = Boolean(family.parentCode);
-  $("parentSetup").classList.toggle("hidden", hasCode);
-  $("familyMain").classList.toggle("hidden", !hasCode);
-  $("childrenCard").classList.toggle("hidden", !hasCode);
-  $("childDetail").classList.add("hidden");
-  familyDetail = null;
-  if (!hasCode) {
-    setFeedback($("parentSetupStatus"), "info", "");
-    return;
-  }
-  loadFamilyCache();
-  renderChildren();
-  refreshFamily();
-}
-// 오늘 한눈에: 아이별 한 줄(오늘 시험·오늘의 단어·이번 주·경고). 누르면 상세.
-function renderOverview() {
-  const box = $("familyOverview");
-  box.textContent = "";
-  if (!familyData) {
-    box.textContent = "아직 불러온 기록이 없어요.";
-    return;
-  }
-  if (!familyData.children.length) {
-    box.textContent = "아직 등록된 아이가 없어요. 아래 ‘아이 추가’에서 아이를 만들어 주세요.";
-    return;
-  }
-  for (const c of familyData.children) {
-    const info = describeChild(c);
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "overview-row";
-    row.addEventListener("click", () => openChild(c));
-    const name = document.createElement("span");
-    name.className = "ov-name";
-    name.textContent = "🧒 " + c.name;
-    const main = document.createElement("span");
-    main.className = "ov-main";
-    const todayAvg = info.todays.length ? Math.round(info.todays.reduce((s, r) => s + pctOf(r), 0) / info.todays.length) : null;
-    const dailyText = planOf(c).enabled
-      ? c.today?.completed
-        ? ` · 오늘의 단어 ✅ ${c.today.completed.correct}/${c.today.completed.total}`
-        : c.today?.exists
-          ? " · 오늘의 단어 📬 아직"
-          : " · 오늘의 단어 –"
-      : "";
-    main.textContent = (info.todays.length ? `오늘 시험 ✅ ${info.todays.length}회 · ${todayAvg}점` : "오늘 시험 ⬜ 아직") + dailyText;
-    const sub = document.createElement("span");
-    sub.className = "ov-sub";
-    sub.textContent = info.week.length ? `이번 주 ${info.week.length}회 · 평균 ${info.weekAvg}점 · 마지막 ${info.latest ? relativeTime(info.latest.completedAt) : "-"}` : "이번 주 시험 없음";
-    const warn = document.createElement("span");
-    warn.className = "ov-warn";
-    const awayToday = info.todays.reduce((s, r) => s + (r.awayCount || 0), 0);
-    const timeoutsToday = info.todays.reduce((s, r) => s + (r.timeouts || 0), 0);
-    const warnings = [awayToday ? `⚠️ 화면 이탈 ${awayToday}회` : "", timeoutsToday ? `⏱ 시간 초과 ${timeoutsToday}개` : ""].filter(Boolean);
-    warn.textContent = warnings.join(" · ");
-    warn.classList.toggle("hidden", !warnings.length);
-    row.append(name, main, sub, warn);
-    box.append(row);
-  }
-}
-// 자주 틀린 단어: 최근 2주 기록의 틀린 단어를 세어 상위 10개.
-function missedTop(records, days = 14) {
-  const since = Date.now() - days * 86400000;
-  const counts = new Map();
-  for (const r of records) {
-    if (!(Date.parse(r.completedAt) >= since)) continue;
-    for (const m of Array.isArray(r.missed) ? r.missed : []) {
-      const key = String(m.en || "").toLowerCase();
-      if (!key) continue;
-      const entry = counts.get(key) || { en: m.en, ko: m.ko, n: 0 };
-      entry.n++;
-      counts.set(key, entry);
-    }
-  }
-  return [...counts.values()].sort((a, b) => b.n - a.n || a.en.localeCompare(b.en)).slice(0, 10);
-}
-function renderMissedTop(records) {
-  const box = $("missedTop");
-  box.textContent = "";
-  const top = missedTop(records);
-  if (!top.length) {
-    box.textContent = "최근 2주 동안 틀린 단어가 없어요.";
-    return;
-  }
-  for (const w of top) {
-    const chip = document.createElement("span");
-    chip.className = "chip";
-    const en = document.createElement("span");
-    en.textContent = w.en;
-    const n = document.createElement("b");
-    n.textContent = `${w.n}회`;
-    const ko = document.createElement("small");
-    ko.textContent = w.ko || "";
-    chip.append(en, n, ko);
-    box.append(chip);
-  }
-}
-// 오늘·최근 7일은 이 폰의 현지 날짜로 센다(dayKey, shared.js).
-function planOf(child) {
-  return planDefaults(child?.plan);
-}
-const timeLimitLabel = (s) => (s ? `${s}초` : "없음");
-function dailyStatusText(c) {
-  const plan = planOf(c);
-  if (!plan.enabled) return "오늘의 단어: 꺼짐";
-  const t = c.today;
-  if (t?.completed) return `오늘의 단어 ✅ ${t.completed.correct} / ${t.completed.total}`;
-  if (t?.exists) return "오늘의 단어 📬 도착 · 아직 안 풀었어요";
-  return `오늘의 단어: 아직 없음 (${hourLabel(plan.hour)}에 만들어요)`;
-}
-function devicesSummary(devices) {
-  const counts = new Map();
-  for (const d of Object.values(devices || {})) counts.set(d.label || "기기", (counts.get(d.label || "기기") || 0) + 1);
-  return [...counts].map(([label, n]) => `${label} ${n}`).join(" · ");
-}
-function describeChild(c) {
-  const records = (Array.isArray(c.records) ? c.records : []).slice().sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)));
-  const days = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date();
-    d.setHours(12, 0, 0, 0);
-    d.setDate(d.getDate() - i);
-    const key = dayKey(d);
-    const mine = records.filter((r) => dayKey(r.completedAt) === key);
-    days.push({ key, weekday: WEEKDAYS[d.getDay()], count: mine.length, avg: mine.length ? Math.round(mine.reduce((s, r) => s + pctOf(r), 0) / mine.length) : null });
-  }
-  const week = records.filter((r) => days.some((d) => d.key === dayKey(r.completedAt)));
-  return {
-    records,
-    todays: records.filter((r) => dayKey(r.completedAt) === days[6].key),
-    days,
-    week,
-    weekAvg: week.length ? Math.round(week.reduce((s, r) => s + pctOf(r), 0) / week.length) : null,
-    latest: records[0] || null,
-  };
-}
-function renderChildren() {
-  renderOverview();
-  const list = $("childrenList");
-  list.textContent = "";
-  if (!familyData) {
-    list.textContent = "아직 불러온 기록이 없어요.";
-    return;
-  }
-  if (!familyData.children.length) {
-    list.textContent = "아직 등록된 아이가 없어요. 아래 ‘아이 추가’에 이름을 적어 아이를 만들고, 받은 아이 코드를 아이 기기에 넣어 주세요.";
-    return;
-  }
-  for (const c of familyData.children) {
-    const info = describeChild(c);
-    const card = document.createElement("article");
-    card.className = "child-card";
-    const head = document.createElement("div");
-    head.className = "child-head";
-    const name = document.createElement("strong");
-    name.className = "child-name";
-    name.textContent = "🧒 " + c.name;
-    const today = document.createElement("span");
-    today.className = "pill " + (info.todays.length ? "ok" : "warn");
-    today.textContent = info.todays.length ? `오늘 ✅ ${info.todays.length}회` : "오늘 아직 안 했어요";
-    head.append(name, today);
-    const last = document.createElement("p");
-    last.className = "muted";
-    last.textContent = info.latest
-      ? `마지막 시험: ${relativeTime(info.latest.completedAt)} · ${info.latest.setName} · ${pctOf(info.latest)}점${info.latest.partial ? " (중단)" : ""}`
-      : "아직 시험 기록이 없어요.";
-    const devices = document.createElement("p");
-    devices.className = "muted device-line";
-    const summary = devicesSummary(c.devices);
-    devices.textContent = summary ? "연결 기기: " + summary : c.joinCode ? `아직 연결된 기기 없음 · 아이 코드 ${formatCode(c.joinCode)}` : "연결된 기기 정보 없음";
-    const questionLine = document.createElement("p");
-    questionLine.className = "muted";
-    questionLine.textContent = c.questionCount ? `📷 물어본 문제 ${c.questionCount}개` + (c.lastQuestionAt ? ` · 마지막 ${relativeTime(c.lastQuestionAt)}` : "") : "";
-    questionLine.classList.toggle("hidden", !c.questionCount);
-    const dailyLine = document.createElement("p");
-    dailyLine.className = "muted daily-line";
-    dailyLine.textContent = dailyStatusText(c);
-    const awayToday = info.todays.reduce((s, r) => s + (r.awayCount || 0), 0);
-    const awayLine = document.createElement("p");
-    awayLine.className = "away-flag";
-    awayLine.textContent = awayToday ? `⚠️ 오늘 화면 이탈 ${awayToday}회 (문제 중 앱이 가려짐)` : "";
-    awayLine.classList.toggle("hidden", !awayToday);
-    const dots = document.createElement("div");
-    dots.className = "week-dots";
-    dots.setAttribute("aria-label", "최근 7일 시험");
-    for (const d of info.days) {
-      const day = document.createElement("span");
-      day.className = "day" + (d.count ? " done" : "") + (d.key === info.days[6].key ? " today" : "");
-      const weekday = document.createElement("small");
-      weekday.textContent = d.weekday;
-      const mark = document.createElement("b");
-      mark.textContent = d.count ? `${d.avg}점` : "·";
-      day.title = d.count ? `${d.key}: ${d.count}회 · 평균 ${d.avg}점` : `${d.key}: 시험 없음`;
-      day.append(weekday, mark);
-      dots.append(day);
-    }
-    const week = document.createElement("p");
-    week.className = "muted";
-    week.textContent = info.week.length ? `최근 7일 ${info.week.length}회 · 평균 ${info.weekAvg}점` : "최근 7일 동안 시험을 보지 않았어요.";
-    const actions = document.createElement("div");
-    actions.className = "actionbar";
-    const detail = document.createElement("button");
-    detail.type = "button";
-    detail.className = "btn small";
-    detail.textContent = summary ? "기록 자세히 보기" : "연결 코드·설정 보기";
-    detail.addEventListener("click", () => openChild(c));
-    actions.append(detail);
-    card.append(head, last, devices, dailyLine, questionLine, awayLine, dots, week, actions);
-    list.append(card);
-  }
-}
-$("addChild").onclick = async () => {
-  const name = tidy($("newChildName").value).slice(0, 20);
-  if (!name) {
-    setFeedback($("addChildStatus"), "bad", "아이 이름을 적어 주세요.");
-    return;
-  }
-  $("addChild").disabled = true;
-  setFeedback($("addChildStatus"), "info", "아이를 만드는 중…");
-  try {
-    const data = await familyRequest("/family/children", { method: "POST", body: { name }, passcode: family.parentCode });
-    const child = { ...data.child, records: [], today: null };
-    $("newChildName").value = "";
-    cacheFamily({ ...(familyData || { children: [] }), children: [...(familyData?.children || []), child] });
-    renderChildren();
-    setFeedback($("addChildStatus"), "good", `‘${child.name}’을(를) 만들었어요. 아이 코드 ${formatCode(child.joinCode)} · 아래에서 링크를 복사해 아이 기기로 보내세요.`);
-    openChild(child);
-  } catch (e) {
-    setFeedback($("addChildStatus"), "bad", "만들지 못했어요: " + e.message);
-  } finally {
-    $("addChild").disabled = false;
-  }
-};
-async function openChild(c) {
-  const summaryToday = c.today ? { date: c.today.date, exists: c.today.exists, words: [], note: "", completed: c.today.completed || null } : null;
-  familyDetail = { child: c, records: Array.isArray(c.records) ? c.records : [], today: summaryToday };
-  $("childDetail").classList.remove("hidden");
-  $("childDetailTitle").textContent = "🧒 " + c.name;
-  renderLinkBox(c);
-  renderChildSets(c);
-  renderPlan(c, summaryToday);
-  setFeedback($("planStatus"), "info", "");
-  setFeedback($("linkStatus"), "info", "");
-  setFeedback($("setsStatus"), "info", "");
-  renderChildRecords("전체 기록을 불러오는 중…");
-  renderChildQuestions(null);
-  $("childDetail").scrollIntoView({ behavior: "smooth", block: "start" });
-  try {
-    const data = await familyRequest("/family/" + encodeURIComponent(c.id), { method: "GET", passcode: family.parentCode });
-    if (familyDetail?.child.id !== c.id) return;
-    familyDetail = { child: data.child || c, records: Array.isArray(data.records) ? data.records : [], today: data.today || summaryToday, questions: Array.isArray(data.questions) ? data.questions : [] };
-    renderChildQuestions(familyDetail.questions);
-    renderLinkBox(familyDetail.child);
-    renderChildSets(familyDetail.child);
-    renderPlan(familyDetail.child, familyDetail.today);
-    renderChildRecords();
-  } catch (e) {
-    if (familyDetail?.child.id === c.id) renderChildRecords("전체 기록을 불러오지 못했어요: " + e.message + " · 최근 기록만 보여 줘요.");
-  }
-}
-function renderLinkBox(child) {
-  const code = JOIN_CODE_PATTERN.test(child.joinCode || "") ? child.joinCode : "";
-  $("childCodeText").textContent = code ? formatCode(code) : "(없음 · ‘코드 새로 만들기’를 누르세요)";
-  $("childLinkText").textContent = code ? linkFor(code) : "";
-  $("copyLink").disabled = !code;
-  $("copyCode").disabled = !code;
-  $("renameChild").value = child.name || "";
-  const devices = Object.values(child.devices || {}).sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)));
-  $("deviceList").textContent = devices.length
-    ? "연결된 기기: " + devices.map((d) => `${d.label || "기기"} (${relativeTime(d.lastSeenAt)})`).join(" · ")
-    : "아직 연결된 기기가 없어요. 아이 기기에서 코드를 넣거나 링크를 열어 주세요.";
-}
-async function copyText(text, label) {
-  try {
-    await navigator.clipboard.writeText(text);
-    setFeedback($("linkStatus"), "good", `${label}을(를) 복사했어요. 카톡 등으로 아이 기기에 보내 주세요.`);
-  } catch {
-    setFeedback($("linkStatus"), "info", `${label}: ${text} (길게 눌러 복사하세요)`);
-  }
-}
-$("copyLink").onclick = () => familyDetail?.child.joinCode && copyText(linkFor(familyDetail.child.joinCode), "아이 전용 링크");
-$("copyCode").onclick = () => familyDetail?.child.joinCode && copyText(familyDetail.child.joinCode, "아이 코드");
-$("regenCode").onclick = async () => {
-  const c = familyDetail?.child;
-  if (!c) return;
-  if (!confirm("아이 코드를 새로 만들면 옛 코드와 옛 링크로는 더 연결할 수 없어요. 이미 연결된 기기는 그대로예요. 새로 만들까요?")) return;
-  $("regenCode").disabled = true;
-  try {
-    const data = await familyRequest("/family/" + encodeURIComponent(c.id) + "/code", { method: "POST", body: {}, passcode: family.parentCode });
-    familyDetail.child = { ...c, ...(data.child || {}) };
-    updateCachedChild(familyDetail.child);
-    renderLinkBox(familyDetail.child);
-    renderChildren();
-    setFeedback($("linkStatus"), "good", `새 아이 코드 ${formatCode(familyDetail.child.joinCode)}을(를) 만들었어요.`);
-  } catch (e) {
-    setFeedback($("linkStatus"), "bad", "코드를 만들지 못했어요: " + e.message);
-  } finally {
-    $("regenCode").disabled = false;
-  }
-};
-$("saveChildName").onclick = async () => {
-  const c = familyDetail?.child;
-  if (!c) return;
-  const name = tidy($("renameChild").value).slice(0, 20);
-  if (!name) {
-    setFeedback($("linkStatus"), "bad", "이름을 적어 주세요.");
-    return;
-  }
-  $("saveChildName").disabled = true;
-  try {
-    const data = await familyRequest("/family/" + encodeURIComponent(c.id) + "/name", { method: "POST", body: { name }, passcode: family.parentCode });
-    familyDetail.child = { ...c, ...(data.child || {}), name: data.child?.name || name };
-    updateCachedChild(familyDetail.child);
-    $("childDetailTitle").textContent = "🧒 " + familyDetail.child.name;
-    renderLinkBox(familyDetail.child);
-    renderChildren();
-    setFeedback($("linkStatus"), "good", `이름을 ‘${familyDetail.child.name}’(으)로 바꿨어요. 아이 기기에는 다음 전송 때 반영돼요.`);
-  } catch (e) {
-    setFeedback($("linkStatus"), "bad", "이름을 바꾸지 못했어요: " + e.message);
-  } finally {
-    $("saveChildName").disabled = false;
-  }
-};
-function renderChildRecords(note) {
-  const { child, records } = familyDetail;
-  const sorted = records.slice().sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)));
-  const avg = sorted.length ? Math.round(sorted.reduce((s, r) => s + pctOf(r), 0) / sorted.length) : 0;
-  const setCount = Array.isArray(child.sets) ? child.sets.length : 0;
-  $("childDetailSummary").textContent = `시험 ${sorted.length}회` + (sorted.length ? ` · 평균 ${avg}점` : "") + ` · 세트 ${setCount}개` + (note ? " · " + note : "");
-  renderMissedTop(sorted);
-  const list = $("childRecords");
-  list.textContent = "";
-  if (!sorted.length) {
-    list.textContent = "아직 시험 기록이 없어요.";
-    return;
-  }
-  for (const r of sorted) {
-    const entry = document.createElement("article");
-    entry.className = "history-entry";
-    const head = document.createElement("div");
-    head.className = "history-head";
-    const score = document.createElement("span");
-    score.className = "history-score";
-    score.textContent = `${r.correct} / ${r.total} · ${pctOf(r)}점${r.partial ? " · 중단" : ""}${r.daily ? " · 📬 오늘의 단어" : ""}${r.timeouts ? ` · ⏱ 시간 초과 ${r.timeouts}개` : ""}${r.aiPass ? ` · 🤖 AI 인정 ${r.aiPass}개` : ""}`;
-    head.append(score);
-    const meta = document.createElement("p");
-    meta.className = "history-meta";
-    const duration = durationText(r.activeMs);
-    meta.textContent = `${new Date(r.completedAt).toLocaleString("ko-KR")} · ${r.setName} · ${modeLabels[r.mode] || r.mode} · ${r.range}` + (duration ? ` · ${duration}` : "");
-    entry.append(head, meta);
-    if (r.awayCount) {
-      const away = document.createElement("p");
-      away.className = "away-flag";
-      away.textContent = `⚠️ 문제 중 화면 이탈 ${r.awayCount}회 · 총 ${Math.round((r.awayMs || 0) / 1000)}초 (앱이 가려지거나 다른 앱으로 나감)`;
-      entry.append(away);
-    }
-    const missed = Array.isArray(r.missed) ? r.missed : [];
-    if (missed.length) {
-      const details = document.createElement("details"), summary = document.createElement("summary"), words = document.createElement("p");
-      summary.textContent = `틀린 단어 ${missed.length}개 보기`;
-      words.textContent = missed.map((m) => `${m.en} — ${m.ko}${m.unknown ? " [모름]" : ""}`).join(" · ");
-      details.append(summary, words);
-      entry.append(details);
-    } else {
-      const perfect = document.createElement("p");
-      perfect.className = "muted";
-      perfect.textContent = "틀린 단어 없음 🎉";
-      entry.append(perfect);
-    }
-    list.append(entry);
-  }
-}
-// ---- 보호자 폰: 아이가 AI 선생님에게 물어본 문제(요약만, 사진 없음) ----
-const TUTOR_KIND_TEXT = { explain: "풀이 설명", translate: "해석", grammar: "어법 설명", check: "내 답 확인", ask: "직접 질문" };
-function renderChildQuestions(questions) {
-  const box = $("childQuestions");
-  box.textContent = "";
-  if (!questions) {
-    $("childQuestionCount").textContent = `${familyDetail?.child?.questionCount || 0}개`;
-    box.textContent = "불러오는 중…";
-    return;
-  }
-  $("childQuestionCount").textContent = `${familyDetail?.child?.questionCount || questions.length}개`;
-  if (!questions.length) {
-    box.textContent = "아직 물어본 문제가 없어요.";
-    return;
-  }
-  for (const q of questions) {
-    const row = document.createElement("div");
-    row.className = "lookup-row";
-    const main = document.createElement("div");
-    main.className = "row-main";
-    const title = document.createElement("strong");
-    title.textContent = q.problem || "(문제)";
-    const kind = document.createElement("span");
-    kind.textContent = (TUTOR_KIND_TEXT[q.kind] || q.kind || "") + (q.question ? ` · ${q.question}` : "");
-    const meta = document.createElement("small");
-    meta.textContent = new Date(q.askedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-    main.append(title, kind, meta);
-    row.append(main);
-    if (q.summary) {
-      const p = document.createElement("p");
-      p.className = "muted";
-      p.style.margin = "4px 0 0";
-      p.textContent = q.summary;
-      row.append(p);
-    }
-    box.append(row);
-  }
-}
-// ---- 보호자 폰: 아이 세트 (아이 기기와 자동으로 같아짐) ----
-// 서버의 세트 요약(child.sets = [{id, name, count, updatedAt}])을 보여 주고, 사진으로 세트를 만들어 보내거나(편집기 재사용) 고치고 지운다.
-function renderChildSets(child) {
-  $("setsLock").checked = planOf(child).setsLocked === true;
-  const list = $("childSets");
-  list.textContent = "";
-  const summary = (Array.isArray(child.sets) ? child.sets : []).filter((s) => s && typeof s.name === "string");
-  if (!summary.length) {
-    list.textContent = "아직 세트가 없어요. 아래 ‘세트 만들어 보내기’로 교재 사진에서 만들어 주면 아이 기기가 다음에 앱을 열 때 들어가요.";
-    return;
-  }
-  for (const s of summary) {
-    const row = document.createElement("div");
-    row.className = "set-row";
-    const name = document.createElement("span");
-    name.className = "set-name";
-    name.textContent = `${s.name} · ${s.count}단어`;
-    const when = document.createElement("small");
-    when.className = "muted";
-    when.textContent = s.id && s.updatedAt ? relativeTime(s.updatedAt) : "아이 기기가 새 버전으로 보내면 여기서 고칠 수 있어요";
-    row.append(name, when);
-    if (s.id) {
-      const edit = document.createElement("button");
-      edit.type = "button";
-      edit.className = "btn small";
-      edit.textContent = "보기·수정";
-      edit.addEventListener("click", () => openChildSet(child, s));
-      const del = document.createElement("button");
-      del.type = "button";
-      del.className = "btn small outline danger";
-      del.textContent = "삭제";
-      del.addEventListener("click", () => deleteChildSet(child, s));
-      row.append(edit, del);
-    }
-    list.append(row);
-  }
-}
-async function openChildSet(child, s) {
-  setFeedback($("setsStatus"), "info", `‘${s.name}’을(를) 불러오는 중…`);
-  try {
-    const data = await familyRequest("/family/" + encodeURIComponent(child.id) + "/sets/" + encodeURIComponent(s.id), {
-      method: "GET", passcode: family.parentCode, timeout: SETS_TIMEOUT_MS,
-    });
-    if (!validSyncedSet(data?.set)) throw Error("세트 내용이 올바르지 않아요.");
-    setFeedback($("setsStatus"), "info", "");
-    openChildSetEditor(child, data.set);
-  } catch (e) {
-    setFeedback($("setsStatus"), "bad", "세트를 불러오지 못했어요: " + e.message);
-  }
-}
-// 보호자 편집기: editor.js 의 편집 화면을 그대로 쓰되 저장은 기기가 아니라 아이의 세트로 서버에 보낸다(editorForChild).
-function openChildSetEditor(child, set) {
-  window.editorForChild = { id: child.id, name: child.name };
-  openEditor(set ? { id: set.id, name: set.name, words: set.words } : null); // sets.js
-}
-// 편집기의 저장(sets.js onSave)이 보호자 편집 중일 때 부른다.
-async function sendSetToChild(set) {
-  const target = window.editorForChild;
-  if (!target) return;
-  SetEditor.lockSave(true);
-  SetEditor.setWarning(`‘${target.name}’에게 보내는 중…`);
-  try {
-    const data = await familyRequest("/family/" + encodeURIComponent(target.id) + "/sets", {
-      method: "POST", body: { set: { id: set.id, name: set.name, words: set.words } }, passcode: family.parentCode, timeout: SETS_TIMEOUT_MS,
-    });
-    SetEditor.setWarning("");
-    SetEditor.close();
-    returnToChild(Array.isArray(data?.summary) ? data.summary : null);
-    setFeedback($("setsStatus"), "good", `‘${set.name}’(${set.words.length}단어)을(를) ${target.name}에게 보냈어요. 아이 기기가 다음에 앱을 열 때 들어가요.`);
-  } catch (e) {
-    SetEditor.setWarning("보내지 못했어요: " + e.message);
-  } finally {
-    SetEditor.lockSave(false);
-  }
-}
-// 보호자 편집기를 닫거나 보낸 뒤 아이 상세로 돌아간다(세트 요약을 받았으면 반영).
-function returnToChild(summary) {
-  const target = window.editorForChild;
-  window.editorForChild = null;
-  const cached = target ? familyData?.children.find((c) => c.id === target.id) : null;
-  if (cached && summary) {
-    cached.sets = summary;
-    updateCachedChild(cached);
-  }
-  showView("family");
-  if (cached) openChild(cached);
-}
-async function deleteChildSet(child, s) {
-  if (!confirm(`‘${s.name}’ 세트를 ${child.name}의 모든 기기에서 지울까요? 시험 기록은 남아요.`)) return;
-  setFeedback($("setsStatus"), "info", "지우는 중…");
-  try {
-    const data = await familyRequest("/family/" + encodeURIComponent(child.id) + "/sets/" + encodeURIComponent(s.id), { method: "DELETE", passcode: family.parentCode });
-    const summary = Array.isArray(data?.summary) ? data.summary : (child.sets || []).filter((x) => x.id !== s.id);
-    if (familyDetail?.child.id === child.id) {
-      familyDetail.child = { ...familyDetail.child, sets: summary };
-      updateCachedChild(familyDetail.child);
-      renderChildSets(familyDetail.child);
-      renderChildRecords();
-    }
-    setFeedback($("setsStatus"), "good", `‘${s.name}’을(를) 지웠어요. 아이 기기에서는 다음에 앱을 열 때 사라져요.`);
-  } catch (e) {
-    setFeedback($("setsStatus"), "bad", "지우지 못했어요: " + e.message);
-  }
-}
-$("sendNewSet").onclick = () => {
-  if (familyDetail?.child) openChildSetEditor(familyDetail.child, null);
-};
-// 아이 기기에서 세트 고치기 잠금: 바꾸는 즉시 계획(plan)에 setsLocked 만 저장한다. 아이 기기는 다음에 앱을 열 때 /settings 로 받는다.
-$("setsLock").onchange = async () => {
-  const c = familyDetail?.child;
-  if (!c) return;
-  const setsLocked = $("setsLock").checked;
-  $("setsLock").disabled = true;
-  setFeedback($("setsStatus"), "info", setsLocked ? "잠그는 중…" : "잠금을 푸는 중…");
-  try {
-    const data = await familyRequest("/family/" + encodeURIComponent(c.id) + "/plan", { method: "POST", body: { setsLocked }, passcode: family.parentCode });
-    familyDetail.child = { ...c, ...(data.child || {}), plan: data.child?.plan || { ...planOf(c), setsLocked } };
-    updateCachedChild(familyDetail.child);
-    setFeedback(
-      $("setsStatus"),
-      "good",
-      setsLocked
-        ? "잠갔어요. 아이 기기가 다음에 앱을 열 때부터 세트를 만들거나 고치거나 지울 수 없고 단어를 보기만 해요."
-        : "잠금을 풀었어요. 아이 기기가 다음에 앱을 열 때부터 세트를 다시 고칠 수 있어요.",
-    );
-  } catch (e) {
-    $("setsLock").checked = !setsLocked;
-    setFeedback($("setsStatus"), "bad", "저장 실패: " + e.message);
-  } finally {
-    $("setsLock").disabled = false;
-  }
-};
-// ---- 보호자 폰: 오늘의 단어 계획 ----
-function fillPlanSelects() {
-  const level = $("planLevel");
-  level.textContent = "";
-  for (const l of PLAN_LEVELS) {
-    const o = document.createElement("option");
-    o.value = l;
-    o.textContent = l;
-    level.append(o);
-  }
-  const custom = document.createElement("option");
-  custom.value = "__custom";
-  custom.textContent = "직접 입력…";
-  level.append(custom);
-  const count = $("planCount");
-  count.textContent = "";
-  for (const n of [5, 10, 15, 20]) {
-    const o = document.createElement("option");
-    o.value = String(n);
-    o.textContent = n + "개";
-    count.append(o);
-  }
-  const hour = $("planHour");
-  hour.textContent = "";
-  for (let h = 0; h < 24; h++) {
-    const o = document.createElement("option");
-    o.value = String(h);
-    o.textContent = hourLabel(h);
-    hour.append(o);
-  }
-  const limit = $("planTimeLimit");
-  limit.textContent = "";
-  for (const s of TIME_LIMIT_CHOICES) {
-    const o = document.createElement("option");
-    o.value = String(s);
-    o.textContent = timeLimitLabel(s);
-    limit.append(o);
-  }
-}
-function renderPlan(child, today) {
-  const plan = planOf(child);
-  $("planEnabled").checked = plan.enabled;
-  const known = PLAN_LEVELS.includes(plan.level);
-  $("planLevel").value = known ? plan.level : "__custom";
-  $("planLevelCustom").classList.toggle("hidden", known);
-  $("planLevelCustom").value = known ? "" : plan.level;
-  $("planCount").value = String(plan.dailyCount);
-  $("planHour").value = String(plan.hour);
-  const limitSelect = $("planTimeLimit");
-  if (!TIME_LIMIT_CHOICES.includes(plan.timeLimitSec)) {
-    const o = document.createElement("option");
-    o.value = String(plan.timeLimitSec);
-    o.textContent = timeLimitLabel(plan.timeLimitSec);
-    limitSelect.append(o);
-  }
-  limitSelect.value = String(plan.timeLimitSec);
-  const anchor = child.anchor;
-  $("planAnchor").textContent = anchor?.words?.length
-    ? `수준 기준 세트: ${anchor.setName || "(이름 없음)"} · ${anchor.words.length}단어 (아이 기기가 기록을 보낼 때 최근 세트에서 가져와요)`
-    : "수준 기준 세트가 아직 없어요. 아이 기기가 기록을 한 번 보내면 최근 세트의 단어를 수준 기준으로 삼아요.";
-  const box = $("dailyPreview");
-  box.textContent = "";
-  const head = document.createElement("p");
-  head.className = "muted";
-  if (!plan.enabled) head.textContent = `오늘의 단어가 꺼져 있어요. 켜고 저장하면 매일 ${hourLabel(plan.hour)}에 만들어요.`;
-  else if (!today?.exists) head.textContent = `오늘 것은 아직 없어요. ${hourLabel(plan.hour)}에 만들거나 아이가 앱을 열면 바로 만들어요.`;
-  else head.textContent = `오늘의 단어 ${today.words.length ? today.words.length + "개" : ""}` + (today.completed ? ` · ✅ ${today.completed.correct} / ${today.completed.total} 맞았어요` : " · 아직 안 풀었어요");
-  box.append(head);
-  for (const w of today?.words || []) {
-    const row = document.createElement("div");
-    row.className = "daily-word";
-    const tag = document.createElement("span");
-    tag.className = "tag" + (w.kind === "review" ? " review" : "");
-    tag.textContent = w.kind === "review" ? "복습" : "새";
-    const text = document.createElement("span");
-    text.textContent = `${w.en} — ${w.ko}`;
-    row.append(tag, text);
-    box.append(row);
-  }
-}
-$("planLevel").onchange = () => $("planLevelCustom").classList.toggle("hidden", $("planLevel").value !== "__custom");
-$("savePlan").onclick = async () => {
-  const c = familyDetail?.child;
-  if (!c) return;
-  const choice = $("planLevel").value;
-  const level = choice === "__custom" ? tidy($("planLevelCustom").value).slice(0, 40) : choice;
-  if (!level) {
-    setFeedback($("planStatus"), "bad", "수준을 고르거나 적어 주세요.");
-    return;
-  }
-  const body = { enabled: $("planEnabled").checked, level, dailyCount: Number($("planCount").value), hour: Number($("planHour").value), timeLimitSec: Number($("planTimeLimit").value) };
-  $("savePlan").disabled = true;
-  setFeedback($("planStatus"), "info", "저장하는 중…");
-  try {
-    const data = await familyRequest("/family/" + encodeURIComponent(c.id) + "/plan", { method: "POST", body, passcode: family.parentCode });
-    familyDetail.child = { ...c, ...(data.child || {}), plan: data.child?.plan || body };
-    updateCachedChild(familyDetail.child);
-    renderPlan(familyDetail.child, familyDetail.today);
-    renderChildren();
-    const limitNote = body.timeLimitSec ? ` 문제당 제한 시간 ${body.timeLimitSec}초는 아이 기기가 다음에 앱을 열 때부터 적용돼요.` : "";
-    setFeedback($("planStatus"), "good", (body.enabled ? `저장했어요. 매일 ${hourLabel(body.hour)}에 ${body.dailyCount}개를 만들어요.` : "저장했어요. 오늘의 단어를 만들지 않아요.") + limitNote);
-  } catch (e) {
-    setFeedback($("planStatus"), "bad", "저장 실패: " + e.message);
-  } finally {
-    $("savePlan").disabled = false;
-  }
-};
-$("makeDailyNow").onclick = async () => {
-  const c = familyDetail?.child;
-  if (!c) return;
-  $("makeDailyNow").disabled = true;
-  setFeedback($("planStatus"), "info", "오늘의 단어를 만드는 중… (10초쯤 걸려요)");
-  try {
-    const d = await familyRequest("/daily/" + encodeURIComponent(c.id), { method: "POST", body: {}, passcode: family.parentCode, timeout: DAILY_TIMEOUT_MS });
-    familyDetail.today = { date: d.date, exists: true, words: Array.isArray(d.words) ? d.words : [], note: d.note || "", completed: d.completed || null };
-    renderPlan(familyDetail.child, familyDetail.today);
-    setFeedback($("planStatus"), "good", `오늘의 단어 ${familyDetail.today.words.length}개가 준비됐어요.` + (d.note ? " " + d.note : ""));
-  } catch (e) {
-    setFeedback($("planStatus"), "bad", "만들지 못했어요: " + e.message);
-  } finally {
-    $("makeDailyNow").disabled = false;
-  }
-};
-$("closeChildDetail").onclick = () => {
-  $("childDetail").classList.add("hidden");
-  familyDetail = null;
-};
-$("refreshFamily").onclick = () => refreshFamily();
-$("deleteChild").onclick = async () => {
-  const c = familyDetail?.child;
-  if (!c) return;
-  if (!confirm(`‘${c.name}’을(를) 가족 서버에서 지울까요? 기록과 아이 코드가 모두 지워지고 연결된 기기는 다시 연결할 수 없어요. 아이 기기에 있는 기록은 그대로예요.`)) return;
-  $("deleteChild").disabled = true;
-  try {
-    await familyRequest("/family/" + encodeURIComponent(c.id), { method: "DELETE", passcode: family.parentCode });
-    $("childDetail").classList.add("hidden");
-    familyDetail = null;
-    if (familyData) cacheFamily({ ...familyData, children: familyData.children.filter((x) => x.id !== c.id) });
-    renderChildren();
-    setFeedback($("familyLoadStatus"), "info", `‘${c.name}’을(를) 지웠어요.`);
-  } catch (e) {
-    setFeedback($("familyLoadStatus"), "bad", "지우지 못했어요: " + e.message);
-  } finally {
-    $("deleteChild").disabled = false;
-  }
-};
-
-// sets.js 가 보호자 설정을 준비한 뒤 부른다.
+// sets.js 가 AI 연결 설정을 준비한 뒤 부른다.
 function initFamily() {
-  const urlMode = modeFromUrl();
-  if (urlMode === "parent" || urlMode === "child") {
-    appMode = urlMode === "parent" ? "parent" : "";
-    if (urlMode === "child") family.parentModeOff = false;
-    try {
-      localStorage.setItem(MODE_KEY, appMode);
-    } catch {}
-    writeFamily();
-  }
+  // 옛 보호자 모드가 남긴 보호자 코드·‘아이 기기처럼 보기’는 아이 앱이 쓰지 않는다(보호자 앱 parent.html 의 것). 남아 있으면 지운다.
+  if (Shared.readJson(FAMILY_KEY, (v) => v && typeof v === "object" && ("parentCode" in v || "parentModeOff" in v))) writeFamily();
   $("familySend").checked = family.sendEnabled;
-  fillPlanSelects();
   renderFamilySettings();
   renderDailyCard();
-  if (isParentMode()) showView("family"); // 보호자 모드는 아이들 화면으로 시작
   const linkCode = linkCodeFromUrl();
   if (linkCode) handleLinkCode(linkCode);
   else {

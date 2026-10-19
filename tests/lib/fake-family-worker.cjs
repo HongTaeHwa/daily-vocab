@@ -1,5 +1,5 @@
-// 가짜 가족 Worker — tests/family.cjs · tests/daily.cjs 공용. Playwright 라우트로 worker/worker.js 의 FamilyStore 역할을 흉내 낸다.
-// 라우트: /join /settings/<id> /records/<id> /sync /sets/<id> /daily/<id> /grade, 보호자 /family /family/<id> /family/children
+// 가짜 가족 Worker — tests/family.cjs · daily.cjs · parent.cjs · parent-sets.cjs 공용. Playwright 라우트로 worker/worker.js 의 FamilyStore 역할을 흉내 낸다.
+// 라우트: /join /settings/<id> /records/<id> /sync /sets/<id> /daily/<id> /grade /recognize /define, 보호자 /family /family/<id> /family/children
 //        /family/<id>/(plan|code|name) /family/<id>/sets(/<setId>). 질문(/tutor 의 FamilyStore /question)은 seedChild 뒤 child.questions 에 직접 넣는다.
 //
 // const fake = await createFakeWorker(page, { server, familyCode, parentCode, setSync, daily, recordsPageSize, newWords });
@@ -152,6 +152,15 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
       if (!planOf(c).enabled) return reply(route, 409, { error: "plan_disabled", message: "보호자가 아직 오늘의 단어를 켜지 않았어요." });
       if (req.method() === "GET") return reply(route, 404, { error: "no_daily", message: "오늘의 단어가 아직 없어요." });
       return reply(route, 200, makeDaily(c, date));
+    }
+    if (url.pathname === "/recognize" && req.method() === "POST") {
+      // 사진 인식 가짜 응답(보호자 앱 편집기가 보호자 코드로 부르는지 확인용): 사진마다 apple 한 단어
+      if (!familyOk) return unauthorized();
+      return reply(route, 200, { words: [{ number: 1, en: "apple", ko: "사과", ipa: "ˈæpl", aliases: ["사과"], generated: false }], note: "", model: "claude-opus-5-5", usage: {} });
+    }
+    if (url.pathname === "/define" && req.method() === "POST") {
+      if (!familyOk) return unauthorized();
+      return reply(route, 200, { words: (body.words || []).map((en) => ({ en, ko: en + "의 뜻", ipa: "ˈ" + en, aliases: [en + "의 뜻"] })), note: "", model: "claude-sonnet-5-5", usage: {} });
     }
     if (url.pathname === "/grade" && req.method() === "POST") {
       // AI 2차 채점 가짜 응답: ‘비슷한뜻’만 같은 뜻으로 인정한다(시험 중 허용 답안 학습 → 시험 뒤 세트 동기화 확인용)

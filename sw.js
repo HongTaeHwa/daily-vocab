@@ -1,14 +1,16 @@
-const CACHE = "daily-vocab-shell-v29";
+const CACHE = "daily-vocab-shell-v30";
 const SHELL = [
   "./",
   "./index.html",
-  "./shared.js?v=20261018-20",
-  "./quiz.js?v=20261018-20",
-  "./family.js?v=20261018-20",
-  "./editor.js?v=20261018-20",
-  "./sets.js?v=20261018-20",
+  "./shared.js?v=20261018-21",
+  "./quiz.js?v=20261018-21",
+  "./family.js?v=20261018-21",
+  "./editor.js?v=20261018-21",
+  "./sets.js?v=20261018-21",
   "./manifest.webmanifest",
   "./parent.html",
+  "./parent.js?v=20261018-21",
+  "./parent.css?v=20261018-21",
   "./manifest-parent.webmanifest",
   "./icons/parent-192.png",
   "./icons/parent-512.png",
@@ -19,6 +21,9 @@ const SHELL = [
   "./icons/maskable-512.png",
   "./icons/apple-touch-icon.png",
 ];
+// 오프라인 내비게이션: 보호자 앱(parent.html)으로 연 화면은 보호자 앱 셸로, 그 밖은 아이 앱 셸로 되돌린다.
+const navigationFallback = (request) =>
+  new URL(request.url).pathname.endsWith("parent.html") ? "./parent.html" : "./index.html";
 self.addEventListener("install", (event) =>
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL))),
 );
@@ -62,7 +67,7 @@ self.addEventListener("fetch", (event) => {
             (cached) =>
               cached ||
               (event.request.mode === "navigate"
-                ? caches.match("./index.html")
+                ? caches.match(navigationFallback(event.request))
                 : Response.error()),
           ),
       ),
