@@ -1,0 +1,597 @@
+"use strict";
+// parent.js — 보호자 앱(parent.html). shared.js · editor.js 다음에 불러온다. 전역은 window.ParentApp(디버깅·테스트용: store, router, computeStats, api) 하나.
+// 흐름: storage(daily_vocab_parent_v1, 옛 키는 처음 한 번 이전) → store(patch 마다 저장 + 화면 다시 그리기) → api(Shared.apiRequest + 보호자 코드)
+//       → router(해시 라우트; 뒤로 가기 = 해시 history) → views(라우트마다 한 화면을 store 스냅샷으로 그림) → actions(요청 → store.patch → 결과는 토스트·칸 아래 문구).
+// 캐시 우선: 마지막 응답을 먼저 그리고 앱 시작·화면 복귀·온라인 복귀·화면 진입 때 10분이 지났으면 뒤에서 새로 받는다.
+// 목록은 Shared.h 로 만들고(innerHTML 없음), 폼은 parent.html 의 정적 마크업에 값만 채운다(테스트가 보는 ID 유지).
+// 라우트: #/ 오늘 · #/children 아이들 · #/child/<id>/<records|sets|daily|settings|questions> · #/child/<id>/sets/<new|세트 id> 편집기 · #/settings · #/setup(코드 없으면 언제나 여기)
+(function () {
+  // ===== [core] 상수·도우미·저장소·상태·서버 요청·라우터·그리기 =====
+  const { $, h, setFeedback, tidy, formatCode, hourLabel, relativeTime, durationText, dayKey, pctOf, WEEKDAYS, modeLabels,
+    AI_SERVER_DEFAULT, normalizeServer, PLAN_LEVELS, TIME_LIMIT_CHOICES, planDefaults, apiRequest, readJson, writeJson } = Shared;
+  const PARENT_KEY = "daily_vocab_parent_v1";
+  // 옛 아이 앱 보호자 모드가 쓰던 키(처음 한 번 이전한 뒤 보호자 것만 지운다. 아이 키의 다른 필드는 건드리지 않는다)
+  const OLD_FAMILY_KEY = "daily_vocab_family_v1", OLD_AI_KEY = "daily_vocab_ai_v2", OLD_CACHE_KEY = "daily_vocab_family_cache_v1", OLD_MODE_KEY = "daily_vocab_mode_v1";
+  const STALE_MS = 10 * 60 * 1000; // 이보다 오래된 캐시는 뒤에서 새로 받는다
+  const RECORDS_KEEP = 200; // 아이 상세에 캐시·표시하는 최신 기록 수(나머지는 C단계 ‘더 보기’)
+  const STORE_LIMIT = 1000000; // 저장 크기(문자) 상한: 넘으면 가장 오래 본 아이의 상세부터 저장하지 않는다
+  const TIMEOUT_MS = 20000, SETS_TIMEOUT_MS = 60000, DAILY_TIMEOUT_MS = 90000, AI_TIMEOUT_MS = 130000;
+  const JOIN_CODE = /^\d{6}$/;
+  const TABS = ["records", "sets", "daily", "settings", "questions"];
+  const VIEW_IDS = ["setup", "today", "children", "child", "editor", "settings"];
+  const NOTE_IDS = ["setsStatus", "planStatus", "linkStatus", "nameStatus", "limitStatus", "deleteStatus"];
+
+  const enc = encodeURIComponent;
+  const nowIso = () => new Date().toISOString();
+  const isFresh = (iso) => Boolean(iso) && Date.now() - Date.parse(iso) < STALE_MS;
+  const timeText = (iso) => new Date(iso).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+  const dateText = (d) => `${d.getMonth() + 1}월 ${d.getDate()}일 (${WEEKDAYS[d.getDay()]})`;
+  // n일 전 0시(현지 시각)의 ms
+  const startOfDay = (daysAgo) => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - daysAgo);
+    return d.getTime();
+  };
+  const avgOf = (rs) => (rs.length ? Math.round(rs.reduce((s, r) => s + pctOf(r), 0) / rs.length) : null);
+  const byNewest = (a, b) => String(b.completedAt).localeCompare(String(a.completedAt));
+  const linkFor = (code) => new URL("./", location.href).href + "?child=" + code; // 아이용 앱 주소(…/daily-vocab/?child=코드)
+  const childPath = (id, tab) => "#/child/" + enc(id) + (tab && tab !== "records" ? "/" + tab : "");
+  const editorPath = (id, setId) => "#/child/" + enc(id) + "/sets/" + (setId ? enc(setId) : "new");
+  const validChild = (c) => Boolean(c && typeof c === "object" && typeof c.id === "string" && c.id && typeof c.name === "string");
+  const validRecord = (r) => Boolean(r && typeof r.id === "string" && Number.isFinite(Date.parse(r.completedAt)) && Number.isInteger(r.total) && r.total > 0 && Number.isInteger(r.correct));
+  const devicesOf = (c) => Object.values(c?.devices || {}).filter((d) => d && typeof d === "object");
+  function devicesSummary(c) {
+    const counts = new Map();
+    for (const d of devicesOf(c)) counts.set(d.label || "기기", (counts.get(d.label || "기기") || 0) + 1);
+    return [...counts].map(([label, n]) => `${label} ${n}`).join(" · ");
+  }
+
+  // ---- 저장소: daily_vocab_parent_v1 ----
+  // { parentCode, server, children:[GET /family 의 아이(최근 기록 포함)], details:{ [id]: {child, records(최신 200), recordTotal, questions, today, fetchedAt, viewedAt} },
+  //   fetchedAt, prefs:{ recordsSet, recordsDays } }
+  const emptyState = () => ({ parentCode: "", server: AI_SERVER_DEFAULT, children: [], details: {}, fetchedAt: "", prefs: { recordsSet: "all", recordsDays: 30 } });
+  function normalizeListChild(c) {
+    return { ...c, records: (Array.isArray(c.records) ? c.records : []).filter(validRecord).sort(byNewest) };
+  }
+  function sanitize(saved) {
+    const s = emptyState();
+    if (!saved || typeof saved !== "object") return s;
+    if (typeof saved.parentCode === "string") s.parentCode = saved.parentCode.trim();
+    s.server = normalizeServer(saved.server) || AI_SERVER_DEFAULT;
+    if (Array.isArray(saved.children)) s.children = saved.children.filter(validChild).map(normalizeListChild);
+    if (saved.details && typeof saved.details === "object")
+      for (const [id, d] of Object.entries(saved.details))
+        if (d && typeof d === "object" && validChild(d.child))
+          s.details[id] = {
+            ...d,
+            records: (Array.isArray(d.records) ? d.records : []).filter(validRecord),
+            questions: Array.isArray(d.questions) ? d.questions.filter((q) => q && typeof q === "object") : null,
+          };
+    if (typeof saved.fetchedAt === "string") s.fetchedAt = saved.fetchedAt;
+    const p = saved.prefs;
+    if (p && typeof p === "object") {
+      if (typeof p.recordsSet === "string") s.prefs.recordsSet = p.recordsSet;
+      if ([0, 7, 30].includes(p.recordsDays)) s.prefs.recordsDays = p.recordsDays;
+    }
+    return s;
+  }
+  // 처음 한 번: 옛 보호자 모드(아이 앱 index.html?mode=parent)의 보호자 코드·서버 주소·목록 캐시를 가져오고, 보호자 것만 지운다.
+  function migrate() {
+    const existing = readJson(PARENT_KEY, (v) => v && typeof v === "object" && !Array.isArray(v));
+    if (existing) return sanitize(existing);
+    const state = emptyState();
+    const fam = readJson(OLD_FAMILY_KEY, (v) => v && typeof v === "object" && !Array.isArray(v));
+    const ai = readJson(OLD_AI_KEY, (v) => v && typeof v === "object");
+    const cache = readJson(OLD_CACHE_KEY, (v) => v && typeof v === "object");
+    if (typeof fam?.parentCode === "string") state.parentCode = fam.parentCode.trim();
+    state.server = normalizeServer(ai?.server) || AI_SERVER_DEFAULT;
+    if (Array.isArray(cache?.children)) {
+      state.children = cache.children.filter(validChild).map(normalizeListChild);
+      if (typeof cache.fetchedAt === "string") state.fetchedAt = cache.fetchedAt;
+    }
+    if (!writeJson(PARENT_KEY, state)) return state; // 저장하지 못하면 옛 키를 지우지 않는다(다음에 다시 이전)
+    try {
+      localStorage.removeItem(OLD_CACHE_KEY);
+      localStorage.removeItem(OLD_MODE_KEY);
+    } catch {}
+    if (fam && ("parentCode" in fam || "parentModeOff" in fam)) {
+      const { parentCode, parentModeOff, ...rest } = fam; // 아이 기기 연결 정보(childId 등)는 그대로 둔다
+      writeJson(OLD_FAMILY_KEY, rest);
+    }
+    return state;
+  }
+  // 저장: 너무 크거나 저장 공간이 모자라면 가장 오래 본 아이의 상세부터 빼고 다시 시도한다(화면의 상태는 그대로).
+  function persist(state) {
+    let s = state;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const text = JSON.stringify(s);
+      if (text.length <= STORE_LIMIT) {
+        try {
+          localStorage.setItem(PARENT_KEY, text);
+          return true;
+        } catch {}
+      }
+      const ids = Object.keys(s.details);
+      if (!ids.length) break;
+      const oldest = ids.sort((a, b) => String(s.details[a].viewedAt || "").localeCompare(String(s.details[b].viewedAt || "")))[0];
+      const { [oldest]: dropped, ...rest } = s.details;
+      s = { ...s, details: rest };
+    }
+    return writeJson(PARENT_KEY, { ...s, details: {} });
+  }
+  function createStore(initial) {
+    let state = initial;
+    const subscribers = new Set();
+    return {
+      get: () => state,
+      patch(partial) {
+        state = { ...state, ...(typeof partial === "function" ? partial(state) : partial) };
+        persist(state);
+        for (const fn of subscribers) fn(state);
+      },
+      subscribe(fn) {
+        subscribers.add(fn);
+        return () => subscribers.delete(fn);
+      },
+    };
+  }
+  const store = createStore(migrate());
+
+  // ---- 아이 데이터 읽기·고치기 (목록 children[] 과 상세 details[id].child 를 함께 맞춘다) ----
+  function childById(id) {
+    const s = store.get();
+    return s.children.find((c) => c.id === id) || s.details[id]?.child || null;
+  }
+  // 그 아이의 기록: 상세(최신 200개)와 목록(최근 14일)을 합친다(겹치는 id 는 한 번).
+  function recordsOf(id) {
+    const s = store.get();
+    const list = s.children.find((c) => c.id === id)?.records || [];
+    const detail = s.details[id]?.records || [];
+    if (!detail.length) return list;
+    const seen = new Set(detail.map((r) => r.id));
+    return [...detail, ...list.filter((r) => !seen.has(r.id))].sort(byNewest);
+  }
+  // 목록의 오늘 요약(today: {date, exists, count, completed})을 상세의 오늘(단어 포함)에 맞춘다.
+  function mergeToday(full, summary) {
+    if (!summary) return full || null;
+    if (full && full.date === summary.date) return { ...full, exists: summary.exists, completed: summary.completed || null };
+    return { date: summary.date, exists: Boolean(summary.exists), words: [], note: "", completed: summary.completed || null };
+  }
+  // 서버 응답의 child 하나로 목록·상세를 함께 갱신한다(records·today 는 있을 때만 바꾼다).
+  function putChild(child) {
+    if (!validChild(child)) return;
+    const { records, today, ...info } = child;
+    store.patch((s) => {
+      const exists = s.children.some((c) => c.id === child.id);
+      const children = exists
+        ? s.children.map((c) => (c.id === child.id ? { ...c, ...info, ...(Array.isArray(records) ? { records: records.filter(validRecord).sort(byNewest) } : {}), ...(today ? { today } : {}) } : c))
+        : [...s.children, { ...info, records: Array.isArray(records) ? records.filter(validRecord).sort(byNewest) : [], today: today || null }];
+      const d = s.details[child.id];
+      const details = d ? { ...s.details, [child.id]: { ...d, child: { ...d.child, ...info }, today: today ? mergeToday(d.today, today) : d.today } } : s.details;
+      return { children, details };
+    });
+  }
+  function patchChild(id, fields) {
+    const c = childById(id);
+    if (c) putChild({ id, name: c.name, ...fields });
+  }
+  // 계획 저장 응답: child 가 오면 그것으로, 없으면 보낸 값으로 plan 을 맞춘다.
+  function putPlan(id, data, sent) {
+    if (validChild(data?.child)) putChild({ ...data.child, plan: data.child.plan || { ...planDefaults(childById(id)?.plan), ...sent } });
+    else patchChild(id, { plan: { ...planDefaults(childById(id)?.plan), ...sent } });
+  }
+  function removeChild(id) {
+    store.patch((s) => {
+      const { [id]: dropped, ...details } = s.details;
+      return { children: s.children.filter((c) => c.id !== id), details };
+    });
+    for (const key of [...notes.keys()]) if (key.startsWith(id + ":")) notes.delete(key);
+  }
+  // GET /family 응답 → 목록 교체. 상세는 아직 있는 아이만 남기고 이름·계획 등을 목록에 맞춘다.
+  function listPatch(s, data) {
+    const list = (Array.isArray(data?.children) ? data.children : []).filter(validChild).map(normalizeListChild);
+    const details = {};
+    for (const [id, d] of Object.entries(s.details)) {
+      const fresh = list.find((c) => c.id === id);
+      if (!fresh) continue;
+      const { records, today, ...info } = fresh;
+      details[id] = { ...d, child: { ...d.child, ...info }, today: mergeToday(d.today, today) };
+    }
+    return { children: list, details, fetchedAt: nowIso() };
+  }
+
+  // ---- 통계 (순수 함수): 이 폰의 현지 날짜 기준 ----
+  // records: 압축 기록 [{completedAt, total, correct, setName, missed, awayCount, timeouts, …}]. days: 날짜 띠·창 크기(0 = 전체).
+  // → { today, week(최근 7일), prevWeek(그 앞 7일), window(days 창), streak(오늘 또는 어제까지 연속 학습일), days:[{key, weekday, label, count, avg, today}],
+  //     bySet:[{name, count, avg, last}](창 안), missedTop:[{en, ko, n}](최근 2주 상위 10) }  각 요약 = {count, avg, away, timeouts}
+  function computeStats(records, { days = 30, now = new Date() } = {}) {
+    const list = (Array.isArray(records) ? records : []).filter((r) => r && Number.isFinite(Date.parse(r.completedAt))).sort(byNewest);
+    const noon = new Date(now);
+    noon.setHours(12, 0, 0, 0);
+    const dayAt = (offset) => {
+      const d = new Date(noon);
+      d.setDate(noon.getDate() - offset);
+      return d;
+    };
+    const byDay = new Map();
+    for (const r of list) {
+      const k = dayKey(r.completedAt);
+      if (!byDay.has(k)) byDay.set(k, []);
+      byDay.get(k).push(r);
+    }
+    const span = (from, to) => {
+      const out = [];
+      for (let i = from; i <= to; i++) out.push(...(byDay.get(dayKey(dayAt(i))) || []));
+      return out;
+    };
+    const sum = (rs) => ({ count: rs.length, avg: avgOf(rs), away: rs.reduce((s, r) => s + (r.awayCount || 0), 0), timeouts: rs.reduce((s, r) => s + (r.timeouts || 0), 0) });
+    const dayList = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = dayAt(i);
+      const rs = byDay.get(dayKey(d)) || [];
+      dayList.push({ key: dayKey(d), weekday: WEEKDAYS[d.getDay()], label: `${d.getMonth() + 1}/${d.getDate()}`, count: rs.length, avg: avgOf(rs), today: i === 0 });
+    }
+    let streak = 0;
+    for (let i = byDay.has(dayKey(dayAt(0))) ? 0 : 1; i < 400 && byDay.has(dayKey(dayAt(i))); i++) streak++;
+    const windowRecords = (days > 0 ? span(0, days - 1) : list).sort(byNewest);
+    const sets = new Map();
+    for (const r of windowRecords) {
+      const name = String(r.setName || "");
+      if (!sets.has(name)) sets.set(name, { name, records: [] });
+      sets.get(name).records.push(r);
+    }
+    const counts = new Map();
+    for (const r of span(0, 13))
+      for (const m of Array.isArray(r.missed) ? r.missed : []) {
+        const key = String(m?.en || "").toLowerCase();
+        if (!key) continue;
+        const entry = counts.get(key) || { en: m.en, ko: m.ko || "", n: 0 };
+        entry.n++;
+        counts.set(key, entry);
+      }
+    return {
+      today: sum(span(0, 0)),
+      week: sum(span(0, 6)),
+      prevWeek: sum(span(7, 13)),
+      window: sum(windowRecords),
+      streak,
+      days: dayList,
+      bySet: [...sets.values()].map((x) => ({ name: x.name, count: x.records.length, avg: avgOf(x.records), last: x.records[0] })),
+      missedTop: [...counts.values()].sort((a, b) => b.n - a.n || a.en.localeCompare(b.en)).slice(0, 10),
+    };
+  }
+
+  // ---- 서버 요청 (보호자 코드) ----
+  const api = {
+    request(path, { method = "GET", body, timeout = TIMEOUT_MS, passcode } = {}) {
+      const s = store.get();
+      return apiRequest(s.server, path, { method, body, passcode: passcode ?? s.parentCode, timeout });
+    },
+    verifyCode: (code) => api.request("/family", { passcode: code }),
+    listChildren: () => api.request("/family"),
+    childDetail: (id) => api.request("/family/" + enc(id)),
+    getSet: (id, setId) => api.request(`/family/${enc(id)}/sets/${enc(setId)}`, { timeout: SETS_TIMEOUT_MS }),
+    sendSet: (id, set) => api.request(`/family/${enc(id)}/sets`, { method: "POST", body: { set }, timeout: SETS_TIMEOUT_MS }),
+    deleteSet: (id, setId) => api.request(`/family/${enc(id)}/sets/${enc(setId)}`, { method: "DELETE" }),
+    savePlan: (id, patch) => api.request(`/family/${enc(id)}/plan`, { method: "POST", body: patch }),
+    createChild: (name) => api.request("/family/children", { method: "POST", body: { name } }),
+    renameChild: (id, name) => api.request(`/family/${enc(id)}/name`, { method: "POST", body: { name } }),
+    regenCode: (id) => api.request(`/family/${enc(id)}/code`, { method: "POST", body: {} }),
+    deleteChild: (id) => api.request("/family/" + enc(id), { method: "DELETE" }),
+    makeDaily: (id) => api.request("/daily/" + enc(id), { method: "POST", body: {}, timeout: DAILY_TIMEOUT_MS }),
+  };
+  const WRONG_CODE = "보호자 코드가 맞지 않아요. 다시 입력해 주세요.";
+  let setupNote = null; // 코드 입력 화면에 보일 안내 {kind, text}
+  let offlineToastShown = false;
+  // 요청 실패 → 보일 문구. 401(보호자 코드가 틀림)은 코드 입력 화면으로 보낸다(코드는 지우지 않음). 서버에 닿지 못하면 캐시를 그대로 두고 토스트는 한 번만.
+  function failure(e) {
+    if (e?.status === 401) {
+      setupNote = { kind: "bad", text: WRONG_CODE };
+      if (router.current.name !== "setup") router.go("#/setup");
+      else render();
+      return WRONG_CODE;
+    }
+    const text = e?.message || String(e);
+    if (e?.status === 0 && e.code !== "aborted") {
+      if (!offlineToastShown) toast(text + " 마지막으로 확인한 내용을 보여 줘요.", "bad");
+      offlineToastShown = true;
+    }
+    return text;
+  }
+
+  // ---- 토스트·칸 아래 문구 ----
+  let toastTimer = 0;
+  function toast(text, kind = "info") {
+    const el = $("toast");
+    el.textContent = text;
+    el.className = "toast " + kind;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.add("hidden"), kind === "bad" ? 5000 : 3500);
+  }
+  // 아이 화면의 결과 문구(#setsStatus 등)는 아이별로 기억했다가 그 아이 화면을 그릴 때 다시 보여 준다.
+  const notes = new Map(); // "아이 id:요소 id" → {kind, text}
+  function note(childId, id, kind, text) {
+    notes.set(childId + ":" + id, { kind, text });
+    if (router.current.id === childId) setFeedback($(id), kind, text);
+  }
+  function showNotes(childId) {
+    for (const id of NOTE_IDS) {
+      const n = notes.get(childId + ":" + id);
+      setFeedback($(id), n?.kind || "info", n?.text || "");
+    }
+  }
+  async function copyText(text, label, childId) {
+    let message, kind = "good";
+    try {
+      await navigator.clipboard.writeText(text);
+      message = `${label}을(를) 복사했어요. 카톡 등으로 아이 기기에 보내 주세요.`;
+    } catch {
+      message = `${label}: ${text} (길게 눌러 복사하세요)`;
+      kind = "info";
+    }
+    toast(message, kind);
+    if (childId) note(childId, "linkStatus", kind, message);
+  }
+
+  // ---- 불러오기 ----
+  let loading = false, lastLoadError = "";
+  const detailLoading = new Set(), detailErrors = new Map();
+  // 아이 목록(GET /family). force 가 아니면 10분이 지났을 때만.
+  async function refreshAll({ force = false } = {}) {
+    const s = store.get();
+    if (!s.parentCode || loading || (!force && isFresh(s.fetchedAt))) return;
+    loading = true;
+    renderLoadStatus();
+    try {
+      const data = await api.listChildren();
+      lastLoadError = "";
+      offlineToastShown = false;
+      store.patch((st) => listPatch(st, data));
+    } catch (e) {
+      lastLoadError = failure(e);
+      if (e?.status && e.status !== 401) toast(lastLoadError, "bad");
+    } finally {
+      loading = false;
+      renderLoadStatus();
+      scheduleRender();
+    }
+  }
+  // 아이 상세(GET /family/<id>): 기록은 최신 200개만 캐시하고, 질문·오늘의 단어도 함께 둔다.
+  async function loadDetail(id, { force = false } = {}) {
+    const s = store.get();
+    const d = s.details[id];
+    if (!s.parentCode || detailLoading.has(id) || (!force && d && isFresh(d.fetchedAt))) return;
+    detailLoading.add(id);
+    scheduleRender();
+    try {
+      const data = await api.childDetail(id);
+      const all = (Array.isArray(data?.records) ? data.records : []).filter(validRecord).sort(byNewest);
+      const child = validChild(data?.child) ? data.child : childById(id);
+      const at = nowIso();
+      detailErrors.delete(id);
+      store.patch((st) => ({
+        details: {
+          ...st.details,
+          [id]: {
+            child: { ...(st.details[id]?.child || {}), ...child, records: undefined, today: undefined },
+            records: all.slice(0, RECORDS_KEEP),
+            recordTotal: all.length,
+            questions: (Array.isArray(data?.questions) ? data.questions : []).filter((q) => q && typeof q === "object"),
+            today: data?.today || null,
+            fetchedAt: at,
+            viewedAt: at,
+          },
+        },
+      }));
+      if (validChild(data?.child)) putChild(data.child);
+    } catch (e) {
+      if (e?.code === "unknown_child") {
+        const name = childById(id)?.name || "그 아이";
+        removeChild(id);
+        toast(`‘${name}’은(는) 서버에 없어요. 목록을 새로 불러왔어요.`, "bad");
+        if (router.current.id === id) router.replace("#/children");
+        refreshAll({ force: true });
+      } else detailErrors.set(id, failure(e));
+    } finally {
+      detailLoading.delete(id);
+      scheduleRender();
+    }
+  }
+  function autoRefresh() {
+    if (router.current.name === "setup") return; // 코드 입력 화면에서는 묻지 않는다(틀린 코드로 되풀이하지 않게)
+    refreshAll();
+    const id = router.current.id;
+    if (id) loadDetail(id);
+  }
+  function renderLoadStatus() {
+    const s = store.get();
+    const el = $("familyLoadStatus");
+    if (!s.parentCode) el.textContent = "아이들 기록 · 오늘의 단어 · 세트 관리";
+    else if (loading) el.textContent = "아이들 기록을 불러오는 중…";
+    else if (lastLoadError) el.textContent = (s.fetchedAt ? `마지막 확인 ${relativeTime(s.fetchedAt)} · ` : "") + "새로 불러오지 못했어요";
+    else if (s.fetchedAt)
+      el.textContent = (Date.now() - Date.parse(s.fetchedAt) < 60000 ? "방금 확인했어요" : "마지막 확인 " + relativeTime(s.fetchedAt)) + " · " + timeText(s.fetchedAt);
+    else el.textContent = "아직 불러온 기록이 없어요";
+    $("refreshFamily").disabled = loading;
+  }
+
+  // ---- 라우터 (해시) ----
+  function parseRoute(hash) {
+    let parts;
+    try {
+      parts = String(hash || "").replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+    } catch {
+      parts = [];
+    }
+    const [a, b, c, d] = parts;
+    if (a === "children" && !b) return { name: "children" };
+    if (a === "settings") return { name: "settings" };
+    if (a === "setup") return { name: "setup" };
+    if (a === "child" && b) {
+      if (c === "sets" && d) return { name: "editor", id: b, setId: d === "new" ? null : d, tab: "sets" };
+      return { name: "child", id: b, tab: TABS.includes(c) ? c : "records" };
+    }
+    return { name: "today" };
+  }
+  const navIdx = () => (Number.isInteger(history.state?.idx) ? history.state.idx : 0);
+  let lastIdx = 0;
+  const router = {
+    current: { name: "" },
+    go(path) {
+      if (location.hash === path) render();
+      else location.hash = path;
+    },
+    replace(path) {
+      history.replaceState({ idx: navIdx() }, "", path);
+      onRoute();
+    },
+    // 앱 안에서 온 화면이면 history 로 되돌아가고, 처음 연 화면이면 fallback 으로 바꾼다(앱을 벗어나지 않게).
+    back(fallback = "#/") {
+      if (navIdx() > 0) history.back();
+      else router.replace(fallback);
+    },
+  };
+  // 편집기 상태(세트 화면 절에서 쓴다): 열어 둔 편집기의 라우트 키와 서버에서 받은 원래 세트
+  // editorDone: 저장·닫기로 닫은 편집기의 키(해시가 바뀌기 전에 render 가 다시 열지 않게)
+  let editorKey = "", editingSet = null, editorDone = "";
+  const editorKeyOf = (r) => (r?.name === "editor" ? r.id + "/" + (r.setId || "new") : "");
+  function onRoute() {
+    const next = parseRoute(location.hash);
+    const prev = router.current;
+    // 편집기를 떠날 때: 저장하지 않은 초안이 있으면 묻고, 취소하면 편집기로 되돌린다.
+    if (editorKey && SetEditor.isOpen() && editorKeyOf(next) !== editorKey) {
+      if (!SetEditor.confirmDiscard()) {
+        if (navIdx() < lastIdx) history.forward();
+        else history.back();
+        return;
+      }
+      SetEditor.close();
+      editorKey = "";
+      editingSet = null;
+    }
+    if (editorKeyOf(next) !== editorKeyOf(prev)) editorDone = "";
+    const s = store.get();
+    if (!s.parentCode && next.name !== "setup") {
+      router.replace("#/setup");
+      return;
+    }
+    if (next.id !== prev.id) {
+      if (prev.id) for (const key of [...notes.keys()]) if (key.startsWith(prev.id + ":")) notes.delete(key);
+      if (next.id && s.details[next.id]) store.patch((st) => (st.details[next.id] ? { details: { ...st.details, [next.id]: { ...st.details[next.id], viewedAt: nowIso() } } } : {}));
+      resetChildForms();
+    }
+    const moved = prev.name !== next.name || prev.id !== next.id;
+    router.current = next;
+    lastIdx = navIdx();
+    render();
+    if (moved) window.scrollTo({ top: 0, behavior: "auto" });
+    autoRefresh();
+  }
+
+  // ---- 그리기: 라우트의 화면 하나만 보이고, store 가 바뀔 때마다 다시 그린다 ----
+  const views = {}; // 화면 이름 → 그리는 함수(아래 화면 절에서 채운다)
+  const panels = {}; // 아이 화면 하위 탭 → 그리는 함수
+  const formResets = []; // 다른 아이로 옮길 때 폼 상태를 지우는 함수들
+  function resetChildForms() {
+    for (const fn of formResets) fn();
+  }
+  let renderQueued = false;
+  function scheduleRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    queueMicrotask(() => {
+      renderQueued = false;
+      render();
+    });
+  }
+  function render() {
+    const s = store.get();
+    let r = router.current;
+    document.body.classList.toggle("no-code", !s.parentCode);
+    let name = r.name;
+    if (name === "editor") {
+      if (views.editor?.(r)) name = "editor";
+      else {
+        name = "child"; // 세트를 불러오는 동안은 세트 탭을 보여 준다
+        r = { ...r, name: "child", tab: "sets" };
+      }
+    }
+    for (const id of VIEW_IDS) $(id).classList.toggle("active", id === name);
+    const tab = name === "today" ? "tabToday" : name === "settings" ? "tabSettings" : ["children", "child", "editor"].includes(name) ? "tabChildren" : "";
+    for (const t of ["tabToday", "tabChildren", "tabSettings"]) {
+      $(t).classList.toggle("active", t === tab);
+      $(t).setAttribute("aria-current", t === tab ? "page" : "false");
+    }
+    renderLoadStatus();
+    if (name !== "editor") views[name]?.(r);
+  }
+
+  // ===== [setup] 코드 입력 (#/setup) =====
+  views.setup = () => {
+    if (setupNote) setFeedback($("parentSetupStatus"), setupNote.kind, setupNote.text);
+  };
+  // 보호자 코드를 GET /family 로 확인한 뒤에만 저장한다(틀린 코드는 저장하지 않는다). 성공하면 받은 목록이 곧 첫 화면의 캐시다.
+  async function verifyAndSave(input, button, status, done) {
+    const code = input.value.trim();
+    if (code.length < 4) {
+      setFeedback(status, "bad", "보호자 코드를 4자 이상 입력하세요.");
+      return;
+    }
+    button.disabled = true;
+    setFeedback(status, "info", "보호자 코드를 확인하는 중…");
+    try {
+      const data = await api.verifyCode(code);
+      input.value = "";
+      setupNote = null;
+      lastLoadError = "";
+      offlineToastShown = false;
+      store.patch((s) => ({ parentCode: code, ...listPatch(s, data) }));
+      const text = `연결 성공 · 등록된 아이 ${store.get().children.length}명`;
+      setFeedback(status, "good", text);
+      done?.(text);
+    } catch (e) {
+      setFeedback(status, "bad", e?.status === 401 ? WRONG_CODE : e?.message || String(e));
+    } finally {
+      button.disabled = false;
+    }
+  }
+  $("saveParentStart").onclick = () =>
+    verifyAndSave($("parentCodeStart"), $("saveParentStart"), $("parentSetupStatus"), (text) => {
+      toast(text, "good");
+      router.replace("#/");
+    });
+  $("parentCodeStart").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("saveParentStart").click();
+  });
+
+  // ===== [start] 시작: 탭·새로고침·라우터·자동 갱신 =====
+  $("tabToday").onclick = () => router.go("#/");
+  $("tabChildren").onclick = () => router.go("#/children");
+  $("tabSettings").onclick = () => router.go("#/settings");
+  $("refreshFamily").onclick = () => {
+    refreshAll({ force: true });
+    const id = router.current.id;
+    if (id) loadDetail(id, { force: true });
+  };
+  if (!Number.isInteger(history.state?.idx)) history.replaceState({ ...(history.state || {}), idx: 0 }, "", location.href);
+  lastIdx = navIdx();
+  // 해시가 바뀔 때(탭·카드·뒤로 가기): 새 history 항목에는 번호를 붙여 router.back 이 앱 안에서만 되돌아가게 한다.
+  window.addEventListener("hashchange", () => {
+    if (!Number.isInteger(history.state?.idx)) history.replaceState({ idx: lastIdx + 1 }, "", location.href);
+    onRoute();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) autoRefresh();
+  });
+  window.addEventListener("online", () => {
+    offlineToastShown = false;
+    autoRefresh();
+  });
+  setInterval(renderLoadStatus, 60000);
+  store.subscribe(scheduleRender);
+  onRoute();
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+  window.ParentApp = Object.freeze({ store, router, computeStats, api });
+  if (window.markVocabAppReady) window.markVocabAppReady();
+})();

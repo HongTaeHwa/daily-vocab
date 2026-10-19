@@ -3,43 +3,248 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>매일 영단어 보호자 — 설치</title>
-<!-- 보호자 전용 설치 페이지. 이 주소에서 홈 화면에 추가하면 ‘매일 영단어 보호자’라는 별도 아이콘으로 설치되고,
-     실행하면 보호자 모드(아이들 관리 화면)로 시작한다. 앱 본체는 index.html 하나이며 ?mode=parent 로 구분한다. -->
+<meta name="color-scheme" content="light" />
+<title>매일 영단어 보호자</title>
+<!-- 보호자 앱. 아이 앱(index.html)과 따로인 페이지·스크립트·저장 키(daily_vocab_parent_v1)를 쓴다. 이 주소에서 홈 화면에 추가하면 ‘영단어 보호자’ 아이콘이 생긴다.
+     화면은 해시 라우트(#/, #/children, #/child/<id>/<탭>, #/child/<id>/sets/<new|세트 id>, #/settings, #/setup)이고 parent.js 가 그린다. -->
 <link rel="manifest" href="./manifest-parent.webmanifest">
 <meta name="theme-color" content="#133263">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="영단어 보호자">
 <link rel="apple-touch-icon" href="./icons/parent-apple-touch-icon.png">
-<style>
-body{margin:0;background:#f3f6fb;font-family:system-ui,-apple-system,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#1d2a3d;line-height:1.55}
-header{background:linear-gradient(118deg,#123466,#2359b0);color:#fff;padding:calc(18px + env(safe-area-inset-top)) 20px 18px}
-header h1{margin:0;font-size:22px}header p{margin:4px 0 0;color:#dfebff;font-size:14px}
-main{max-width:640px;margin:0 auto;padding:16px}
-.card{background:#fff;border:1px solid #dbe5f1;border-radius:18px;padding:18px;margin-top:14px}
-h2{font-size:17px;color:#133263;margin:0 0 8px}
-ol{padding-left:20px;margin:6px 0}li{margin:4px 0}
-.btn{display:inline-block;margin-top:10px;background:#265cc3;color:#fff;text-decoration:none;font-weight:800;padding:12px 18px;border-radius:13px}
-.muted{color:#61728a;font-size:14px}
-code{background:#eef4ff;padding:1px 6px;border-radius:6px}
-</style>
+<link rel="stylesheet" href="./parent.css?v=20261018-21">
 </head>
-<body>
-<header><h1>👨‍👩‍👧 매일 영단어 보호자</h1><p>아이들의 시험 기록 · 오늘의 단어 · 제한 시간을 관리하는 화면</p></header>
+<body class="no-code">
+<header class="topbar">
+  <div class="brand">👨‍👩‍👧 매일 영단어 보호자<small id="familyLoadStatus" role="status">아이들 기록 · 오늘의 단어 · 세트 관리</small></div>
+  <button type="button" class="icon-btn" id="refreshFamily" aria-label="새로고침">🔄</button>
+</header>
 <main>
-  <div class="card">
-    <h2>보호자 앱으로 설치하기</h2>
-    <p class="muted">이 페이지에서 홈 화면에 추가하면 <b>‘영단어 보호자’</b>라는 별도 아이콘이 생기고, 열면 바로 아이들 관리 화면으로 시작해요. 아이용 앱과 저장 공간이 따로라 보호자 코드가 섞이지 않습니다.</p>
-    <ol>
-      <li><b>아이폰</b>: Safari에서 이 페이지를 연 채 공유(⬆) → <b>홈 화면에 추가</b>.</li>
-      <li><b>갤럭시·안드로이드</b>: Chrome 메뉴(⋮) → <b>홈 화면에 추가</b> 또는 <b>앱 설치</b>.</li>
-      <li>설치한 앱을 열고 <b>보호자 코드</b>(Worker 비밀값 <code>PARENT_PASSCODE</code>)를 넣으면 끝. 아이 추가 → 아이 코드·링크를 아이 기기로 보내세요.</li>
-    </ol>
-    <a class="btn" href="./?mode=parent">설치 없이 보호자 화면 열기 →</a>
+
+<!-- 코드 입력 (#/setup): 보호자 코드가 없으면 어떤 주소로 열어도 여기로 온다 -->
+<section class="view" id="setup" tabindex="-1" aria-label="보호자 코드 입력">
+  <div class="card" id="parentSetup">
+    <h2 class="section-title">👨‍👩‍👧 보호자 앱 시작하기</h2>
+    <p class="muted">아이들의 시험 기록·오늘의 단어·세트를 관리하는 앱이에요. 시작하려면 보호자 코드(Worker 비밀값 <code>PARENT_PASSCODE</code>)를 넣어 주세요. 아이 기기에는 넣지 마세요.</p>
+    <div class="controls"><input id="parentCodeStart" type="password" autocomplete="off" spellcheck="false" placeholder="보호자만 아는 코드" aria-label="보호자 코드"><button type="button" class="btn primary" id="saveParentStart">시작</button></div>
+    <div id="parentSetupStatus" class="feedback info" role="status"></div>
+    <details class="help" id="installGuide">
+      <summary>📲 홈 화면에 설치하기</summary>
+      <ol>
+        <li><b>아이폰</b>: Safari에서 이 페이지를 연 채 공유(⬆) → <b>홈 화면에 추가</b>. ‘영단어 보호자’ 아이콘이 생겨요.</li>
+        <li><b>갤럭시·안드로이드</b>: Chrome 메뉴(⋮) → <b>홈 화면에 추가</b> 또는 <b>앱 설치</b>.</li>
+        <li>설치한 앱을 열고 보호자 코드를 넣으면 끝. ‘아이들’에서 아이를 추가하고 아이 코드·링크를 아이 기기로 보내세요.</li>
+      </ol>
+      <p>아이폰은 Safari와 홈 화면 앱의 저장 공간이 달라서, 설치한 앱에서 코드를 한 번 더 넣어야 해요.</p>
+    </details>
+    <p class="muted">아이용 앱은 따로예요. 아이 기기에는 <a href="./">아이용 앱</a>을 설치하고, 이 앱에서 만든 아이 코드나 전용 링크로 연결하세요.</p>
+  </div>
+</section>
+
+<!-- 오늘 (#/): 아이마다 카드 1장 -->
+<section class="view" id="today" tabindex="-1" aria-label="오늘">
+  <div class="today-head"><h2 class="section-title">👀 오늘 한눈에</h2><span class="muted" id="todayDate"></span></div>
+  <div id="familyOverview" class="overview"></div>
+  <p class="muted">‘오늘’과 ‘이번 주’는 이 폰의 날짜 기준이에요. 카드를 누르면 그 아이의 기록·세트·설정을 볼 수 있어요.</p>
+</section>
+
+<!-- 아이들 (#/children) -->
+<section class="view" id="children" tabindex="-1" aria-label="아이들">
+  <div class="card" id="childrenCard">
+    <h2 class="section-title">🧒 아이들</h2>
+    <div id="childrenList"></div>
   </div>
   <div class="card">
-    <h2>아이용 앱은 따로</h2>
-    <p class="muted">아이 기기에는 <a href="./">https://hongtaehwa.github.io/daily-vocab/</a> 를 설치하고, 보호자 폰에서 받은 아이 코드나 전용 링크로 연결하세요. 아이 기기에 보호자 코드를 넣지 마세요.</p>
+    <h2 class="section-title">➕ 아이 추가</h2>
+    <div class="controls"><input id="newChildName" type="text" maxlength="20" autocomplete="off" placeholder="아이 이름 (예: 하늘)" aria-label="아이 이름"><button type="button" class="btn primary" id="addChild">➕ 아이 추가</button></div>
+    <div id="addChildStatus" class="feedback info" role="status"></div>
+    <p class="muted">아이를 만들면 6자리 아이 코드와 전용 링크가 생겨요. 아이 기기(아이폰·태블릿 모두)에서 그 코드를 넣거나 링크를 열면 같은 아이로 연결돼요.</p>
   </div>
+</section>
+
+<!-- 아이 (#/child/<id>/<탭>) -->
+<section class="view" id="child" tabindex="-1" aria-label="아이">
+  <div class="card" id="childDetail">
+    <div class="child-top"><button type="button" class="link-btn" id="closeChildDetail">← 뒤로</button><h2 class="section-title" id="childDetailTitle"></h2></div>
+    <p id="childDetailSummary" class="muted"></p>
+    <nav class="subtabs" id="childTabs" aria-label="아이 메뉴">
+      <button type="button" class="subtab" id="subRecords" data-tab="records"><span class="ico">🕒</span>기록</button>
+      <button type="button" class="subtab" id="subSets" data-tab="sets"><span class="ico">📚</span>세트</button>
+      <button type="button" class="subtab" id="subDaily" data-tab="daily"><span class="ico">📬</span>오늘의 단어</button>
+      <button type="button" class="subtab" id="subSettings" data-tab="settings"><span class="ico">🔗</span>설정</button>
+      <button type="button" class="subtab" id="subQuestions" data-tab="questions"><span class="ico">📷</span>질문</button>
+    </nav>
+  </div>
+
+  <div class="card child-panel" id="panelRecords">
+    <h3 class="section-title">📊 요약</h3>
+    <div id="recordsSummary" class="stats"></div>
+    <div class="box">
+      <h3 class="section-title">📉 자주 틀린 단어 (최근 2주)</h3>
+      <div id="missedTop" class="chips"></div>
+    </div>
+    <div class="box">
+      <h3 class="section-title">🕒 기록</h3>
+      <div class="filters"><select id="recordsSet" aria-label="세트"></select><select id="recordsDays" aria-label="기간"><option value="7">최근 7일</option><option value="30">최근 30일</option><option value="0">전체</option></select></div>
+      <p id="recordsNote" class="muted"></p>
+      <div id="childRecords"></div>
+    </div>
+  </div>
+
+  <div class="card child-panel" id="panelSets">
+    <div id="setsBox">
+      <h3 class="section-title">📚 세트</h3>
+      <p class="muted">여기 있는 세트가 이 아이의 모든 기기(아이폰·태블릿)에 똑같이 들어가요. 아이 기기에서 만들거나 고친 세트도 여기로 올라와요.</p>
+      <div id="childSets" class="set-list"></div>
+      <div class="actionbar"><button type="button" class="btn primary" id="sendNewSet">➕ 세트 만들어 보내기 (사진)</button></div>
+    </div>
+    <div class="box">
+      <label class="check"><input type="checkbox" id="setsLock"> 🔒 아이 기기에서 세트 고치기 잠금</label>
+      <p class="muted">잠그면 아이 기기에서는 세트를 만들거나 고치거나 지울 수 없고 단어를 보기만 해요(찾아본 단어 세트와 AI가 인정한 답은 계속 쌓여요). 바꾸면 바로 저장되고, 아이 기기가 다음에 앱을 열 때부터 적용돼요.</p>
+    </div>
+    <div id="setsStatus" class="feedback info" role="status"></div>
+  </div>
+
+  <div class="card child-panel" id="panelDaily">
+    <div id="planBox">
+      <h3 class="section-title">📬 오늘의 단어</h3>
+      <p class="muted">켜 두면 매일 정한 시각에 아이 수준에 맞는 단어를 만들어 아이 홈에 ‘오늘의 단어’ 카드로 보여 줘요. 복습(최근 틀린 단어) 최대 3개 + 새 단어로 채우고, 새 단어는 아이의 최근 세트(교재) 수준을 기준으로 AI가 골라요.</p>
+      <label class="check" style="margin-top:10px"><input type="checkbox" id="planEnabled"> 매일 오늘의 단어 만들기</label>
+      <div class="controls"><label for="planLevel">수준</label><select id="planLevel"></select><input id="planLevelCustom" type="text" maxlength="40" autocomplete="off" placeholder="예: 중3 상위권" class="hidden" aria-label="수준 직접 입력"></div>
+      <div class="controls"><label for="planCount">하루 단어 수</label><select id="planCount"></select><label for="planHour">만드는 시각</label><select id="planHour"></select></div>
+      <div class="actionbar"><button type="button" class="btn primary" id="savePlan">저장</button><button type="button" class="btn outline" id="makeDailyNow">오늘 것 지금 만들기</button></div>
+      <div id="planStatus" class="feedback info" role="status"></div>
+      <p id="planAnchor" class="muted"></p>
+    </div>
+    <div class="box">
+      <h3 class="section-title">👀 오늘 것 미리보기</h3>
+      <div id="dailyPreview"></div>
+    </div>
+  </div>
+
+  <div class="card child-panel" id="panelSettings">
+    <div id="linkBox">
+      <h3 class="section-title">🔗 아이 기기 연결</h3>
+      <p>아이 코드: <strong id="childCodeText" class="code-text"></strong></p>
+      <p class="muted">아이 전용 링크: <span id="childLinkText" class="mono"></span></p>
+      <div class="actionbar"><button type="button" class="btn small primary" id="copyLink">링크 복사</button><button type="button" class="btn small outline" id="copyCode">코드 복사</button><button type="button" class="btn small outline" id="regenCode">코드 새로 만들기</button></div>
+      <p class="muted">갤럭시 태블릿은 이 링크를 Chrome에서 열면 바로 연결돼요. 아이폰은 홈 화면에 설치한 아이용 앱을 연 뒤 설정 → 가족 기록함에 코드를 넣어 주세요(Safari와 홈 화면 앱은 저장 공간이 달라요).</p>
+      <p id="deviceList" class="muted"></p>
+      <div id="linkStatus" class="feedback info" role="status"></div>
+    </div>
+    <div class="box">
+      <h3 class="section-title">✏️ 이름</h3>
+      <div class="controls"><input id="renameChild" type="text" maxlength="20" autocomplete="off" aria-label="아이 이름"><button type="button" class="btn small" id="saveChildName">이름 저장</button></div>
+      <div id="nameStatus" class="feedback info" role="status"></div>
+    </div>
+    <div class="box">
+      <h3 class="section-title">⏱ 문제당 제한 시간</h3>
+      <div class="controls"><label for="planTimeLimit">제한 시간</label><select id="planTimeLimit"></select></div>
+      <p class="muted">이 아이의 <b>모든 시험</b>에 적용돼요(오늘의 단어가 꺼져 있어도). 시간이 지나면 그 문제는 ‘모름’으로 기록되고, 앱 밖에 나가 있어도 시간은 흘러요. 바꾸면 바로 저장되고, 아이 기기가 다음에 앱을 열 때부터 적용돼요.</p>
+      <div id="limitStatus" class="feedback info" role="status"></div>
+    </div>
+    <div class="box">
+      <h3 class="section-title">🗑 서버에서 삭제</h3>
+      <p class="muted">이 아이의 기록·세트·아이 코드가 가족 서버에서 모두 지워지고, 연결된 기기는 다시 연결해야 해요. 아이 기기에 있는 기록은 그대로예요.</p>
+      <div class="actionbar"><button type="button" class="btn outline danger small" id="deleteChild">이 아이 서버에서 삭제…</button></div>
+      <div id="deleteConfirm" class="danger-zone hidden">
+        <p><b id="deleteConfirmText"></b></p>
+        <div class="controls"><input id="deleteConfirmName" type="text" maxlength="20" autocomplete="off" aria-label="지울 아이 이름"><button type="button" class="btn danger solid small" id="deleteChildGo" disabled>삭제</button><button type="button" class="btn outline small" id="deleteChildCancel">취소</button></div>
+      </div>
+      <div id="deleteStatus" class="feedback info" role="status"></div>
+    </div>
+  </div>
+
+  <div class="card child-panel" id="panelQuestions">
+    <h3 class="section-title">📷 물어본 문제 <span class="pill" id="childQuestionCount">0개</span></h3>
+    <p id="questionsSummary" class="muted"></p>
+    <p class="muted">아이가 찾기 탭의 ‘문제 물어보기’로 AI 선생님에게 물은 문제예요. 사진은 저장되지 않고 어떤 문제를 무엇 때문에 물었는지 요약만 남아요.</p>
+    <div id="childQuestions"></div>
+  </div>
+</section>
+
+<!-- 세트 편집 (#/child/<id>/sets/<new|세트 id>): 안쪽 화면은 editor.js(SetEditor.mount)가 만든다 -->
+<section class="view" id="editor" tabindex="-1" aria-label="세트 편집"></section>
+
+<!-- 설정 (#/settings) -->
+<section class="view" id="settings" tabindex="-1" aria-label="설정">
+  <div class="card">
+    <h2 class="section-title">🔑 보호자 코드 <span id="parentState" class="pill"></span></h2>
+    <p class="muted">보호자 코드는 이 폰에만 저장돼요. 코드를 지우면 이 폰에 저장한 아이들 기록(캐시)도 함께 지워져요. 서버의 기록은 그대로예요.</p>
+    <details class="help" id="changeCode">
+      <summary>코드 바꾸기</summary>
+      <div class="controls"><input id="parentCode" type="password" autocomplete="off" spellcheck="false" placeholder="새 보호자 코드" aria-label="새 보호자 코드"><button type="button" class="btn primary" id="saveParent">저장</button></div>
+      <div id="parentStatus" class="feedback info" role="status"></div>
+    </details>
+    <div class="actionbar"><button type="button" class="btn outline danger" id="clearParent">보호자 코드 삭제</button></div>
+    <details class="help" id="serverBox">
+      <summary>고급: 서버 주소</summary>
+      <p>보통은 바꿀 필요가 없어요. 가족 서버(Cloudflare Worker)를 따로 만들었을 때만 바꾸세요.</p>
+      <div class="controls"><input id="parentServer" type="url" autocomplete="off" spellcheck="false" aria-label="서버 주소"><button type="button" class="btn small" id="saveServer">저장</button></div>
+      <div id="serverStatus" class="feedback info" role="status"></div>
+    </details>
+  </div>
+  <div class="card">
+    <h2 class="section-title">🔔 알림 <span class="pill">준비 중</span></h2>
+    <p class="muted">‘오늘 아직 시험을 안 봤어요’, ‘오늘의 단어를 끝냈어요’ 같은 알림을 받을 수 있게 준비하고 있어요.</p>
+  </div>
+  <div class="card">
+    <h2 class="section-title">📲 설치 · 아이용 앱</h2>
+    <p class="muted">아이폰은 Safari 공유(⬆) → 홈 화면에 추가, 갤럭시는 Chrome 메뉴(⋮) → 홈 화면에 추가 또는 앱 설치로 이 보호자 앱을 설치할 수 있어요.</p>
+    <div class="actionbar"><a class="btn outline" id="openChildApp" href="./" target="_blank" rel="noopener">아이용 앱 열기</a></div>
+  </div>
+  <div class="card">
+    <h2 class="section-title">ℹ️ 앱 정보</h2>
+    <div id="appStatus" role="status" class="muted">버전 20261018-21 · 화면을 준비하는 중…</div>
+    <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
+  </div>
+</section>
 </main>
+<nav class="tabbar" aria-label="메뉴">
+  <button type="button" class="tab active" id="tabToday" aria-current="page"><span class="ico">🏠</span>오늘</button>
+  <button type="button" class="tab" id="tabChildren" aria-current="false"><span class="ico">🧒</span>아이들</button>
+  <button type="button" class="tab" id="tabSettings" aria-current="false"><span class="ico">⚙️</span>설정</button>
+</nav>
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+<div id="globalNotice" class="global-notice hidden" role="alert"></div>
+<script>
+(function () {
+  var release = '20261018-21';
+  var ready = false;
+  var lastError = '';
+  var banner = document.getElementById('appStatus');
+  var notice = document.getElementById('globalNotice');
+  function report(message, alert) {
+    banner.textContent = message;
+    if (alert) { notice.textContent = message; notice.classList.remove('hidden'); }
+  }
+  window.markVocabAppReady = function () { ready = true; report('버전 ' + release + ' · 준비 완료'); };
+  window.addEventListener('error', function (event) {
+    lastError = event.message || '화면 파일을 불러오지 못했습니다';
+    report('화면 처리 오류가 발생했습니다. 설정 → 새 버전 불러오기를 눌러 주세요. 오류: ' + lastError, true);
+  });
+  window.addEventListener('unhandledrejection', function (event) {
+    lastError = event.reason && event.reason.message || String(event.reason || '알 수 없는 오류');
+    report('화면 처리 오류: ' + lastError + ' · 설정 → 새 버전 불러오기를 눌러 주세요.', true);
+  });
+  notice.addEventListener('click', function () { notice.classList.add('hidden'); });
+  document.getElementById('checkApp').onclick = function () {
+    var editor = document.getElementById('extractWords'); // 편집기 화면은 editor.js 가 만든다(못 불러왔으면 없음)
+    report('버전 ' + release + ' · ' + (ready ? '앱 준비 완료' : '앱 초기화 실패') + ' · 편집기 ' + (editor && typeof editor.onclick === 'function' ? '연결됨' : '연결 안 됨') + (lastError ? ' · 오류: ' + lastError : ''));
+  };
+  document.getElementById('refreshApp').onclick = function () {
+    if (!navigator.onLine) { report('인터넷에 연결한 뒤 새 버전을 불러오세요.'); return; }
+    if (!confirm('작성 중인 세트는 초기화됩니다. 보호자 코드와 아이들 기록은 유지됩니다. 새 버전을 불러올까요?')) return;
+    report('새 버전을 불러오는 중…');
+    var url = new URL(location.href);
+    url.searchParams.set('update', String(Date.now()));
+    location.replace(url.href);
+  };
+  setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
+})();
+</script>
+<script src="./shared.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./editor.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./parent.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>
