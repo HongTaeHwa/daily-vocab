@@ -492,6 +492,7 @@ const { pathToFileURL } = require("url");
     const copy = (v) => structuredClone(v);
     return {
       async get(k) {
+        if (Array.isArray(k)) return new Map(k.filter((x) => m.has(x)).map((x) => [x, copy(m.get(x))])); // 여러 키: 있는 것만 Map
         return m.has(k) ? copy(m.get(k)) : undefined;
       },
       async put(k, v) {
@@ -502,8 +503,9 @@ const { pathToFileURL } = require("url");
         if (Array.isArray(k)) return k.filter((x) => m.delete(x)).length;
         return m.delete(k);
       },
-      async list({ prefix = "", start, reverse = false, limit } = {}) {
-        let keys = [...m.keys()].filter((k) => k.startsWith(prefix) && (start === undefined || k >= start)).sort();
+      async list({ prefix = "", start, end, reverse = false, limit } = {}) {
+        // Durable Object storage.list 와 같은 뜻: start 포함·end 미포함, reverse 는 순서만 바꾼다(limit 는 그 순서로)
+        let keys = [...m.keys()].filter((k) => k.startsWith(prefix) && (start === undefined || k >= start) && (end === undefined || k < end)).sort();
         if (reverse) keys.reverse();
         if (limit) keys = keys.slice(0, limit);
         return new Map(keys.map((k) => [k, copy(m.get(k))]));
@@ -586,13 +588,51 @@ const { pathToFileURL } = require("url");
   assert.equal(c.records[0].id, "r1");
   data = await familyCase("/family/" + child.id, { method: "GET", ...PARENT }, 200);
   assert.equal(data.child.name, "하늘");
-  assert.equal(data.records.length, 28, "detail = all records");
-  assert.equal(data.records[27].id, "old", "oldest last");
-  // 같은 기록을 다시 보내면 덮어쓴다(중복 없음)
-  await familyCase("/sync", { body: { child, records: [rec("r1", r1.completedAt, { correct: 9 })] } }, 200);
-  data = await familyCase("/family/" + child.id, { method: "GET", ...PARENT }, 200);
-  assert.equal(data.records.length, 28, "resend does not duplicate");
+  assert.equal(data.records.length, 27, "detail = last 30 days by default");
+  assert(!data.records.some((r) => r.id === "old") && data.records[0].id === "r1", "30-day-old record left for ‘more’, newest first");
+  assert.deepEqual([data.recordCount, data.more], [28, true], "recordCount = every record, more = older ones exist");
+  assert(Array.isArray(data.questions) && data.today && typeof data.today.date === "string", "questions and today unchanged");
+  data = await familyCase("/family/" + child.id + "?days=31", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([data.records.length, data.records[27].id, data.more], [28, "old", false], "days=31 reaches the old record, nothing more");
+  data = await familyCase("/family/" + child.id + "?days=365&limit=5", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([data.records.map((r) => r.id), data.recordCount, data.more], [["r1", "recent0", "recent1", "recent2", "recent3"], 28, true], "limit keeps the newest");
+  for (const bad of ["days=0", "days=366", "days=abc", "days=1.5", "limit=0", "limit=501", "limit=-1", "limit=x"])
+    await familyCase("/family/" + child.id + "?" + bad, { method: "GET", ...PARENT }, 400, bad.split("=")[0]);
+  // GET /family?days=1~30 (기본 14): 아이별 요약 기록 창
+  data = await familyCase("/family?days=1", { method: "GET", ...PARENT }, 200);
+  assert(data.children[0].records.length >= 20 && data.children[0].records.length < 27 && data.children[0].records.every((r) => Date.parse(r.completedAt) > Date.now() - 86400000), "1-day window");
+  data = await familyCase("/family?days=30", { method: "GET", ...PARENT }, 200);
+  assert.equal(data.children[0].records.length, 27, "30-day window");
+  assert.equal(data.children[0].recordCount, 28, "list shows the exact count too");
+  await familyCase("/family?days=31", { method: "GET", ...PARENT }, 400, "days");
+  await familyCase("/family?days=0", { method: "GET", ...PARENT }, 400, "days");
+  // 같은 기록을 다시 보내면 덮어쓴다(중복 없음, 개수도 그대로)
+  await familyCase("/sync", { body: { child, records: [rec("r1", r1.completedAt, { correct: 9 }), rec("r1b", hoursAgo(0.5))] } }, 200);
+  data = await familyCase("/family/" + child.id + "?days=365", { method: "GET", ...PARENT }, 200);
+  assert.equal(data.records.length, 29, "resend does not duplicate");
+  assert.equal(data.recordCount, 29, "resend is not counted again, the new record is");
   assert.equal(data.records.find((r) => r.id === "r1").correct, 9, "resend overwrites");
+  // ‘더 보기’ 페이지(보호자 코드만): before 이전(미포함) 최신순
+  const page1 = await familyCase("/family/" + child.id + "/records?limit=10", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([page1.records.length, page1.records[0].id, page1.more], [10, "r1b", true], "first page from the newest");
+  assert(typeof page1.serverTime === "string", "serverTime on pages");
+  const page2 = await familyCase("/family/" + child.id + "/records?before=" + encodeURIComponent(page1.records[9].completedAt) + "&limit=10", { method: "GET", ...PARENT }, 200);
+  const page3 = await familyCase("/family/" + child.id + "/records?before=" + encodeURIComponent(page2.records[9].completedAt) + "&limit=10", { method: "GET", ...PARENT }, 200);
+  const paged = [...page1.records, ...page2.records, ...page3.records].map((r) => r.id);
+  assert.deepEqual([page2.more, page3.records.length, page3.more, new Set(paged).size, paged[28]], [true, 9, false, 29, "old"], "pages continue without overlap: " + paged.join(","));
+  data = await familyCase("/family/" + child.id + "/records", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([data.records.length, data.more], [29, false], "default page size 100");
+  await familyCase("/family/" + child.id + "/records", { method: "GET" }, 401, "보호자 코드"); // 가족 코드로는 읽을 수 없다
+  await familyCase("/family/" + child.id + "/records", { body: {}, ...PARENT }, 404, "not_found");
+  await familyCase("/family/99999999-aaaa-4bbb-8ccc-dddddddddddd/records", { method: "GET", ...PARENT }, 404, "unknown_child");
+  await familyCase("/family/" + child.id + "/records?before=nope", { method: "GET", ...PARENT }, 400, "before");
+  await familyCase("/family/" + child.id + "/records?limit=0", { method: "GET", ...PARENT }, 400, "limit");
+  await familyCase("/family/" + child.id + "/records?limit=501", { method: "GET", ...PARENT }, 400, "limit");
+  // 옛 대략값 recordCount(다시 보낸 기록까지 셈)는 상세를 처음 볼 때 한 번 실제로 센다
+  await familyObject.storage.put("child:" + child.id, { ...(await familyObject.storage.get("child:" + child.id)), recordCount: 57, recordCountExact: undefined });
+  data = await familyCase("/family/" + child.id, { method: "GET", ...PARENT }, 200);
+  assert.equal(data.recordCount, 29, "legacy approximate count recounted");
+  assert.equal((await familyObject.storage.get("child:" + child.id)).recordCountExact, true, "recount remembered");
   // 보호자 코드는 /sync 에도, AI 요청에도 통한다
   await familyCase("/sync", { body: { child }, ...PARENT }, 200);
   globalThis.fetch = async (url, init) => {
@@ -610,7 +650,8 @@ const { pathToFileURL } = require("url");
   limiter.allow = true;
   await familyCase("/sync", { body: { child }, env: { ...fenv, RATE_LIMITER: limiter } }, 200);
   await familyCase("/family/" + child.id, { method: "GET", ...PARENT, env: { ...fenv, RATE_LIMITER: limiter } }, 200);
-  assert(limiter.keys[0].startsWith("/sync:") && limiter.keys[1].startsWith("/family:"), "family rate-limit buckets: " + limiter.keys.join(","));
+  await familyCase("/family/" + child.id + "/records", { method: "GET", ...PARENT, env: { ...fenv, RATE_LIMITER: limiter } }, 200);
+  assert(limiter.keys[0].startsWith("/sync:") && limiter.keys[1].startsWith("/family:") && limiter.keys[2].startsWith("/family:"), "family rate-limit buckets (pages share /family): " + limiter.keys.join(","));
   limiter.allow = false;
   await familyCase("/sync", { body: { child }, env: { ...fenv, RATE_LIMITER: limiter } }, 429);
   limiter.allow = true;
@@ -623,9 +664,24 @@ const { pathToFileURL } = require("url");
     lastTrim = j.trimmed;
   }
   assert(lastTrim > 0, "last bulk sync trimmed old records");
+  // 기록 5,000개 아이의 상세 첫 응답은 200개 이하(보호자 앱이 받는 양), 전체 수는 recordCount
   data = await familyCase("/family/" + child.id, { method: "GET", ...PARENT }, 200);
-  assert.equal(data.records.length, 5000, "capped at 5000 records per child");
-  assert(data.records.some((r) => r.id === "old") && !data.records.some((r) => r.id === "bulk5099"), "oldest bulk records dropped, newer kept");
+  assert(data.records.length <= 200 && data.recordCount === 5000 && data.more === true, `detail of a 5,000-record child: ${data.records.length} records, recordCount ${data.recordCount}`);
+  data = await familyCase("/family/" + child.id + "?days=365", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([data.records.length, data.recordCount, data.more], [200, 5000, true], "a year of records is still capped at limit 200");
+  // ‘더 보기’ 페이지로 끝까지 받으면 정확히 5,000개(겹침 없음): 오래된 bulk 는 지워지고 최근 것은 남는다
+  const everything = [];
+  let cursor = "", pages = 0, more = true;
+  while (more && pages < 20) {
+    const p = await familyCase("/family/" + child.id + "/records?limit=500" + (cursor ? "&before=" + encodeURIComponent(cursor) : ""), { method: "GET", ...PARENT }, 200);
+    everything.push(...p.records);
+    cursor = p.records[p.records.length - 1].completedAt;
+    more = p.more;
+    pages++;
+  }
+  assert.equal(everything.length, 5000, "capped at 5000 records per child");
+  assert.equal(new Set(everything.map((r) => r.id)).size, 5000, "pages never overlap");
+  assert(everything.some((r) => r.id === "old") && !everything.some((r) => r.id === "bulk5099"), "oldest bulk records dropped, newer kept");
   // 삭제(보호자만) → 목록에서 사라진다
   await familyCase("/family/" + child.id, { method: "DELETE" }, 401);
   data = await familyCase("/family/" + child.id, { method: "DELETE", ...PARENT }, 200);
@@ -993,15 +1049,27 @@ const { pathToFileURL } = require("url");
   assert.deepEqual([rr.records, rr.more], [[], false], "nothing after the newest record");
   rr = await familyCase("/records/" + rid, { method: "GET", ...PARENT }, 200); // 보호자 코드로도 읽을 수 있다
   assert.equal(rr.records.length, 3);
+  // 보호자 ‘더 보기’ 경계: before 는 미포함, ISO 로 맞춘 뒤 비교한다(아이 기기 복원 경로 /records 와 따로)
+  rr = await familyCase("/family/" + rid + "/records?before=" + encodeURIComponent(at(3)), { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([rr.records.map((r) => r.id), rr.more], [["x2", "x1"], false], "before is exclusive");
+  rr = await familyCase("/family/" + rid + "/records?before=" + encodeURIComponent(at(3)) + "&limit=1", { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([rr.records.map((r) => r.id), rr.more], [["x2"], true], "page of one with more");
+  rr = await familyCase("/family/" + rid + "/records?before=" + encodeURIComponent("2026-10-01T11:00:00+09:00"), { method: "GET", ...PARENT }, 200); // 11:00 KST = 02:00Z
+  assert.deepEqual(rr.records.map((r) => r.id), ["x1"], "before normalized to ISO");
+  rr = await familyCase("/family/" + rid + "/records?before=" + encodeURIComponent(at(1)), { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([rr.records, rr.more], [[], false], "nothing before the oldest record");
+  rr = await familyCase("/family/" + rid + "/records?before=" + encodeURIComponent(at(9)), { method: "GET", ...PARENT }, 200);
+  assert.equal(rr.records[0].daily === undefined && rr.records[2].daily, "2026-10-01", "compact records as stored on pages");
   limiter.keys.length = 0;
   limiter.allow = true;
   await familyCase("/records/" + rid, { method: "GET", env: { ...fenv, RATE_LIMITER: limiter } }, 200);
   assert(limiter.keys[0].startsWith("/records:"), "records has its own rate-limit bucket: " + limiter.keys[0]);
   await familyCase("/family/" + rid, { method: "DELETE", ...PARENT }, 200);
   await familyCase("/records/" + rid, { method: "GET" }, 404, "unknown_child");
+  await familyCase("/family/" + rid + "/records", { method: "GET", ...PARENT }, 404, "unknown_child");
 
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/tutor help/fallback retry/upstream error mapping/family store/daily words/child codes/set sync/record restore",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/tutor help/fallback retry/upstream error mapping/family store/detail window+record pages/daily words/child codes/set sync/record restore",
   );
 })().catch((e) => {
   console.error(e);

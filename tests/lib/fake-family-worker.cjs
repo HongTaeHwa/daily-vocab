@@ -1,17 +1,21 @@
 // 가짜 가족 Worker — tests/family.cjs · daily.cjs · parent.cjs · parent-sets.cjs 공용. Playwright 라우트로 worker/worker.js 의 FamilyStore 역할을 흉내 낸다.
-// 라우트: /join /settings/<id> /records/<id> /sync /sets/<id> /daily/<id> /grade /recognize /define, 보호자 /family /family/<id> /family/children
+// 라우트: /join /settings/<id> /records/<id> /sync /sets/<id> /daily/<id> /grade /recognize /define, 보호자 /family /family/<id> /family/<id>/records /family/children
 //        /family/<id>/(plan|code|name) /family/<id>/sets(/<setId>). 질문(/tutor 의 FamilyStore /question)은 seedChild 뒤 child.questions 에 직접 넣는다.
 //
-// const fake = await createFakeWorker(page, { server, familyCode, parentCode, setSync, daily, recordsPageSize, newWords });
+// const fake = await createFakeWorker(page, { server, familyCode, parentCode, setSync, daily, recordsPageSize, pagedDetail, detailPageSize, newWords });
 //   setSync (기본 true)       /sets/<id>·/family/<id>/sets 를 처리한다. false 면 옛 Worker처럼 404 not_found 이고 아이에게 세트 저장소가 없다(요약은 /sync 의 세트 목록).
 //   daily (기본 true)         /daily/<id> 조회·생성(복습 최대 3 + newWords). false 면 언제나 409 plan_disabled.
 //   recordsPageSize (기본 500) /records 한 페이지 최대 개수(페이지 넘김을 시험하려면 작게).
+//   pagedDetail (기본 true)   /family/<id> 가 ?days(기본 30)·limit(기본 200)로 기록을 줄이고 recordCount·more 를 붙이며 /family/<id>/records?before&limit 를 처리한다.
+//                             false 면 옛 Worker(2026-10-19 이전)처럼 상세가 전체 기록을 주고(recordCount·more 없음) /family/<id>/records 는 404 not_found.
+//   detailPageSize (기본 500)  /family/<id>/records 한 페이지 최대 개수(‘더 보기’ 페이지 넘김을 시험하려면 작게).
+//   목록(GET /family)의 기록은 Worker와 같이 최근 14일(20개 미만이면 최신 20개)이다.
 // → { requests, children, codes, gone, dailies, paths(path, method?), seedChild(id, name, code), liveSets(child), planOf(child), setMode("ok"|"abort"|"notfound") }
 //   requests: [{method, path, search, passcode, body}], children: Map(id → 아이), codes: Map(아이 코드 → id), gone: 지운 아이 id(그 id 의 /sync 는 404 unknown_child).
 "use strict";
 const DEFAULT_NEW_WORDS = ["glimpse", "verdict", "linger", "thrive", "plead", "subtle", "wither", "forge", "ample", "dwell", "exert", "notion"];
 
-async function createFakeWorker(page, { server, familyCode, parentCode, setSync = true, daily = true, recordsPageSize = 500, newWords = DEFAULT_NEW_WORDS } = {}) {
+async function createFakeWorker(page, { server, familyCode, parentCode, setSync = true, daily = true, recordsPageSize = 500, pagedDetail = true, detailPageSize = 500, newWords = DEFAULT_NEW_WORDS } = {}) {
   const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "GET, POST, DELETE, OPTIONS" };
   const reply = (route, status, body) => route.fulfill({ status, headers: cors, contentType: "application/json", body: JSON.stringify(body) });
   const notFound = (route) => reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
@@ -41,11 +45,20 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
     const d = dailies.get(c.id + ":" + date);
     return { date, exists: Boolean(d), count: d ? d.words.length : 0, completed: d?.completed || null };
   };
+  const newestFirst = (c) => [...c.records.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt));
+  // 목록의 아이별 기록: 최근 14일, 그보다 적으면 최신 20개(Worker summary 와 같은 규칙)
+  const listRecords = (c) => {
+    const all = newestFirst(c);
+    const since = new Date(Date.now() - 14 * 86400000).toISOString();
+    const recent = all.filter((r) => r.completedAt >= since);
+    return recent.length >= 20 ? recent : all.slice(0, 20);
+  };
   const summaryOf = (c) => ({
     id: c.id, name: c.name, joinCode: c.joinCode, devices: c.devices, sets: c.setStore ? setSummary(c) : c.sets, anchor: c.anchor, updatedAt: c.updatedAt, lastTestAt: c.lastTestAt,
     questionCount: (c.questions || []).length, lastQuestionAt: (c.questions || [])[0]?.askedAt || null,
     plan: planOf(c), today: todayOf(c, localDate()),
-    records: [...c.records.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt)),
+    recordCount: c.records.size,
+    records: listRecords(c),
   });
   const makeDaily = (c, date) => {
     const plan = planOf(c);
@@ -173,8 +186,19 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
     const am = /^\/family\/([A-Za-z0-9-]+)\/(plan|code|name)$/.exec(url.pathname);
     const m = /^\/family(?:\/([A-Za-z0-9-]+))?$/.exec(url.pathname);
     const csm = setSync ? /^\/family\/([A-Za-z0-9-]+)\/sets(?:\/([A-Za-z0-9_-]+))?$/.exec(url.pathname) : null;
-    if (!cm && !am && !m && !csm) return notFound(route);
+    const pm = pagedDetail && req.method() === "GET" ? /^\/family\/([A-Za-z0-9-]+)\/records$/.exec(url.pathname) : null;
+    if (!cm && !am && !m && !csm && !pm) return notFound(route);
     if (passcode !== parentCode) return reply(route, 401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." });
+    if (pm) {
+      // ‘더 보기’: before 보다 먼저 끝난(미포함) 기록을 최신순으로
+      const c = children.get(pm[1]);
+      if (!c) return unknownChild();
+      const before = url.searchParams.get("before");
+      if (before && !Number.isFinite(Date.parse(before))) return reply(route, 400, { error: "bad_request", message: "before는 ISO 시각이어야 합니다." });
+      const limit = Math.min(Number(url.searchParams.get("limit")) || 100, detailPageSize);
+      const all = newestFirst(c).filter((r) => !before || r.completedAt < new Date(before).toISOString());
+      return reply(route, 200, { records: all.slice(0, limit), more: all.length > limit, serverTime: now() });
+    }
     if (csm) {
       const c = children.get(csm[1]);
       if (!c) return unknownChild();
@@ -223,9 +247,17 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
     }
     const s = summaryOf(c);
     const d = dailies.get(c.id + ":" + localDate());
+    const all = newestFirst(c);
+    let window = {};
+    if (pagedDetail) {
+      // 새 Worker: 최근 days일 안에서 최신 limit개 + 전체 수 + 더 있음
+      const since = new Date(Date.now() - Number(url.searchParams.get("days") || 30) * 86400000).toISOString();
+      const records = all.filter((r) => r.completedAt >= since).slice(0, Number(url.searchParams.get("limit") || 200));
+      window = { records, recordCount: all.length, more: all.length > records.length };
+    } else window = { records: all }; // 옛 Worker: 인자를 무시하고 전체
     return reply(route, 200, {
       child: { ...s, records: undefined, today: undefined },
-      records: s.records,
+      ...window,
       today: { date: localDate(), exists: Boolean(d), words: d?.words || [], note: "", completed: d?.completed || null },
       questions: c.questions || [],
     });

@@ -3,6 +3,9 @@
 // → 해시 뒤로 가기 → 아이 화면 하위 탭 5개(기록 요약·자주 틀린 단어·필터·날짜별 기록 / 세트 목록·잠금 즉시 저장 / 오늘의 단어 계획 저장·지금 만들기·끄기
 //   / 연결 코드·링크·기기·이름·제한 시간 즉시 저장·코드 새로 만들기 / 질문) → 아이 추가 → 이름 2단계 확인 삭제 → 오프라인 캐시 → 보호자 코드 삭제(캐시 삭제·#/setup)
 // → 옛 설치 호환(index.html?mode=parent → parent.html, 옛 보호자 코드·서버 주소·목록 캐시 이전, 아이 키의 다른 필드 보존, ?mode=child, 보호자 코드만 있던 기기).
+// C단계: 상세는 ?days=30&limit=200, 자주 틀린 단어 고르기 → ‘복습 M/D’ 세트 보내기(이름 겹치면 (2)) → 세트 탭, 오늘의 단어 → ‘오늘의 단어 M/D’ 세트,
+//        ‘더 보기’ 페이지(겹침 없음·끝나면 숨김·옛 Worker 404면 조용히 숨김), 옛 Worker(전체 기록·recordCount 없음)면 최신 200개·버튼 없음,
+//        수준 제안 규칙(올리기·내리기·없음)·카드 ‘적용’(수준만 저장)·‘다음에’(7일 숨김), 뜻 없는 틀린 단어는 빼고 알림.
 // 가족 Worker 는 tests/lib/fake-family-worker.cjs 가 가짜로 응답한다(보호자 앱 기본 서버 주소를 가로챈다).
 const { chromium } = require("playwright");
 const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
@@ -44,6 +47,7 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
     return d.toISOString();
   };
   const minutesAgo = (n) => new Date(Date.now() - n * 60000).toISOString();
+  const md = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
   const rec = (id, completedAt, extra) => ({ id, setName: "하늘 DAY04", mode: "en_ko", range: "121~130번", startedAt: completedAt, completedAt, total: 10, correct: 8, partial: false, activeMs: 65000, missed: [], ...extra });
   // 하늘: 기기 2대 연결, 오늘 2회(화면 이탈 1·시간 초과 1)·어제 1회·8일 전 1회·40일 전 1회(옛 세트), 질문 1개, 세트 1개, 오늘의 단어 켜짐(7/10 완료)
   const haneul = fake.seedChild(HANEUL, "하늘", HANEUL_CODE);
@@ -114,6 +118,7 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await waitFor(() => page.isVisible("#child"), "child screen");
   assert((await hash()) === "#/child/" + HANEUL && (await page.isVisible("#panelRecords")) && (await page.isHidden("#panelSets")), "records tab by default: " + (await hash()));
   await waitFor(() => paths("/family/" + HANEUL, "GET").length === 1, "detail requested once");
+  assert(paths("/family/" + HANEUL, "GET")[0].search === "?days=30&limit=200", "detail asks for the 30-day window: " + paths("/family/" + HANEUL, "GET")[0].search);
   await page.goBack();
   await waitFor(() => page.isVisible("#today"), "back to today");
   assert((await hash()) === "#/", "hash back to #/");
@@ -144,6 +149,43 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert((await parentState()).prefs.recordsSet === "옛 세트" && (await parentState()).prefs.recordsDays === 0, "filters remembered");
   await page.selectOption("#recordsSet", "all");
   await page.selectOption("#recordsDays", "30");
+  assert((await page.isHidden("#loadMoreRecords")) && (await text("#recordsNote")) === "", "no ‘more’ when every record is already here (recordCount 5)");
+  assert((await parentState()).details[HANEUL].recordTotal === 5 && (await parentState()).details[HANEUL].more === true, "detail cache keeps recordCount and more");
+
+  // ---- 자주 틀린 단어 → 복습 세트 보내기: 기본 전부 선택, 눌러서 빼기, 이름 ‘복습 M/D’, 같은 이름이면 ‘(2)’ ----
+  assert((await page.$$eval("#missedTop .chip.pick.on", (c) => c.length)) === 6 && (await textHas("#missedPicked", "6개 골랐어요")), "all missed words picked by default");
+  await page.click('#missedTop .chip[data-word="strike"]');
+  await page.click('#missedTop .chip[data-word="linger"]');
+  await waitFor(() => textHas("#missedPicked", "4개 골랐어요"), "two chips unpicked");
+  assert((await page.getAttribute('#missedTop .chip[data-word="strike"]', "aria-pressed")) === "false", "unpicked chip state");
+  await page.click("#sendMissedSet");
+  await waitFor(() => page.evaluate(() => location.hash.endsWith("/sets")), "moves to the sets tab after sending");
+  const reviewName = "복습 " + md(new Date());
+  let sent = paths("/family/" + HANEUL + "/sets", "POST");
+  assert(sent.length === 1 && sent[0].passcode === PARENT_CODE, "review set sent with the parent code");
+  assert(sent[0].body.set.name === reviewName && /^[0-9a-f-]{36}$/.test(sent[0].body.set.id), "review set name and id: " + JSON.stringify(sent[0].body.set).slice(0, 120));
+  assert(
+    JSON.stringify(sent[0].body.set.words) ===
+      JSON.stringify([
+        { id: 1, en: "authority", ko: "권위", aliases: [], ipa: "" },
+        { id: 2, en: "devote", ko: "바치다", aliases: [], ipa: "" },
+        { id: 3, en: "function", ko: "기능", aliases: [], ipa: "" },
+        { id: 4, en: "indicate", ko: "나타내다", aliases: [], ipa: "" },
+      ]),
+    "review words (picked, numbered, meanings from the records): " + JSON.stringify(sent[0].body.set.words),
+  );
+  await waitFor(() => textHas("#childSets", reviewName + " · 4단어"), "review set listed");
+  assert((await textHas("#setsStatus", "보냈어요")) && (await textHas("#toast", `‘${reviewName}’ 4단어를 하늘에게 보냈어요`)), "toast: " + (await text("#toast")));
+  assert(fake.liveSets(children.get(HANEUL)).some((x) => x.name === reviewName && x.words.length === 4), "review set stored for the child's devices");
+  await page.click("#subRecords");
+  await waitFor(() => textHas("#missedPicked", "6개 골랐어요"), "picks reset to all");
+  await page.click("#sendMissedSet");
+  await waitFor(() => paths("/family/" + HANEUL + "/sets", "POST").length === 2, "second review set");
+  sent = paths("/family/" + HANEUL + "/sets", "POST")[1].body.set;
+  assert(sent.name === reviewName + " (2)" && sent.words.length === 6, "same name gets (2): " + sent.name);
+  await waitFor(() => textHas("#childSets", reviewName + " (2) · 6단어"), "second review set listed");
+  await page.click("#subRecords");
+  await waitFor(() => page.isVisible("#panelRecords"), "records tab again");
 
   // ---- 세트 탭: 목록(최근 점수·시험 횟수)·잠금 즉시 저장 ----
   await page.click("#subSets");
@@ -166,6 +208,18 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await waitFor(() => page.isVisible("#panelDaily"), "daily tab");
   await waitFor(() => page.evaluate(() => document.querySelectorAll("#dailyPreview .daily-word").length === 10), "preview lists today's words");
   assert((await page.$$eval("#dailyPreview .tag.review", (t) => t.length)) === 3 && (await textHas("#dailyPreview", "✅ 7 / 10 맞았어요")), "preview with review tags and completion");
+  assert(await page.isVisible("#saveDailyAsSet"), "save-as-set shown when today's words exist");
+  assert(await page.isHidden("#levelSuggest"), "no level suggestion for a mixed fortnight");
+  await page.click("#saveDailyAsSet");
+  await waitFor(() => paths("/family/" + HANEUL + "/sets", "POST").length === 3, "daily words sent as a set");
+  const dailySet = paths("/family/" + HANEUL + "/sets", "POST")[2].body.set;
+  const [, mm, dd] = localDate().split("-");
+  assert(dailySet.name === `오늘의 단어 ${Number(mm)}/${Number(dd)}` && dailySet.words.length === 10, "daily set name: " + dailySet.name);
+  assert(JSON.stringify(dailySet.words[0]) === JSON.stringify({ id: 1, en: "word0", ko: "뜻0", ipa: "", aliases: [] }) && !("kind" in dailySet.words[0]), "daily set words: " + JSON.stringify(dailySet.words[0]));
+  await waitFor(() => textHas("#childSets", dailySet.name + " · 10단어"), "daily set listed on the sets tab");
+  assert(paths("/family/" + HANEUL + "/plan", "POST").length === 2 && dailies.get(HANEUL + ":" + localDate()).words.length === 10, "saving as a set leaves the plan and today's words alone");
+  await page.click("#subDaily");
+  await waitFor(() => page.isVisible("#panelDaily"), "daily tab again");
   assert((await page.isChecked("#planEnabled")) && (await page.inputValue("#planLevel")) === "중2 상위권" && (await page.inputValue("#planCount")) === "10" && (await page.inputValue("#planHour")) === "16", "plan fields");
   assert((await textHas("#planAnchor", "하늘 DAY04")) && (await textHas("#planAnchor", "3단어")), "level anchor: " + (await text("#planAnchor")));
   await page.selectOption("#planCount", "15");
@@ -331,8 +385,155 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await barePage.waitForURL(/parent\.html/);
   await waitFor(() => barePage.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_parent_v1") || "{}").parentCode === "parent-9999"), "parent-code-only device migrated");
 
+  // ---- 수준 제안 규칙(순수 함수 ParentApp.suggestLevel) ----
+  const rules = await page.evaluate(() => {
+    const S = (wc, wa, pc, pa, missed = 0) => ({ week: { count: wc, avg: wa }, prevWeek: { count: pc, avg: pa }, missedTop: Array.from({ length: missed }, (_, i) => ({ en: "w" + i })) });
+    const f = (stats, level) => {
+      const r = ParentApp.suggestLevel(stats, level === undefined ? null : { level });
+      return r ? `${r.direction}:${r.to}:${r.avg}` : null;
+    };
+    return {
+      up: f(S(3, 92, 4, 95, 3), "중2 상위권"),
+      upDefault: f(S(5, 95, 3, 90, 5)),
+      tooManyMissed: f(S(3, 92, 4, 95, 6), "중2 상위권"),
+      fewTests: f(S(2, 100, 4, 100), "중2 상위권"),
+      oneWeekLow: f(S(3, 89, 4, 95), "중2 상위권"),
+      top: f(S(3, 95, 3, 95), "고2·수능 실전"),
+      custom: f(S(3, 95, 3, 95), "중3 상위권"),
+      down: f(S(1, 50, 2, 55, 9), "중2 상위권"),
+      bottom: f(S(2, 40, 2, 50), "초등 고학년 상위권"),
+      mixed: f(S(3, 95, 3, 55), "중2 상위권"),
+      noPrev: f(S(4, 30, 0, null), "중2 상위권"),
+    };
+  });
+  assert(
+    JSON.stringify(rules) ===
+      JSON.stringify({ up: "up:중3·고1:94", upDefault: "up:중3·고1:93", tooManyMissed: null, fewTests: null, oneWeekLow: null, top: null, custom: null, down: "down:중1:53", bottom: null, mixed: null, noPrev: null }),
+    "suggestLevel rules: " + JSON.stringify(rules),
+  );
+
+  // ---- ‘더 보기’ · 뜻 없는 틀린 단어 · 수준 제안 카드: 기록 27개(최근 13일 22개 + 40일 전 5개) 아이, ‘더 보기’ 한 페이지 2개 ----
+  const pg = await browser.newContext({ viewport: { width: 420, height: 900 }, serviceWorkers: "block" });
+  const pgPage = await pg.newPage();
+  pgPage.on("pageerror", (e) => errors.push("paging: " + e.message));
+  const pgFake = await createFakeWorker(pgPage, { server: DEFAULT_SERVER, familyCode: FAMILY_CODE, parentCode: PARENT_CODE, detailPageSize: 2 });
+  const PG = "33333333-4444-4555-8666-777777777777";
+  const pgChild = pgFake.seedChild(PG, "다온", "246810");
+  pgChild.devices = { "dev-c": { label: "iPhone", joinedAt: noonDaysAgo(20), lastSeenAt: minutesAgo(5) } };
+  const daysAgoAt = (n, h) => (n === 0 ? minutesAgo(10 + h * 5) : new Date(Date.parse(noonDaysAgo(n)) - h * 3600000).toISOString());
+  for (let i = 0; i < 22; i++)
+    pgChild.records.set("p" + i, rec("p" + i, daysAgoAt(i % 13, Math.floor(i / 13)), i === 0 ? { correct: 8, missed: [{ en: "fleeting", ko: "" }, { en: "vivid", ko: "생생한" }] } : { correct: 10 }));
+  for (let i = 0; i < 5; i++) pgChild.records.set("old" + i, rec("old" + i, noonDaysAgo(40 + i), { correct: 6, setName: "옛 세트" }));
+  const pgText = (sel) => pgPage.textContent(sel);
+  const pgHas = (sel, t) => pgPage.evaluate(([x, y]) => (document.querySelector(x)?.textContent || "").includes(y), [sel, t]);
+  const pgEntries = () => pgPage.evaluate(() => document.querySelectorAll("#childRecords .history-entry").length);
+  const pgState = () => pgPage.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_parent_v1")));
+  await pgPage.goto(url + "parent.html");
+  await pgPage.fill("#parentCodeStart", PARENT_CODE);
+  await pgPage.click("#saveParentStart");
+  await waitFor(() => pgPage.isVisible("#today"), "paging: today");
+  await pgPage.evaluate((id) => (location.hash = "#/child/" + id), PG);
+  await waitFor(async () => (await pgEntries()) === 22, "paging: 22 records in the 30-day window");
+  assert((await pgHas("#childDetailSummary", "전체 시험 27회")) && (await pgHas("#recordsNote", "전체 27회 중 최근 22개를 받았어요")) && (await pgHas("#recordsNote", "더 보기")), "recordCount shown: " + (await pgText("#recordsNote")));
+  assert(await pgPage.isVisible("#loadMoreRecords"), "‘more’ button when older records exist");
+  // 뜻이 없는 틀린 단어: 그것만 고르면 보내지 않고 알린다, 모두 빼면 버튼이 꺼진다, 섞여 있으면 빼고 보낸다
+  assert((await pgPage.$$eval("#missedTop .chip", (c) => c.length)) === 2 && (await pgHas('#missedTop .chip[data-word="fleeting"]', "뜻 없음")), "missed chips with a missing meaning");
+  await pgPage.click('#missedTop .chip[data-word="vivid"]');
+  await waitFor(() => pgHas("#missedPicked", "1개 골랐어요"), "one picked");
+  await pgPage.click("#sendMissedSet");
+  await waitFor(() => pgHas("#missedStatus", "뜻이 기록되지 않아"), "no meaning → nothing to send");
+  await pgPage.click('#missedTop .chip[data-word="fleeting"]');
+  await waitFor(() => pgPage.isDisabled("#sendMissedSet"), "nothing picked → button disabled");
+  assert(pgFake.paths("/family/" + PG + "/sets", "POST").length === 0, "nothing sent yet");
+  await pgPage.click('#missedTop .chip[data-word="fleeting"]');
+  await pgPage.click('#missedTop .chip[data-word="vivid"]');
+  await pgPage.click("#sendMissedSet");
+  await waitFor(() => pgFake.paths("/family/" + PG + "/sets", "POST").length === 1, "review set with a skipped word");
+  assert(JSON.stringify(pgFake.paths("/family/" + PG + "/sets", "POST")[0].body.set.words) === JSON.stringify([{ id: 1, en: "vivid", ko: "생생한", aliases: [], ipa: "" }]), "word without a meaning skipped");
+  await waitFor(() => pgHas("#toast", "뜻이 기록되지 않은 단어 1개는 뺐어요"), "skip reported");
+  await pgPage.click("#subRecords");
+  await waitFor(() => pgPage.isVisible("#panelRecords"), "paging: records tab again");
+  // 더 보기 1쪽: 기간이 ‘전체’로 바뀌고 목록의 마지막 completedAt 을 before 로 보낸다
+  const oldestShown = (await pgState()).details[PG].records.slice(-1)[0].completedAt;
+  await pgPage.click("#loadMoreRecords");
+  await waitFor(async () => (await pgEntries()) === 24, "first older page appended");
+  const page1Req = pgFake.paths("/family/" + PG + "/records", "GET")[0];
+  assert(page1Req.passcode === PARENT_CODE && page1Req.search === "?limit=100&before=" + encodeURIComponent(oldestShown), "page request: " + page1Req.search);
+  assert((await pgPage.inputValue("#recordsDays")) === "0" && (await pgPage.isVisible("#loadMoreRecords")), "filter switched to all, more remains");
+  // 옛 Worker처럼 404 not_found 면 토스트 없이 버튼만 숨긴다
+  pgFake.setMode("notfound");
+  await pgPage.click("#loadMoreRecords");
+  await waitFor(() => pgPage.isHidden("#loadMoreRecords"), "404 hides the button");
+  assert(!(await pgHas("#toast", "다시 배포")) && (await pgText("#recordsStatus")) === "" && (await pgEntries()) === 24, "quietly: " + (await pgText("#toast")));
+  pgFake.setMode("ok");
+  // 새로고침으로 상세를 다시 받으면 옛 페이지는 버리고 처음부터 다시 이어 받는다 → 끝까지(겹침 없음) → 버튼 숨김
+  await pgPage.click("#refreshFamily");
+  await waitFor(async () => (await pgEntries()) === 22 && (await pgPage.isVisible("#loadMoreRecords")), "refresh resets the older pages");
+  for (const want of [24, 26, 27]) {
+    await pgPage.click("#loadMoreRecords");
+    await waitFor(async () => (await pgEntries()) === want, "older page → " + want);
+  }
+  await waitFor(() => pgPage.isHidden("#loadMoreRecords"), "button hidden after the last page");
+  const befores = pgFake.paths("/family/" + PG + "/records", "GET").slice(2).map((r) => new URLSearchParams(r.search).get("before"));
+  assert(befores.length === 3 && befores.every((b, i) => !i || b < befores[i - 1]), "each page continues before the previous one: " + befores.join(" | "));
+  const shownIds = await pgPage.$$eval("#childRecords .history-meta", (m) => m.length);
+  assert(shownIds === 27 && (await pgHas("#childRecords", "옛 세트")), "all 27 records shown once");
+  const savedPg = await pgState();
+  assert(savedPg.details[PG].records.length === 22 && !JSON.stringify(savedPg).includes('"old0"'), "older pages are not saved");
+  // 수준 제안 카드: 두 주 모두 3회 이상·90점 이상·틀린 단어 2개 → 한 단계 올리기(오늘의 단어가 꺼져 있어도)
+  await pgPage.click("#subDaily");
+  await waitFor(() => pgPage.isVisible("#levelSuggest"), "level suggestion card");
+  assert((await pgText("#levelSuggestText")) === "최근 2주 평균 99점이에요. 수준을 ‘중3·고1’로 올려 볼까요?", "suggestion text: " + (await pgText("#levelSuggestText")));
+  assert((await pgHas("#levelSuggestWhy", "이번 주 14회")) && (await pgHas("#levelSuggestWhy", "지난주 8회")) && (await pgHas("#levelSuggestWhy", "자주 틀린 단어 2개")) && !(await pgPage.isChecked("#planEnabled")), "reasons shown with the plan off");
+  await pgPage.click("#applyLevel");
+  await waitFor(() => pgHas("#toast", "수준을 ‘중3·고1’로 바꿨어요"), "apply toast");
+  let pgPlans = pgFake.paths("/family/" + PG + "/plan", "POST");
+  assert(pgPlans.length === 1 && JSON.stringify(pgPlans[0].body) === JSON.stringify({ level: "중3·고1" }), "only the level is saved: " + JSON.stringify(pgPlans.map((r) => r.body)));
+  assert(pgFake.planOf(pgFake.children.get(PG)).level === "중3·고1" && pgFake.planOf(pgFake.children.get(PG)).enabled === false, "plan stays off, level changed");
+  await waitFor(() => pgPage.isHidden("#levelSuggest"), "card hidden after applying");
+  assert((await pgPage.inputValue("#planLevel")) === "중3·고1" && (await pgState()).prefs.levelSuggestDismissed[PG] === localDate(), "form follows, hidden for a week");
+  // 7일이 지나면 다시 묻는다(다음 단계) → ‘다음에’는 저장 없이 7일 숨김
+  await pgPage.evaluate((id) => {
+    const d = new Date();
+    d.setDate(d.getDate() - 8); // 이 폰 날짜로 8일 전
+    const st = JSON.parse(localStorage.getItem("daily_vocab_parent_v1"));
+    st.prefs.levelSuggestDismissed[id] = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
+    localStorage.setItem("daily_vocab_parent_v1", JSON.stringify(st));
+  }, PG);
+  await pgPage.reload();
+  await waitFor(() => pgPage.isVisible("#levelSuggest"), "suggestion back after a week");
+  assert(await pgHas("#levelSuggestText", "‘고1·수능 기초’로 올려"), "next level suggested: " + (await pgText("#levelSuggestText")));
+  await pgPage.click("#dismissLevel");
+  await waitFor(() => pgPage.isHidden("#levelSuggest"), "later hides the card");
+  assert(pgFake.paths("/family/" + PG + "/plan", "POST").length === 1 && (await pgState()).prefs.levelSuggestDismissed[PG] === localDate(), "later saves nothing on the server");
+  await pgPage.reload();
+  await waitFor(() => pgPage.isVisible("#panelDaily"), "daily tab after reload");
+  await new Promise((r) => setTimeout(r, 300));
+  assert(await pgPage.isHidden("#levelSuggest"), "still hidden after reload");
+
+  // ---- 옛 Worker(2026-10-19 이전): 상세가 인자를 무시하고 전체 기록(203개)을 주고 recordCount·more·‘더 보기’ 경로가 없다 ----
+  const ow = await browser.newContext({ viewport: { width: 420, height: 900 }, serviceWorkers: "block" });
+  const owPage = await ow.newPage();
+  owPage.on("pageerror", (e) => errors.push("old worker: " + e.message));
+  const owFake = await createFakeWorker(owPage, { server: DEFAULT_SERVER, familyCode: FAMILY_CODE, parentCode: PARENT_CODE, pagedDetail: false });
+  const owChild = owFake.seedChild(PG, "다온", "246810");
+  owChild.devices = { "dev-c": { label: "iPhone", joinedAt: noonDaysAgo(30), lastSeenAt: minutesAgo(5) } };
+  for (let i = 0; i < 203; i++) owChild.records.set("w" + i, rec("w" + i, new Date(Date.now() - (i * 3 + 1) * 3600000).toISOString()));
+  await owPage.goto(url + "parent.html");
+  await owPage.fill("#parentCodeStart", PARENT_CODE);
+  await owPage.click("#saveParentStart");
+  await waitFor(() => owPage.isVisible("#today"), "old worker: today");
+  await owPage.evaluate((id) => (location.hash = "#/child/" + id), PG);
+  await waitFor(() => owPage.evaluate(() => (document.getElementById("recordsNote").textContent || "").includes("전체 203회 중 최근 200개를 받았어요")), "old worker: newest 200 of 203");
+  const owState = await owPage.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_parent_v1")));
+  assert(owState.details[PG].records.length === 200 && owState.details[PG].recordTotal === 203 && owState.details[PG].more === false, "old worker: cache trimmed to 200, total = received");
+  assert(owFake.paths("/family/" + PG, "GET")[0].search === "?days=30&limit=200" && (await owPage.isHidden("#loadMoreRecords")) && !(await owPage.textContent("#recordsNote")).includes("더 보기"), "old worker: no ‘more’");
+  assert((await owPage.textContent("#childDetailSummary")).includes("전체 시험 203회") && (await owPage.$$eval("#childRecords .history-entry", (e) => e.length)) === 200, "old worker: summary and list");
+  await new Promise((r) => setTimeout(r, 300));
+  assert(owFake.paths("/family/" + PG + "/records").length === 0 && !(await owPage.getAttribute("#toast", "class")).includes("bad"), "old worker: no page request, no error toast");
+
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: parent app — setup (length/401/404, one GET /family to the cards), today cards (linked/unlinked), hash back, child tabs (records summary/missed/filters, sets/lock, daily plan/make-now/off, link/code/devices/time limit/rename/regen, questions), add/delete child (name confirm), offline cache, clear code, old-install redirect + migration");
+  console.log("PASS: parent app — setup (length/401/404, one GET /family to the cards), today cards (linked/unlinked), hash back, child tabs (records summary/missed/filters, sets/lock, daily plan/make-now/off, link/code/devices/time limit/rename/regen, questions), add/delete child (name confirm), offline cache, clear code, old-install redirect + migration, 30-day detail + ‘more’ pages (404 quiet, old Worker 200), review set from missed words ((2) names, skipped meanings), daily words as a set, level suggestion rules/apply/later");
   await browser.close();
 })().catch((e) => {
   console.error(e);

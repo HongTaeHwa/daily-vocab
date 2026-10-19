@@ -10,8 +10,12 @@
 //   GET  /diag       (비밀값 사용 안 함) 이 Worker 위치에서 Anthropic이 요청을 받는지 확인
 //   POST /sync       헤더 X-App-Passcode(가족 또는 보호자 코드), JSON {child:{id,name}, records:[…], sets:[…]} → { ok, stored, trimmed, syncedAt }
 //                    아이 기기가 시험 기록(점수·틀린 단어·세트 이름)을 가족 기록함(FamilyStore)에 보낸다.
-//   GET  /family     헤더 X-App-Passcode(보호자 코드만) → { children:[{id,name,sets,lastTestAt,…,records}], serverTime }  (아이별 최근 기록)
-//   GET  /family/<childId>     보호자 코드 → { child, records }  (전체 기록, 최신순)
+//   GET  /family?days=<1~30>   헤더 X-App-Passcode(보호자 코드만) → { children:[{id,name,sets,lastTestAt,recordCount,…,records}], serverTime }
+//                              아이별 최근 days일(기본 14) 기록, 그보다 적으면 최근 20개
+//   GET  /family/<childId>?days=<1~365>&limit=<1~500>  보호자 코드 → { child, records, recordCount, more, questions, today }
+//                              기록은 최근 days일(기본 30) 안에서 최신순 최대 limit개(기본 200). recordCount = 그 아이의 전체 기록 수, more = 더 오래된 기록이 있음
+//   GET  /family/<childId>/records?before=<ISO>&limit=<1~500>  보호자 코드 → { records, more, serverTime }
+//                              보호자 앱의 ‘더 보기’: before 이전(미포함) 기록을 최신순으로 limit개(기본 100). before 가 없으면 최신부터
 //   DELETE /family/<childId>   보호자 코드 → { ok, deleted }
 //   POST /family/<childId>/plan  보호자 코드, JSON {enabled, level, dailyCount, hour} → { ok, child }   (오늘의 단어 계획)
 //   GET  /daily/<childId>?date=  가족·보호자 코드 → 그날의 단어 { date, words:[{id,en,ko,ipa,aliases,kind}], level, completed? }
@@ -67,8 +71,15 @@ const MAX_SYNC_SETS = 100;
 const MAX_MISSED_WORDS = 200;
 const MAX_CHILD_NAME = 20;
 const MAX_CHILD_RECORDS = 5000; // 아이당 보관 기록 수. 넘으면 오래된 것부터 지운다.
-const SUMMARY_DAYS = 14; // GET /family 가 아이별로 돌려주는 최근 기록 범위
+const SUMMARY_DAYS = 14; // GET /family 가 아이별로 돌려주는 최근 기록 범위(기본값, ?days=1~30)
+const SUMMARY_DAYS_MAX = 30;
 const SUMMARY_MIN_RECORDS = 20; // 최근 14일 기록이 이보다 적으면 최근 20개를 돌려준다
+// GET /family/<childId>(보호자 상세): 아이당 5,000개까지 쌓이는 기록을 한 번에 보내지 않고 최근 days일 안에서 최신 limit개만 보낸다.
+const DETAIL_DAYS = 30;
+const DETAIL_DAYS_MAX = 365;
+const DETAIL_LIMIT = 200;
+const CHILD_RECORDS_PATH = /^\/family\/([A-Za-z0-9-]{8,64})\/records$/; // 보호자 앱 ‘더 보기’: 상세보다 오래된 기록 페이지(보호자 코드)
+const CHILD_RECORDS_LIMIT = 100; // GET /family/<childId>/records 기본 개수(상한은 RECORDS_PAGE_MAX)
 const STORAGE_BATCH = 128; // Durable Object storage put/delete 한 번에 넣을 수 있는 키 수
 
 // ---- 오늘의 단어(매일 자동 생성 퀴즈) 규칙 ----
@@ -419,7 +430,8 @@ export class AnthropicRelay {
 
 // ---- 가족 기록함: 아이 기기가 보낸 시험 기록을 저장하고 보호자 폰에 보여 준다 ----
 // SQLite 기반 Durable Object 하나(idFromName("family"))의 내장 키-값 저장소를 쓴다. 키 배치:
-//   child:<childId>                              {id, name, sets:[{name,count}], createdAt, updatedAt, lastTestAt, recordCount}
+//   child:<childId>                              {id, name, sets:[{name,count}], createdAt, updatedAt, lastTestAt, recordCount, recordCountExact}
+//                                                (recordCountExact: recordCount 가 실제 기록 수다. 없으면 옛 대략값이라 상세를 처음 볼 때 한 번 센다)
 //   rec:<childId>:<completedAt ISO>:<recordId>   압축 기록 {id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed, receivedAt}
 // 같은 기록을 다시 보내면 같은 키라 덮어쓴다. 키가 완료 시각 순이라 prefix 나열이 곧 시간순이다.
 export class FamilyStore {
@@ -447,6 +459,8 @@ export class FamilyStore {
     if (settings && method === "GET") return this.settings(settings[1]);
     const records = RECORDS_PATH.exec(url.pathname);
     if (records && method === "GET") return this.records(records[1], url.searchParams);
+    const childRecords = CHILD_RECORDS_PATH.exec(url.pathname);
+    if (childRecords && method === "GET") return this.olderRecords(childRecords[1], url.searchParams);
     const setsSync = SETS_PATH.exec(url.pathname);
     if (setsSync && method === "POST") return this.syncSets(setsSync[1], await readBody());
     if (url.pathname === "/question" && method === "POST") return this.addQuestion(await readBody());
@@ -459,7 +473,7 @@ export class FamilyStore {
     if (daily && method === "GET") return this.getDaily(daily[1], url.searchParams.get("date"));
     if (daily && method === "POST") return this.generateDaily(daily[1], (await readBody())?.date);
     const match = FAMILY_PATH.exec(url.pathname);
-    if (match && method === "GET") return match[1] ? this.child(match[1]) : this.summary();
+    if (match && method === "GET") return match[1] ? this.child(match[1], url.searchParams) : this.summary(url.searchParams);
     if (match && match[1] && method === "DELETE") return this.remove(match[1]);
     return json(404, { error: "not_found", message: "지원하지 않는 요청입니다." });
   }
@@ -488,7 +502,7 @@ export class FamilyStore {
       // 보호자가 지운 아이(gone:<id> 묘비)는 연결돼 있던 기기가 기록을 보내도 되살리지 않는다. 그 밖의 모르는 아이는 옛 앱 호환으로 만든다.
       if (await this.storage.get("gone:" + child.id))
         return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 보호자 폰에서 아이를 다시 만들어 주세요." });
-      current = { id: child.id, createdAt: now, createdBy: "device", sets: [], recordCount: 0, devices: {} };
+      current = { id: child.id, createdAt: now, createdBy: "device", sets: [], recordCount: 0, recordCountExact: true, devices: {} };
     }
     const entries = {};
     let lastTestAt = current.lastTestAt || null;
@@ -496,6 +510,9 @@ export class FamilyStore {
       entries[this.recordPrefix(child.id) + r.completedAt + ":" + r.id] = { ...r, receivedAt: now };
       if (!lastTestAt || r.completedAt > lastTestAt) lastTestAt = r.completedAt;
     }
+    // 다시 보낸 기록은 같은 키라 덮어쓰므로 새 키만 센다(한 번에 100개 이하라 get 한 번).
+    const keys = Object.keys(entries);
+    const added = keys.length ? keys.length - (await this.storage.get(keys)).size : 0;
     const next = {
       ...current,
       name: current.name || child.name, // 보호자가 만든 아이의 이름은 서버가 기준이다(기기가 보낸 이름으로 덮어쓰지 않는다)
@@ -505,8 +522,8 @@ export class FamilyStore {
       ...(anchor?.words.length ? { anchor: { ...anchor, updatedAt: now } } : {}),
       updatedAt: now,
       lastTestAt,
-      // 다시 보낸 기록도 세므로 대략값이다. 상한을 넘었을 때만 실제로 세어 정리한다.
-      recordCount: (current.recordCount || 0) + records.length,
+      // 새 기록만 더한다. 이 규칙 전에 만든 아이는 다시 보낸 기록까지 센 대략값이라(recordCountExact 없음) 상세를 처음 볼 때(child) 한 번 실제로 센다.
+      recordCount: (current.recordCount || 0) + added,
     };
     if (anchor && !anchor.words.length) delete next.anchor; // 빈 앵커 = 기기에 수준 기준으로 쓸 세트가 없다(예제뿐): 옛 수준 기준을 지운다
     await this.putMany({ ...entries, [key]: next });
@@ -517,7 +534,7 @@ export class FamilyStore {
       const extra = [...all.keys()].slice(0, Math.max(0, all.size - MAX_CHILD_RECORDS));
       await this.deleteMany(extra);
       trimmed = extra.length;
-      await this.storage.put(key, { ...next, recordCount: all.size - extra.length });
+      await this.storage.put(key, { ...next, recordCount: all.size - extra.length, recordCountExact: true });
     }
     return json(200, { ok: true, stored: records.length, trimmed, syncedAt: now });
   }
@@ -532,9 +549,11 @@ export class FamilyStore {
     const d = await this.storage.get(this.dailyKey(childId, date));
     return { date, exists: Boolean(d), count: d ? d.words.length : 0, completed: d?.completed || null };
   }
-  // 아이별 최근 14일 기록(20개 미만이면 최근 20개). 오늘·7일·이번 주 계산은 폰의 현지 시간으로 앱이 한다.
-  async summary() {
-    const since = new Date(Date.now() - SUMMARY_DAYS * 86400000).toISOString();
+  // 아이별 최근 14일(?days=1~30) 기록(20개 미만이면 최근 20개). 오늘·7일·이번 주 계산은 폰의 현지 시간으로 앱이 한다.
+  async summary(params) {
+    const days = intParam(params, "days", 1, SUMMARY_DAYS_MAX, SUMMARY_DAYS);
+    if (days === undefined) return json(400, { error: "bad_request", message: `days는 1~${SUMMARY_DAYS_MAX} 사이의 정수여야 합니다.` });
+    const since = new Date(Date.now() - days * 86400000).toISOString();
     const { date: today } = kstNow();
     const children = [];
     for (const c of (await this.storage.list({ prefix: "child:" })).values()) {
@@ -547,16 +566,32 @@ export class FamilyStore {
     children.sort((a, b) => String(a.name).localeCompare(String(b.name), "ko"));
     return json(200, { children, serverTime: new Date().toISOString() });
   }
-  async child(childId) {
-    const c = await this.storage.get("child:" + childId);
+  // 보호자 상세: 기록은 최근 days일(기본 30) 안에서 최신순 limit개(기본 200)까지만. 더 오래된 것은 ‘더 보기’(GET /family/<id>/records?before=)로 받는다.
+  async child(childId, params) {
+    let c = await this.storage.get("child:" + childId);
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
-    const records = [...(await this.storage.list({ prefix: this.recordPrefix(childId), reverse: true })).values()];
+    const days = intParam(params, "days", 1, DETAIL_DAYS_MAX, DETAIL_DAYS);
+    const limit = intParam(params, "limit", 1, RECORDS_PAGE_MAX, DETAIL_LIMIT);
+    if (days === undefined || limit === undefined)
+      return json(400, { error: "bad_request", message: `days는 1~${DETAIL_DAYS_MAX}, limit는 1~${RECORDS_PAGE_MAX} 사이의 정수여야 합니다.` });
+    const prefix = this.recordPrefix(childId);
+    if (!c.recordCountExact) {
+      // 옛 규칙의 recordCount(다시 보낸 기록까지 센 대략값)는 한 번만 실제로 세어 고친다. 그 뒤로는 /sync 가 새 기록만 더한다.
+      c = { ...c, recordCount: (await this.storage.list({ prefix })).size, recordCountExact: true };
+      await this.storage.put("child:" + childId, c);
+    }
+    const since = prefix + new Date(Date.now() - days * 86400000).toISOString();
+    const recent = [...(await this.storage.list({ prefix, start: since, reverse: true, limit: limit + 1 })).values()];
+    const records = recent.slice(0, limit);
+    const more = recent.length > limit || (await this.storage.list({ prefix, end: since, reverse: true, limit: 1 })).size > 0;
     const questions = [...(await this.storage.list({ prefix: this.questionPrefix(childId), reverse: true, limit: QUESTIONS_IN_DETAIL })).values()];
     const { date: today } = kstNow();
     const daily = await this.storage.get(this.dailyKey(childId, today));
     return json(200, {
       child: { ...c, plan: this.planOf(c) },
       records,
+      recordCount: c.recordCount,
+      more,
       questions,
       today: { date: today, exists: Boolean(daily), words: daily?.words || [], note: daily?.note || "", completed: daily?.completed || null },
     });
@@ -587,7 +622,7 @@ export class FamilyStore {
     if (!name || name.length > MAX_CHILD_NAME) return json(400, { error: "bad_request", message: `아이 이름은 1~${MAX_CHILD_NAME}자로 적어 주세요.` });
     const now = new Date().toISOString();
     const joinCode = await this.newJoinCode();
-    const child = { id: crypto.randomUUID(), name, createdAt: now, updatedAt: now, createdBy: "parent", joinCode, devices: {}, sets: [], recordCount: 0, lastTestAt: null };
+    const child = { id: crypto.randomUUID(), name, createdAt: now, updatedAt: now, createdBy: "parent", joinCode, devices: {}, sets: [], recordCount: 0, recordCountExact: true, lastTestAt: null };
     await this.storage.put({ ["child:" + child.id]: child, ["code:" + joinCode]: { childId: child.id, createdAt: now } });
     return json(200, { ok: true, child: { ...child, plan: this.planOf(child) } });
   }
@@ -647,6 +682,19 @@ export class FamilyStore {
       : await this.storage.list({ prefix, reverse: true, limit: limit + 1 });
     const all = [...listed.values()];
     return json(200, { records: all.slice(0, limit), more: all.length > limit, serverTime: new Date().toISOString() });
+  }
+  // 보호자 앱 ‘더 보기’(보호자 코드): before 보다 먼저 끝난(미포함) 기록을 최신순으로 limit개. before 가 없으면 가장 최근부터.
+  // 앱은 지금 목록의 마지막 completedAt 을 before 로 넘긴다. 키가 rec:<id>:<completedAt>:<recordId> 라 end = prefix + before 가 곧 ‘before 미만’이다.
+  async olderRecords(childId, params) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    const before = isoDate(params.get("before"));
+    if (before === undefined) return json(400, { error: "bad_request", message: "before는 ISO 시각이어야 합니다." });
+    const limit = intParam(params, "limit", 1, RECORDS_PAGE_MAX, CHILD_RECORDS_LIMIT);
+    if (limit === undefined) return json(400, { error: "bad_request", message: `limit는 1~${RECORDS_PAGE_MAX} 사이의 정수여야 합니다.` });
+    const prefix = this.recordPrefix(childId);
+    const listed = [...(await this.storage.list({ prefix, reverse: true, limit: limit + 1, ...(before ? { end: prefix + before } : {}) })).values()];
+    return json(200, { records: listed.slice(0, limit), more: listed.length > limit, serverTime: new Date().toISOString() });
   }
   // ---- 문제 물어보기 질문 요약(보호자용) ----
   // /tutor 가 연결된 아이 id 를 받으면 사진 없이 요약만 남긴다: q:<childId>:<askedAt>:<id>. 아이당 300개, 넘으면 오래된 것부터 지운다.
@@ -934,6 +982,15 @@ function isoDate(value) {
   return Number.isFinite(t) ? new Date(t).toISOString() : undefined;
 }
 
+// 쿼리의 정수 인자: 없으면 fallback, 정수가 아니거나 min~max 밖이면 undefined(→ 400).
+function intParam(params, name, min, max, fallback) {
+  const raw = params?.get(name);
+  if (raw == null || raw === "") return fallback;
+  if (!/^\d{1,6}$/.test(raw)) return undefined;
+  const n = Number(raw);
+  return n >= min && n <= max ? n : undefined;
+}
+
 // 아이 기기가 보낸 기록 묶음을 검사·정리한다. 하나라도 틀리면 전체를 거절한다(부분 저장 없음).
 function parseSync(body) {
   const id = typeof body?.child?.id === "string" ? body.child.id : "";
@@ -1071,7 +1128,7 @@ function parseSetUpload(body) {
 }
 
 // /sync, /join, /sets, /daily…, /family… 처리. 오늘의 단어 생성 외에는 Anthropic을 부르지 않는다.
-// kind: sync·join·sets·daily·settings·records(가족 또는 보호자 코드) / view(보호자 코드만: 기록 보기·삭제·아이 만들기·계획·코드·이름·세트)
+// kind: sync·join·sets·daily·settings·records(가족 또는 보호자 코드) / view(보호자 코드만: 기록 보기·‘더 보기’ 페이지·삭제·아이 만들기·계획·코드·이름·세트)
 async function family(request, env, path, cors) {
   if (!env.APP_PASSCODE)
     return json(500, { error: "misconfigured", message: "AI 서버에 비밀값(APP_PASSCODE)이 설정되지 않았습니다." }, cors);
@@ -1562,6 +1619,7 @@ export default {
     const familyRoute =
       (path === "/sync" && request.method === "POST") ||
       (FAMILY_PATH.test(path) && ["GET", "DELETE"].includes(request.method)) ||
+      (CHILD_RECORDS_PATH.test(path) && request.method === "GET") ||
       (CHILDREN_PATH.test(path) && request.method === "POST") ||
       (CHILD_ACTION_PATH.test(path) && request.method === "POST") ||
       (path === "/join" && request.method === "POST") ||
