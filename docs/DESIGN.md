@@ -383,7 +383,7 @@
 
 ### 24.3 C단계 완료 — Worker 보강과 보호자 행동 기능 (2026-10-19)
 
-상세가 아이의 전체 기록을 받던 문제(D1)를 Worker 에서 고치고, ‘보기’에서 끝나던 보호자 화면을 ‘세트 보내기·수준 바꾸기’로 잇는다(U4). 릴리스 `20261018-22`, 캐시 v31. **Worker 재배포 필요**(`cd worker && npm run deploy`; 새 Worker 는 옛 보호자 앱과도, 앱은 옛 Worker 와도 호환).
+상세가 아이의 전체 기록을 받던 문제(D1)를 Worker 에서 고치고, ‘보기’에서 끝나던 보호자 화면을 ‘세트 보내기·수준 바꾸기’로 잇는다(U4). PR #37. 릴리스 `20261018-22`, 캐시 v31. **Worker 재배포 필요**(`cd worker && npm run deploy`; 새 Worker 는 옛 보호자 앱과도, 앱은 옛 Worker 와도 호환).
 
 - **Worker(5.7)**: `GET /family/<id>?days=<1~365, 기본 30>&limit=<1~500, 기본 200>` — 기록을 최근 days일 안에서 최신순 limit개로 줄이고 `recordCount`(전체 기록 수)·`more`(보낸 것보다 오래된 기록이 있음: 창 안이 limit를 넘거나 창 앞에 기록이 하나라도 있음)를 붙인다. 질문·오늘·plan 은 그대로. `GET /family/<id>/records?before=<ISO>&limit=<1~500, 기본 100>`(보호자 코드, `FamilyStore.olderRecords`) — `storage.list({prefix, end: prefix + before, reverse, limit})`로 before 미포함 최신순 `{records, more, serverTime}`, before 가 없으면 최신부터. `GET /family?days=1~30`(기본 14 유지)도 받는다. 범위 밖·숫자가 아닌 인자는 400(`intParam`). 코드 역할(`/family…` 보호자 코드만, 새 경로는 kind `view`)·요청 제한 버킷(`/family`)·아이 기기 복원 경로 `GET /records/<id>`·5,000개 상한·`unknown_child`/`not_found` 구분은 그대로.
 - **정확한 기록 수**: `recordCount`는 다시 보낸 기록까지 세던 대략값이었다(연결 해제 뒤 재연결이면 두 배). `/sync`가 받은 키를 `storage.get(keys)`로 확인해 새 키만 더하고, 이 규칙 전의 아이는 상세를 처음 볼 때 `child()`가 한 번 실제로 세어 `recordCountExact: true`로 기억한다(5,000개 정리 때도 정확한 값). 기록 5,000개 아이의 상세 첫 응답은 200개 이하(`tests/worker.cjs`).
