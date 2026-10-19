@@ -369,7 +369,7 @@
 
 ### 24.2 B단계 완료 — 보호자 앱 새로 쓰기 (2026-10-19)
 
-보호자 앱을 아이 앱의 ‘모드’에서 떼어 `parent.html` 자체를 보호자 앱으로 만들었다. 릴리스 `20261018-21`, 캐시 v30. Worker 변경 없음(재배포 불필요).
+보호자 앱을 아이 앱의 ‘모드’에서 떼어 `parent.html` 자체를 보호자 앱으로 만들었다(PR #36). 릴리스 `20261018-21`, 캐시 v30. Worker 변경 없음(재배포 불필요).
 
 - **페이지·코드**: `parent.html`(상단 바·뷰 섹션 6개 `#setup #today #children #child #editor #settings`·하단 탭 3개·토스트·부트스트랩) + `parent.css`(공통 토큰·편집기 규칙은 index.html 에서 복사, 두 앱 CSS는 합치지 않음) + `parent.js`(약 1,350행, 전역 `window.ParentApp`). 로드 순서 `shared.js → editor.js → parent.js`. 아이 앱 코드(quiz.js·family.js·sets.js)는 싣지 않는다.
 - **구조(5.4)**: 저장 키 `daily_vocab_parent_v1` 하나 + `migrate()`(키가 없을 때 1회: `daily_vocab_family_v1.parentCode`, `daily_vocab_ai_v2.server`, `daily_vocab_family_cache_v1.children` → 옛 캐시·`daily_vocab_mode_v1` 삭제, 아이 키에서는 `parentCode`·`parentModeOff`만 제거), `createStore`(patch 마다 저장·다시 그리기, 1MB 넘으면 오래 본 아이 상세부터 저장 제외), `putChild`(목록·상세 동시 갱신), `api`(`Shared.apiRequest` + 보호자 코드), 해시 라우터(`#/`·`#/children`·`#/child/<id>/<탭>`·`#/child/<id>/sets/<new|id>`·`#/settings`·`#/setup`, 코드 없으면 `#/setup`, `history.state.idx`로 앱 안에서만 되돌아가기, 하위 탭은 history 를 늘리지 않음, 편집기를 떠날 때 미저장 확인), `computeStats` 순수 함수, 캐시 우선 자동 갱신(시작·화면 복귀·온라인 복귀·라우트 진입 때 10분 경과 시).

@@ -343,7 +343,7 @@ B단계에서 아이 앱(`index.html`·`quiz.js`·`family.js`·`sets.js`)에서 
 5. 테스트: `tests/parent.cjs`, `tests/parent-sets.cjs` 신설, `family.cjs`·`daily.cjs`에서 보호자 부분 이동, `pwa.cjs`에 parent.html 반응형·오프라인 셸 추가.
 6. 문서: README ‘보호자 폰에서 아이들 기록 보기’·‘오늘의 단어’·‘백업·설치’ 절을 새 화면 기준으로 다시 쓰기, `CLAUDE.md` 화면 구조·ID·문구·파일 구조·테스트 표·버전 체크리스트, `DESIGN.md` 24절 갱신, 메모리.
 - **완료 기준**: 새 테스트 2개 + 기존 9개 PASS. `parent.html`을 열면 코드 입력 → 오늘 카드까지 네트워크 1회(`GET /family`). `index.html`에 `parent-mode`·`child-only`·`editorForChild` 문자열이 없다. 폰 폭(390px)에서 가로 스크롤 없음.
-- **진행 상태(2026-10-19)**: 구현 완료(브랜치 `claude/parent-app-27b8f2`, 릴리스 `20261018-21`·캐시 v30, Worker 변경 없음). 11개 테스트 PASS(`tests/parent.cjs`가 코드 입력 → 오늘 카드까지 요청 1회를 확인, `pwa.cjs`가 390px 포함 3가지 폭에서 모든 보호자 화면의 가로 스크롤 없음을 확인). `index.html`·`quiz.js`·`family.js`·`sets.js`에 `parent-mode`·`child-only`·`editorForChild`·`isParentMode` 문자열 없음. 커밋은 화면별(setup → today → children/records → sets → daily → settings → questions → 아이 앱 정리 → sw/버전 → 테스트 → 문서). 설계와 다르게 한 결정은 5.4·5.5·5.8·5.10의 ‘결정 변경(2026-10-19, B단계 구현)’.
+- **진행 상태(2026-10-19)**: 구현 완료(PR #36, 브랜치 `claude/parent-app-27b8f2`, 머지 대기, 릴리스 `20261018-21`·캐시 v30, Worker 변경 없음). 11개 테스트 PASS(`tests/parent.cjs`가 코드 입력 → 오늘 카드까지 요청 1회를 확인, `pwa.cjs`가 390px 포함 3가지 폭에서 모든 보호자 화면의 가로 스크롤 없음을 확인). `index.html`·`quiz.js`·`family.js`·`sets.js`에 `parent-mode`·`child-only`·`editorForChild`·`isParentMode` 문자열 없음. 커밋은 화면별(setup → today → children/records → sets → daily → settings → questions → 아이 앱 정리 → sw/버전 → 테스트 → 문서). 설계와 다르게 한 결정은 5.4·5.5·5.8·5.10의 ‘결정 변경(2026-10-19, B단계 구현)’.
 
 ### C. Worker 보강과 보호자 기능 — `feat/parent-insights`
 1. Worker: `GET /family/<id>?days&limit`(+`recordCount`·`more`), `GET /family/<id>/records?before&limit`, 테스트.
