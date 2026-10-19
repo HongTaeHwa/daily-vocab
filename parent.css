@@ -93,6 +93,14 @@ code{background:#eef4ff;padding:1px 6px;border-radius:6px;font-size:13px}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 4px}
 .chip{display:inline-flex;align-items:baseline;gap:6px;background:#fff7f0;border:1px solid #f3d2a4;border-radius:999px;padding:4px 11px;font-size:14px;color:#4e3a1c;max-width:100%;overflow-wrap:anywhere}
 .chip b{color:#b83a48}.chip small{color:#88541f}
+/* 고를 수 있는 칩(자주 틀린 단어 → 복습 세트): 고른 것은 실선, 뺀 것은 흐린 점선 */
+.chip.pick{cursor:pointer;min-height:40px;align-items:center;text-align:left;background:#fff;border-style:dashed;opacity:.6}
+.chip.pick.on{background:#fff7f0;border-style:solid;opacity:1}
+.more-bar{justify-content:center}
+/* 수준 제안 카드(오늘의 단어 탭 위) */
+.suggest{border:1px solid #b9dcc8;background:#effaf3;border-radius:14px;padding:12px 14px;margin-bottom:16px}
+.suggest.down{border-color:#f3d2a4;background:#fff7f0}
+.suggest-text{margin:0;font-weight:800;color:var(--navy);overflow-wrap:anywhere}
 .filters{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .filters select{flex:1 1 140px;min-width:0}
 .day-group{margin-top:14px}
@@ -101,7 +109,8 @@ code{background:#eef4ff;padding:1px 6px;border-radius:6px;font-size:13px}
 .history-entry p{margin:5px 0}.history-score{font-size:18px;font-weight:800;color:var(--navy)}.history-meta{color:var(--muted);font-size:13px}.history-entry summary{cursor:pointer;color:var(--blue);font-weight:700}
 .set-list .set-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--border)}
 .set-list .set-row:last-child{border-bottom:0}
-.set-row .set-info{flex:1 1 180px;min-width:0}
+.set-row .set-info{flex:1 1 140px;min-width:0}
+.set-row .set-actions{display:flex;gap:6px;flex:none;margin-left:auto}
 .set-row .set-name{display:block;font-weight:800;overflow-wrap:anywhere}
 .set-row small{display:block;color:var(--muted);font-size:13px}
 .box{margin-top:16px;padding-top:14px;border-top:1px dashed var(--border)}

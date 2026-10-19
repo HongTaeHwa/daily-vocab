@@ -1,5 +1,5 @@
 "use strict";
-// parent.js — 보호자 앱(parent.html). shared.js · editor.js 다음에 불러온다. 전역은 window.ParentApp(디버깅·테스트용: store, router, computeStats, api) 하나.
+// parent.js — 보호자 앱(parent.html). shared.js · editor.js 다음에 불러온다. 전역은 window.ParentApp(디버깅·테스트용: store, router, computeStats, suggestLevel, api) 하나.
 // 흐름: storage(daily_vocab_parent_v1, 옛 키는 처음 한 번 이전) → store(patch 마다 저장 + 화면 다시 그리기) → api(Shared.apiRequest + 보호자 코드)
 //       → router(해시 라우트; 뒤로 가기 = 해시 history) → views(라우트마다 한 화면을 store 스냅샷으로 그림) → actions(요청 → store.patch → 결과는 토스트·칸 아래 문구).
 // 캐시 우선: 마지막 응답을 먼저 그리고 앱 시작·화면 복귀·온라인 복귀·화면 진입 때 10분이 지났으면 뒤에서 새로 받는다.
@@ -13,13 +13,16 @@
   // 옛 아이 앱 보호자 모드가 쓰던 키(처음 한 번 이전한 뒤 보호자 것만 지운다. 아이 키의 다른 필드는 건드리지 않는다)
   const OLD_FAMILY_KEY = "daily_vocab_family_v1", OLD_AI_KEY = "daily_vocab_ai_v2", OLD_CACHE_KEY = "daily_vocab_family_cache_v1", OLD_MODE_KEY = "daily_vocab_mode_v1";
   const STALE_MS = 10 * 60 * 1000; // 이보다 오래된 캐시는 뒤에서 새로 받는다
-  const RECORDS_KEEP = 200; // 아이 상세에 캐시·표시하는 최신 기록 수(나머지는 C단계 ‘더 보기’)
+  const RECORDS_KEEP = 200; // 아이 상세에 캐시하는 최신 기록 수(Worker 에 최근 30일·200개만 달라고 한다. 옛 Worker 가 전체를 주면 앱이 자른다)
+  const DETAIL_DAYS = 30;
+  const OLDER_PAGE = 100; // ‘더 보기’ 한 번에 받는 옛 기록 수
+  const SUGGEST_HIDE_MS = 7 * 86400000; // 수준 제안에 ‘적용’·‘다음에’를 누르면 7일 동안 다시 묻지 않는다
   const STORE_LIMIT = 1000000; // 저장 크기(문자) 상한: 넘으면 가장 오래 본 아이의 상세부터 저장하지 않는다
   const TIMEOUT_MS = 20000, SETS_TIMEOUT_MS = 60000, DAILY_TIMEOUT_MS = 90000, AI_TIMEOUT_MS = 130000;
   const JOIN_CODE = /^\d{6}$/;
   const TABS = ["records", "sets", "daily", "settings", "questions"];
   const VIEW_IDS = ["setup", "today", "children", "child", "editor", "settings"];
-  const NOTE_IDS = ["setsStatus", "planStatus", "linkStatus", "nameStatus", "limitStatus", "deleteStatus"];
+  const NOTE_IDS = ["setsStatus", "planStatus", "linkStatus", "nameStatus", "limitStatus", "deleteStatus", "missedStatus", "recordsStatus", "dailySetStatus"];
 
   const enc = encodeURIComponent;
   const nowIso = () => new Date().toISOString();
@@ -34,6 +37,15 @@
     return d.getTime();
   };
   const avgOf = (rs) => (rs.length ? Math.round(rs.reduce((s, r) => s + pctOf(r), 0) / rs.length) : null);
+  // ‘…로/으로’: 받침이 없거나 ㄹ 받침(숫자 1·7·8 포함)이면 ‘로’
+  const ro = (word) => {
+    const ch = String(word || "").trim().slice(-1);
+    const code = ch.charCodeAt(0) - 0xac00;
+    if (code >= 0 && code < 11172) return code % 28 === 0 || code % 28 === 8 ? "로" : "으로";
+    if (/\d/.test(ch)) return "036".includes(ch) ? "으로" : "로";
+    return "(으)로";
+  };
+  const monthDay = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
   const byNewest = (a, b) => String(b.completedAt).localeCompare(String(a.completedAt));
   const linkFor = (code) => new URL("./", location.href).href + "?child=" + code; // 아이용 앱 주소(…/daily-vocab/?child=코드)
   const childPath = (id, tab) => "#/child/" + enc(id) + (tab && tab !== "records" ? "/" + tab : "");
@@ -48,9 +60,11 @@
   }
 
   // ---- 저장소: daily_vocab_parent_v1 ----
-  // { parentCode, server, children:[GET /family 의 아이(최근 기록 포함)], details:{ [id]: {child, records(최신 200), recordTotal, questions, today, fetchedAt, viewedAt} },
-  //   fetchedAt, prefs:{ recordsSet, recordsDays } }
-  const emptyState = () => ({ parentCode: "", server: AI_SERVER_DEFAULT, children: [], details: {}, fetchedAt: "", prefs: { recordsSet: "all", recordsDays: 30 } });
+  // { parentCode, server, children:[GET /family 의 아이(최근 기록 포함)],
+  //   details:{ [id]: {child, records(최근 30일 중 최신 200), recordTotal(전체 기록 수), more(더 오래된 기록 있음), questions, today, fetchedAt, viewedAt} },
+  //   fetchedAt, prefs:{ recordsSet, recordsDays, levelSuggestDismissed:{ [id]: 'YYYY-MM-DD' } } }
+  // ‘더 보기’로 받은 옛 기록은 저장하지 않고 이 세션 동안만 olderPages(아래 [core] 불러오기)에 둔다.
+  const emptyState = () => ({ parentCode: "", server: AI_SERVER_DEFAULT, children: [], details: {}, fetchedAt: "", prefs: { recordsSet: "all", recordsDays: 30, levelSuggestDismissed: {} } });
   function normalizeListChild(c) {
     return { ...c, records: (Array.isArray(c.records) ? c.records : []).filter(validRecord).sort(byNewest) };
   }
@@ -73,6 +87,8 @@
     if (p && typeof p === "object") {
       if (typeof p.recordsSet === "string") s.prefs.recordsSet = p.recordsSet;
       if ([0, 7, 30].includes(p.recordsDays)) s.prefs.recordsDays = p.recordsDays;
+      if (p.levelSuggestDismissed && typeof p.levelSuggestDismissed === "object")
+        for (const [id, day] of Object.entries(p.levelSuggestDismissed)) if (/^\d{4}-\d{2}-\d{2}$/.test(String(day))) s.prefs.levelSuggestDismissed[id] = day;
     }
     return s;
   }
@@ -143,14 +159,15 @@
     const s = store.get();
     return s.children.find((c) => c.id === id) || s.details[id]?.child || null;
   }
-  // 그 아이의 기록: 상세(최신 200개)와 목록(최근 14일)을 합친다(겹치는 id 는 한 번).
+  // 그 아이의 기록: 상세(최근 30일 중 최신 200개)·‘더 보기’로 받은 옛 기록·목록(최근 14일 또는 최신 20개)을 합친다(겹치는 id 는 한 번).
   function recordsOf(id) {
     const s = store.get();
     const list = s.children.find((c) => c.id === id)?.records || [];
     const detail = s.details[id]?.records || [];
-    if (!detail.length) return list;
-    const seen = new Set(detail.map((r) => r.id));
-    return [...detail, ...list.filter((r) => !seen.has(r.id))].sort(byNewest);
+    const older = olderPages.get(id)?.records || [];
+    if (!detail.length && !older.length) return list;
+    const seen = new Set();
+    return [...detail, ...older, ...list].filter((r) => !seen.has(r.id) && seen.add(r.id)).sort(byNewest);
   }
   // 목록의 오늘 요약(today: {date, exists, count, completed})을 상세의 오늘(단어 포함)에 맞춘다.
   function mergeToday(full, summary) {
@@ -247,6 +264,7 @@
         const key = String(m?.en || "").toLowerCase();
         if (!key) continue;
         const entry = counts.get(key) || { en: m.en, ko: m.ko || "", n: 0 };
+        if (!entry.ko && m.ko) entry.ko = m.ko;
         entry.n++;
         counts.set(key, entry);
       }
@@ -262,6 +280,25 @@
     };
   }
 
+  // ---- 수준 제안 (순수 함수, 2C): 제안만 하고 바꾸지는 않는다(보호자가 ‘적용’을 눌러야 저장) ----
+  // stats: computeStats 결과(week = 최근 7일, prevWeek = 그 앞 7일, missedTop = 최근 2주 틀린 단어 상위 10). plan: 아이의 오늘의 단어 계획. levels: 수준 목록(쉬운 것부터).
+  // 올리기: 두 주 모두 시험 3회 이상·평균 90점 이상이고 최근 2주 틀린 단어가 5개 이하 → 다음 단계. 내리기: 두 주 평균이 모두 60점 미만 → 한 단계 아래.
+  // 직접 입력한 수준이거나 더 올릴(내릴) 단계가 없으면 null.  → { direction: "up"|"down", from, to, avg(최근 2주 평균), week, prevWeek, missed } | null
+  function suggestLevel(stats, plan, levels = PLAN_LEVELS) {
+    const week = stats?.week, prev = stats?.prevWeek;
+    if (!week?.count || !prev?.count || week.avg == null || prev.avg == null) return null;
+    const from = planDefaults(plan).level;
+    const i = levels.indexOf(from);
+    if (i < 0) return null;
+    const missed = Array.isArray(stats.missedTop) ? stats.missedTop.length : 0;
+    const avg = Math.round((week.avg * week.count + prev.avg * prev.count) / (week.count + prev.count));
+    const base = { from, avg, week: { count: week.count, avg: week.avg }, prevWeek: { count: prev.count, avg: prev.avg }, missed };
+    if (week.count >= 3 && prev.count >= 3 && week.avg >= 90 && prev.avg >= 90 && missed <= 5)
+      return i + 1 < levels.length ? { ...base, direction: "up", to: levels[i + 1] } : null;
+    if (week.avg < 60 && prev.avg < 60) return i > 0 ? { ...base, direction: "down", to: levels[i - 1] } : null;
+    return null;
+  }
+
   // ---- 서버 요청 (보호자 코드) ----
   const api = {
     request(path, { method = "GET", body, timeout = TIMEOUT_MS, passcode } = {}) {
@@ -270,7 +307,10 @@
     },
     verifyCode: (code) => api.request("/family", { passcode: code }),
     listChildren: () => api.request("/family"),
-    childDetail: (id) => api.request("/family/" + enc(id)),
+    // 상세는 최근 30일 중 최신 200개만(옛 Worker 는 인자를 무시하고 전체를 준다 → loadDetail 이 자른다)
+    childDetail: (id) => api.request(`/family/${enc(id)}?days=${DETAIL_DAYS}&limit=${RECORDS_KEEP}`),
+    // ‘더 보기’: before(목록의 마지막 completedAt)보다 먼저 끝난 기록 한 페이지. 옛 Worker 에는 없다(404 not_found)
+    childRecords: (id, before) => api.request(`/family/${enc(id)}/records?limit=${OLDER_PAGE}` + (before ? "&before=" + enc(before) : "")),
     getSet: (id, setId) => api.request(`/family/${enc(id)}/sets/${enc(setId)}`, { timeout: SETS_TIMEOUT_MS }),
     sendSet: (id, set) => api.request(`/family/${enc(id)}/sets`, { method: "POST", body: { set }, timeout: SETS_TIMEOUT_MS }),
     deleteSet: (id, setId) => api.request(`/family/${enc(id)}/sets/${enc(setId)}`, { method: "DELETE" }),
@@ -337,6 +377,8 @@
   // ---- 불러오기 ----
   let loading = false, lastLoadError = "";
   const detailLoading = new Set(), detailErrors = new Map();
+  // ‘더 보기’로 받은 옛 기록(세션 동안만, 저장하지 않음): 아이 id → { records, more, loading, unsupported(옛 Worker), token }
+  const olderPages = new Map();
   // 아이 목록(GET /family). force 가 아니면 10분이 지났을 때만.
   async function refreshAll({ force = false } = {}) {
     const s = store.get();
@@ -357,7 +399,8 @@
       scheduleRender();
     }
   }
-  // 아이 상세(GET /family/<id>): 기록은 최신 200개만 캐시하고, 질문·오늘의 단어도 함께 둔다.
+  // 아이 상세(GET /family/<id>?days=30&limit=200): 기록(최근 30일 중 최신 200개)·전체 수·더 있음·질문·오늘의 단어를 둔다.
+  // 옛 Worker 는 인자를 무시하고 전체 기록을 주며 recordCount·more 가 없다: 최신 200개만 쓰고 받은 개수를 전체로 삼으며 ‘더 보기’는 없다.
   async function loadDetail(id, { force = false } = {}) {
     const s = store.get();
     const d = s.details[id];
@@ -367,16 +410,19 @@
     try {
       const data = await api.childDetail(id);
       const all = (Array.isArray(data?.records) ? data.records : []).filter(validRecord).sort(byNewest);
+      const records = all.slice(0, RECORDS_KEEP);
       const child = validChild(data?.child) ? data.child : childById(id);
       const at = nowIso();
       detailErrors.delete(id);
+      olderPages.delete(id); // 새 창을 받으면 이어 받던 옛 기록은 버린다(창이 옮겨 가 그 사이에 빈틈이 생기지 않게). ‘더 보기’로 다시 받는다
       store.patch((st) => ({
         details: {
           ...st.details,
           [id]: {
             child: { ...(st.details[id]?.child || {}), ...child, records: undefined, today: undefined },
-            records: all.slice(0, RECORDS_KEEP),
-            recordTotal: all.length,
+            records,
+            recordTotal: Number.isInteger(data?.recordCount) ? Math.max(data.recordCount, records.length) : all.length,
+            more: data?.more === true,
             questions: (Array.isArray(data?.questions) ? data.questions : []).filter((q) => q && typeof q === "object"),
             today: data?.today || null,
             fetchedAt: at,
@@ -395,6 +441,34 @@
       } else detailErrors.set(id, failure(e));
     } finally {
       detailLoading.delete(id);
+      scheduleRender();
+    }
+  }
+  // ‘더 보기’: 지금 목록의 마지막(가장 오래된) 기록보다 먼저 끝난 기록을 100개씩 받아 이 세션 동안 붙여 둔다.
+  // 옛 Worker(경로 없음, 404 not_found)면 토스트 없이 버튼만 숨긴다.
+  async function loadMoreRecords(id) {
+    const page = olderPages.get(id) || { records: [], more: true };
+    if (!store.get().details[id] || page.loading || page.unsupported) return;
+    const list = recordsOf(id);
+    const token = {};
+    olderPages.set(id, { ...page, loading: true, token });
+    note(id, "recordsStatus", "info", "");
+    scheduleRender();
+    try {
+      const data = await api.childRecords(id, list.length ? list[list.length - 1].completedAt : "");
+      if (olderPages.get(id)?.token !== token) return; // 그동안 상세를 새로 받았으면 버린다
+      const seen = new Set(page.records.map((r) => r.id));
+      const got = (Array.isArray(data?.records) ? data.records : []).filter((r) => validRecord(r) && !seen.has(r.id));
+      olderPages.set(id, { records: [...page.records, ...got].sort(byNewest), more: data?.more === true });
+      if (!got.length && data?.more !== true) note(id, "recordsStatus", "info", "더 이전 기록은 없어요.");
+    } catch (e) {
+      if (olderPages.get(id)?.token !== token) return;
+      if (e?.status === 404 && e.code === "not_found") olderPages.set(id, { ...page, more: false, unsupported: true });
+      else {
+        olderPages.set(id, page);
+        note(id, "recordsStatus", "bad", "이전 기록을 불러오지 못했어요: " + failure(e));
+      }
+    } finally {
       scheduleRender();
     }
   }
@@ -748,7 +822,8 @@
       return;
     }
     $("childDetailTitle").textContent = "🧒 " + c.name;
-    const total = Math.max(d?.recordTotal || 0, Number.isInteger(c.recordCount) ? c.recordCount : 0, recordsOf(c.id).length);
+    const loaded = recordsOf(c.id).length;
+    const total = d && Number.isInteger(d.recordTotal) ? Math.max(d.recordTotal, loaded) : Math.max(Number.isInteger(c.recordCount) ? c.recordCount : 0, loaded);
     const sets = Array.isArray(c.sets) ? c.sets.length : 0;
     const devices = devicesOf(c).length;
     const state = detailLoading.has(c.id) ? " · 불러오는 중…" : detailErrors.has(c.id) ? " · " + detailErrors.get(c.id) : "";
@@ -796,10 +871,7 @@
       statTile("최근 30일", month.count ? `${month.avg}점` : "-", `시험 ${month.count}회 평균`),
       statTile("연속 학습", `🔥 ${streak}일`, streak ? "오늘·어제까지 이어서" : "오늘 시작해 봐요"),
     );
-    const chips = $("missedTop");
-    chips.textContent = "";
-    if (!stats.missedTop.length) chips.append(h("span", { class: "muted" }, "최근 2주 동안 틀린 단어가 없어요."));
-    for (const w of stats.missedTop) chips.append(h("span", { class: "chip" }, h("span", null, w.en), h("b", null, `${w.n}회`), h("small", null, w.ko || "")));
+    renderMissed(c, stats.missedTop);
     // 필터: 세트(기록에 나온 이름, 최근 것부터)·기간
     const names = [...new Set(records.map((r) => String(r.setName || "")).filter(Boolean))];
     const prefs = s.prefs;
@@ -815,11 +887,19 @@
     $("recordsDays").value = String(prefs.recordsDays);
     const since = prefs.recordsDays ? startOfDay(prefs.recordsDays - 1) : 0;
     const filtered = records.filter((r) => (setFilter === "all" || r.setName === setFilter) && Date.parse(r.completedAt) >= since);
+    // ‘더 보기’: 서버가 더 있다고 했고(상세의 more 또는 마지막 페이지의 more) 받은 기록이 전체보다 적을 때만
+    const page = olderPages.get(c.id);
+    const total = d && Number.isInteger(d.recordTotal) ? d.recordTotal : 0;
+    const canMore = Boolean(d && !page?.unsupported && (page ? page.more : d.more) && records.length < total);
+    const more = $("loadMoreRecords");
+    more.classList.toggle("hidden", !canMore);
+    more.disabled = Boolean(page?.loading);
+    more.textContent = page?.loading ? "이전 기록을 불러오는 중…" : "⬇ 이전 기록 더 보기";
     $("recordsNote").textContent = !d
-      ? detailLoading.has(c.id) ? "전체 기록을 불러오는 중… 지금은 최근 2주 기록만 보여요." : "최근 2주 기록만 보여요."
-      : d.recordTotal > d.records.length ? `전체 ${d.recordTotal}회 중 최근 ${d.records.length}개를 보여 줘요.` : "";
+      ? detailLoading.has(c.id) ? "기록을 불러오는 중… 지금은 최근 2주 기록만 보여요." : "최근 2주 기록만 보여요."
+      : total > records.length ? `전체 ${total}회 중 최근 ${records.length}개를 받았어요.` + (canMore ? " 맨 아래 ‘더 보기’로 이전 기록을 볼 수 있어요." : "") : "";
     const list = $("childRecords");
-    const key = JSON.stringify([c.id, d?.fetchedAt || "", s.fetchedAt, setFilter, prefs.recordsDays, dayKey(new Date()), records.length]);
+    const key = JSON.stringify([c.id, d?.fetchedAt || "", s.fetchedAt, setFilter, prefs.recordsDays, dayKey(new Date()), records.length, page?.records.length || 0]);
     if (list.dataset.key === key) return; // 같은 내용이면 다시 만들지 않는다(펼쳐 둔 ‘틀린 단어 보기’ 유지)
     list.dataset.key = key;
     list.textContent = "";
@@ -840,6 +920,105 @@
   };
   $("recordsSet").onchange = () => store.patch((s) => ({ prefs: { ...s.prefs, recordsSet: $("recordsSet").value } }));
   $("recordsDays").onchange = () => store.patch((s) => ({ prefs: { ...s.prefs, recordsDays: Number($("recordsDays").value) } }));
+  // ‘더 보기’는 30일보다 오래된 기록을 받으므로 기간을 ‘전체’로 바꿔 보여 준다.
+  $("loadMoreRecords").onclick = () => {
+    const id = router.current.id;
+    if (!id) return;
+    if (store.get().prefs.recordsDays !== 0) store.patch((s) => ({ prefs: { ...s.prefs, recordsDays: 0 } }));
+    loadMoreRecords(id);
+  };
+
+  // 📉 자주 틀린 단어: 칩을 눌러 빼거나 넣고(기본 전부), 고른 단어로 ‘복습 M/D’ 세트를 만들어 보낸다.
+  const missedOff = new Map(); // 아이 id → 뺀 단어(소문자 영어)
+  formResets.push(() => missedOff.clear());
+  let setSending = false; // 복습 세트·오늘의 단어 세트를 보내는 중
+  const pickedMissed = (id, top) => top.filter((w) => !missedOff.get(id)?.has(w.en.toLowerCase()));
+  function renderMissed(c, top) {
+    const chips = $("missedTop");
+    const picked = pickedMissed(c.id, top);
+    $("missedActions").classList.toggle("hidden", !top.length);
+    $("missedPicked").textContent = top.length ? `${picked.length}개 골랐어요 · 단어를 눌러 빼거나 넣어요` : "";
+    $("sendMissedSet").disabled = !picked.length || setSending;
+    const key = JSON.stringify([c.id, top.map((w) => [w.en, w.n, w.ko]), picked.map((w) => w.en)]);
+    if (chips.dataset.key === key) return;
+    chips.dataset.key = key;
+    chips.textContent = "";
+    if (!top.length) chips.append(h("span", { class: "muted" }, "최근 2주 동안 틀린 단어가 없어요."));
+    for (const w of top) {
+      const on = picked.includes(w);
+      chips.append(
+        h(
+          "button",
+          { type: "button", class: "chip pick" + (on ? " on" : ""), "aria-pressed": on ? "true" : "false", dataset: { word: w.en }, onclick: () => toggleMissed(c.id, w.en) },
+          h("span", null, (on ? "✓ " : "") + w.en),
+          h("b", null, `${w.n}회`),
+          h("small", null, w.ko || "뜻 없음"),
+        ),
+      );
+    }
+  }
+  function toggleMissed(id, en) {
+    const key = en.toLowerCase();
+    const off = missedOff.get(id) || new Set();
+    if (off.has(key)) off.delete(key);
+    else off.add(key);
+    missedOff.set(id, off);
+    scheduleRender();
+  }
+  // 세트 이름이 이미 있으면 ‘ (2)’, ‘ (3)’…을 붙인다(아이 세트 요약 기준).
+  function uniqueSetName(c, base) {
+    const names = new Set((Array.isArray(c.sets) ? c.sets : []).map((x) => x?.name));
+    if (!names.has(base)) return base;
+    for (let n = 2; ; n++) if (!names.has(`${base} (${n})`)) return `${base} (${n})`;
+  }
+  // 만든 세트를 아이에게 보내고 세트 탭으로 옮긴다(복습 세트·오늘의 단어 세트 공용). 실패 문구는 statusId 칸에.
+  async function sendNamedSet(c, set, statusId, extra = "") {
+    if (setSending) return false;
+    setSending = true;
+    note(c.id, statusId, "info", `‘${set.name}’을(를) 보내는 중…`);
+    scheduleRender();
+    try {
+      const data = await api.sendSet(c.id, set);
+      const summary = Array.isArray(data?.summary) ? data.summary : [...(childById(c.id)?.sets || []), { id: set.id, name: set.name, count: set.words.length, updatedAt: nowIso() }];
+      patchChild(c.id, { sets: summary });
+      const text = `‘${set.name}’ ${set.words.length}단어를 ${c.name}에게 보냈어요.`;
+      note(c.id, statusId, "info", "");
+      note(c.id, "setsStatus", "good", text + " 아이 기기가 다음에 앱을 열 때 들어가요." + extra);
+      toast(text + extra, "good");
+      if (router.current.id === c.id) router.replace(childPath(c.id, "sets"));
+      return true;
+    } catch (e) {
+      note(c.id, statusId, "bad", "보내지 못했어요: " + failure(e));
+      return false;
+    } finally {
+      setSending = false;
+      scheduleRender();
+    }
+  }
+  // 틀린 단어로 복습 세트: 이름 ‘복습 M/D’(오늘, 이 폰 날짜), 번호 1…n, 뜻은 기록의 뜻(뜻이 없는 단어는 빼고 알린다).
+  function sendMissedAsSet(childId, words) {
+    const c = childById(childId);
+    if (!c) return Promise.resolve(false);
+    const usable = words.filter((w) => tidy(w.en) && tidy(w.ko));
+    const skipped = words.length - usable.length;
+    if (!usable.length) {
+      note(childId, "missedStatus", "bad", "고른 단어에 뜻이 기록되지 않아 세트를 만들 수 없어요.");
+      return Promise.resolve(false);
+    }
+    const set = {
+      id: crypto.randomUUID(),
+      name: uniqueSetName(c, "복습 " + monthDay(new Date())),
+      words: usable.map((w, i) => ({ id: i + 1, en: tidy(w.en), ko: tidy(w.ko), aliases: [], ipa: "" })),
+    };
+    return sendNamedSet(c, set, "missedStatus", skipped ? ` 뜻이 기록되지 않은 단어 ${skipped}개는 뺐어요.` : "").then((ok) => {
+      if (ok) missedOff.delete(childId); // 보낸 뒤에는 다시 전부 고른 상태로
+      return ok;
+    });
+  }
+  $("sendMissedSet").onclick = () => {
+    const id = router.current.id;
+    if (id) sendMissedAsSet(id, pickedMissed(id, computeStats(recordsOf(id), { days: DETAIL_DAYS }).missedTop));
+  };
 
   // ===== [sets] 세트 탭 · 세트 편집기 (#/child/<id>/sets/<new|세트 id>) =====
   const validWord = (w) => w && ["string", "number"].includes(typeof w.id) && typeof w.en === "string" && w.en.trim() && typeof w.ko === "string" && Array.isArray(w.aliases);
@@ -864,10 +1043,12 @@
           { class: "set-row", dataset: { set: s.id || "" } },
           h("span", { class: "set-info" }, h("span", { class: "set-name" }, `${s.name} · ${s.count}단어`), h("small", null, info)),
           s.id
-            ? [
+            ? h(
+                "span",
+                { class: "set-actions" },
                 h("button", { type: "button", class: "btn small", onclick: () => router.go(editorPath(c.id, s.id)) }, "보기·수정"),
                 h("button", { type: "button", class: "btn small outline danger", onclick: () => deleteSet(c, s) }, "삭제"),
-              ]
+              )
             : h("small", { class: "muted" }, "아이 기기가 새 버전으로 보내면 여기서 고칠 수 있어요"),
         ),
       );
@@ -1044,9 +1225,31 @@
     $("planHour").value = String(plan.hour);
   }
   formResets.push(() => delete $("planBox").dataset.key);
+  // 수준 제안: ‘적용’·‘다음에’를 누른 날부터 7일 동안은 묻지 않는다(오늘의 단어가 꺼져 있어도 보인다).
+  function levelSuggestionFor(c) {
+    const day = store.get().prefs.levelSuggestDismissed?.[c.id];
+    if (day && Date.now() - Date.parse(day + "T00:00:00") < SUGGEST_HIDE_MS) return null;
+    return suggestLevel(computeStats(recordsOf(c.id), { days: DETAIL_DAYS }), c.plan);
+  }
+  function hideLevelSuggestion(id) {
+    store.patch((s) => ({ prefs: { ...s.prefs, levelSuggestDismissed: { ...(s.prefs.levelSuggestDismissed || {}), [id]: dayKey(new Date()) } } }));
+  }
+  function renderLevelSuggestion(c) {
+    const sug = levelSuggestionFor(c);
+    $("levelSuggest").classList.toggle("hidden", !sug);
+    if (!sug) return;
+    const up = sug.direction === "up";
+    $("levelSuggest").classList.toggle("down", !up);
+    $("levelSuggestText").textContent = `최근 2주 평균 ${sug.avg}점이에요. 수준을 ‘${sug.to}’${ro(sug.to)} ${up ? "올려" : "낮춰"} 볼까요?`;
+    $("levelSuggestWhy").textContent =
+      `이번 주 ${sug.week.count}회 · 평균 ${sug.week.avg}점, 지난주 ${sug.prevWeek.count}회 · 평균 ${sug.prevWeek.avg}점` +
+      (up ? `, 자주 틀린 단어 ${sug.missed}개` : "") +
+      ` · 지금 수준 ‘${sug.from}’. 제안만 해요(‘적용’을 눌러야 바뀌어요).`;
+  }
   panels.daily = (c, d) => {
     const plan = planDefaults(c.plan);
     fillPlanForm(c);
+    renderLevelSuggestion(c);
     const anchor = c.anchor;
     $("planAnchor").textContent = anchor?.words?.length
       ? `수준 기준 세트: ${anchor.setName || "(이름 없음)"} · ${anchor.words.length}단어 (아이 기기가 기록을 보낼 때 최근 세트에서 가져와요)`
@@ -1063,6 +1266,54 @@
     if (today?.exists && !words.length && detailLoading.has(c.id)) box.append(h("p", { class: "muted" }, "단어를 불러오는 중…"));
     for (const w of words)
       box.append(h("div", { class: "daily-word" }, h("span", { class: "tag" + (w.kind === "review" ? " review" : "") }, w.kind === "review" ? "복습" : "새"), h("span", null, `${w.en} — ${w.ko}`)));
+    $("dailySetBox").classList.toggle("hidden", !(today?.exists && words.length));
+    $("saveDailyAsSet").disabled = setSending;
+  };
+  // 오늘의 단어를 세트로 저장해 보내기: 이름 ‘오늘의 단어 M/D’(그 오늘의 단어 날짜). 세트로만 저장하고 오늘의 단어 시험 기록과는 무관하다.
+  $("saveDailyAsSet").onclick = () => {
+    const c = currentChild();
+    if (!c) return;
+    const today = store.get().details[c.id]?.today;
+    const words = (Array.isArray(today?.words) ? today.words : []).filter((w) => w && tidy(w.en) && tidy(w.ko));
+    if (!words.length) return;
+    const m = /^\d{4}-(\d{2})-(\d{2})$/.exec(String(today.date || ""));
+    const set = {
+      id: crypto.randomUUID(),
+      name: uniqueSetName(c, "오늘의 단어 " + (m ? `${Number(m[1])}/${Number(m[2])}` : monthDay(new Date()))),
+      words: words.map((w, i) => ({
+        id: Number.isInteger(w.id) ? w.id : i + 1,
+        en: tidy(w.en),
+        ko: tidy(w.ko),
+        ipa: typeof w.ipa === "string" ? w.ipa : "",
+        aliases: Array.isArray(w.aliases) ? w.aliases.filter((a) => typeof a === "string") : [],
+      })),
+    };
+    sendNamedSet(c, set, "dailySetStatus");
+  };
+  // 수준 제안 ‘적용’: 수준만 저장한다(켜고 끄기·개수·시각은 그대로). ‘다음에’: 7일 동안 숨긴다.
+  $("applyLevel").onclick = async () => {
+    const c = currentChild();
+    const sug = c && levelSuggestionFor(c);
+    if (!sug) return;
+    $("applyLevel").disabled = true;
+    note(c.id, "planStatus", "info", "수준을 바꾸는 중…");
+    try {
+      putPlan(c.id, await api.savePlan(c.id, { level: sug.to }), { level: sug.to });
+      hideLevelSuggestion(c.id);
+      const text = `수준을 ‘${sug.to}’${ro(sug.to)} 바꿨어요.` + (planDefaults(childById(c.id)?.plan).enabled ? " 다음 오늘의 단어부터 이 수준으로 만들어요." : " 오늘의 단어는 아직 꺼져 있어요.");
+      note(c.id, "planStatus", "good", text);
+      toast(text, "good");
+    } catch (e) {
+      note(c.id, "planStatus", "bad", "저장 실패: " + failure(e));
+    } finally {
+      $("applyLevel").disabled = false;
+    }
+  };
+  $("dismissLevel").onclick = () => {
+    const id = router.current.id;
+    if (!id) return;
+    hideLevelSuggestion(id);
+    toast("수준 제안은 일주일 뒤에 다시 볼게요.", "info");
   };
   $("planLevel").onchange = () => $("planLevelCustom").classList.toggle("hidden", $("planLevel").value !== "__custom");
   $("savePlan").onclick = async () => {
@@ -1343,6 +1594,6 @@
   store.subscribe(scheduleRender);
   onRoute();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
-  window.ParentApp = Object.freeze({ store, router, computeStats, api });
+  window.ParentApp = Object.freeze({ store, router, computeStats, suggestLevel, api });
   if (window.markVocabAppReady) window.markVocabAppReady();
 })();

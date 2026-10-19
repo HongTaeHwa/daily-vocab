@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="영단어 보호자">
 <link rel="apple-touch-icon" href="./icons/parent-apple-touch-icon.png">
-<link rel="stylesheet" href="./parent.css?v=20261018-21">
+<link rel="stylesheet" href="./parent.css?v=20261018-22">
 </head>
 <body class="no-code">
 <header class="topbar">
@@ -82,12 +82,16 @@
     <div class="box">
       <h3 class="section-title">📉 자주 틀린 단어 (최근 2주)</h3>
       <div id="missedTop" class="chips"></div>
+      <div id="missedActions" class="actionbar hidden"><button type="button" class="btn small primary" id="sendMissedSet">📚 이 단어들로 복습 세트 보내기</button><span id="missedPicked" class="muted"></span></div>
+      <div id="missedStatus" class="feedback info" role="status"></div>
     </div>
     <div class="box">
       <h3 class="section-title">🕒 기록</h3>
       <div class="filters"><select id="recordsSet" aria-label="세트"></select><select id="recordsDays" aria-label="기간"><option value="7">최근 7일</option><option value="30">최근 30일</option><option value="0">전체</option></select></div>
       <p id="recordsNote" class="muted"></p>
       <div id="childRecords"></div>
+      <div class="actionbar more-bar"><button type="button" class="btn outline hidden" id="loadMoreRecords">⬇ 이전 기록 더 보기</button></div>
+      <div id="recordsStatus" class="feedback info" role="status"></div>
     </div>
   </div>
 
@@ -106,6 +110,12 @@
   </div>
 
   <div class="card child-panel" id="panelDaily">
+    <!-- 수준 제안(2C): 최근 2주 점수로 제안만 한다. ‘적용’을 눌러야 계획의 수준이 바뀐다 -->
+    <div id="levelSuggest" class="suggest hidden">
+      <p id="levelSuggestText" class="suggest-text"></p>
+      <p id="levelSuggestWhy" class="muted"></p>
+      <div class="actionbar"><button type="button" class="btn small primary" id="applyLevel">적용</button><button type="button" class="btn small outline" id="dismissLevel">다음에</button></div>
+    </div>
     <div id="planBox">
       <h3 class="section-title">📬 오늘의 단어</h3>
       <p class="muted">켜 두면 매일 정한 시각에 아이 수준에 맞는 단어를 만들어 아이 홈에 ‘오늘의 단어’ 카드로 보여 줘요. 복습(최근 틀린 단어) 최대 3개 + 새 단어로 채우고, 새 단어는 아이의 최근 세트(교재) 수준을 기준으로 AI가 골라요.</p>
@@ -119,6 +129,11 @@
     <div class="box">
       <h3 class="section-title">👀 오늘 것 미리보기</h3>
       <div id="dailyPreview"></div>
+      <div id="dailySetBox" class="hidden">
+        <div class="actionbar"><button type="button" class="btn small outline" id="saveDailyAsSet">📚 세트로 저장해 보내기</button></div>
+        <p class="muted">오늘의 단어를 이 아이의 세트로도 보내 두면 나중에 다시 시험 볼 수 있어요.</p>
+      </div>
+      <div id="dailySetStatus" class="feedback info" role="status"></div>
     </div>
   </div>
 
@@ -195,7 +210,7 @@
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-21 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-22 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
   </div>
 </section>
@@ -209,7 +224,7 @@
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-21';
+  var release = '20261018-22';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -243,8 +258,8 @@
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./shared.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./editor.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./parent.js?v=20261018-21" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./shared.js?v=20261018-22" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./editor.js?v=20261018-22" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./parent.js?v=20261018-22" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>
