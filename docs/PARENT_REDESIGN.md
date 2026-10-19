@@ -149,6 +149,12 @@ window.Shared = {
 
 - `familyRequest`는 B단계까지 family.js에 남기되 내부에서 `Shared.apiRequest`를 부른다(아이 기기 테스트 변경 없음).
 - `Shared`는 상태를 갖지 않는다(순수 함수와 상수만).
+- **결정 변경(2026-10-19, A단계 구현)**
+  - `preparePhoto`·`canvasToBase64Jpeg`도 `Shared`에 둔다. 편집기만이 아니라 아이 앱의 문제 물어보기(sets.js `askTutor`)도 같은 사진 변환을 쓰기 때문이다.
+  - `apiRequest`는 `signal`도 받는다(B단계 보호자 앱이 편집기 `ai` 브리지를 만들 때 취소용). `ApiError.code`는 서버의 `error` 값이고, 서버에 닿지 못하면 `status: 0`과 `no_server`·`timeout`·`network`·`aborted`.
+  - `describeApiError`는 오류 객체가 아니라 정보 `{status, code, message(서버 문구), path}`를 받아 문구를 돌려준다(`apiRequest`가 그 문구를 `ApiError.message`로 쓴다). 401 문구는 지금처럼 경로가 `/family`로 시작하면 보호자 코드, 아니면 접속 코드.
+  - `h()`는 값이 `true`인 키만 같은 이름의 프로퍼티(`hidden`·`disabled`·`multiple` 등)로, 그 밖의 값은 속성으로 넣는다(`capture="environment"` 같은 문자열 속성을 지키려고).
+  - 별칭 규칙: 전역 어휘 범위를 함께 쓰므로 같은 이름을 두 파일에서 `const`로 꺼내면 안 된다. `quiz.js`가 `$ setFeedback modeLabels`, `family.js`가 서식·계획 상수, `sets.js`가 `AI_SERVER_DEFAULT normalizeServer WORD_PATTERN parseDraft preparePhoto canvasToBase64Jpeg readJson writeJson`을 꺼낸다(`CLAUDE.md` 파일 구조 표).
 
 ### 5.3 `editor.js` — 세트 편집기 모듈
 
@@ -173,6 +179,13 @@ window.SetEditor = {
 - `parseDraft`·`WORD_PATTERN`은 `Shared`에 두어 백업 검증(sets.js)도 쓴다.
 - 아이 앱(sets.js)은 `SetEditor.mount($("editorHost"), { ai: aiBridge(), onSave: saveSetLocally, onClose: () => showView("home"), onRename, onDelete })`. `saveSetLocally`가 지금 `saveSet`의 저장 부분(이름 바뀐 기록 반영, `persistSets`, `selectSet`, `queueSetsSync`)을 한다. 잠금(`childSetsLocked`)은 `open(set, {readOnly})`로 전달한다.
 - 보호자 앱은 `onSave: (set) => api.sendSet(childId, set)`, `onClose: () => router.back()`.
+- **결정 변경(2026-10-19, A단계 구현)**
+  - 붙이는 곳은 새 `#editorHost`가 아니라 기존 `<section class="view" id="editor">` 자체다(`SetEditor.mount($("editor"))`). 안쪽 마크업만 모듈이 만들고, `showView`의 `VIEWS`·`#editor.readonly` CSS·`body:has(#editor.active)` 폭 규칙이 그대로 맞는다. 편집기 CSS는 A단계에서는 `index.html`에 남기고, 보호자 앱에서 어떻게 나눌지는 B단계에서 정한다.
+  - `ai`는 브리지 객체뿐 아니라 그것을 돌려주는 **함수**도 받는다(쓸 때마다 불러 그때의 설정을 쓴다). 아이 앱은 설정 화면에서 AI 연결을 나중에 저장할 수 있어 mount 때 한 번 만든 값은 낡기 때문이다. `ai`가 null이면 새 옵션 `onNeedAi(reason)`을 부른다(아이 앱: 설정 → AI 연결로 안내).
+  - 새 옵션 `guard(action)`: `"save"`·`"rename"`·`"delete"` 전에 묻고 `true`면 진행, 문구면 보이고 멈춘다. 아이 앱은 시험 중·세트 잠금(편집 중에 잠금이 도착한 경우 포함)을 여기서 거절한다. `open`의 읽기 전용 안내·저장 거절 문구는 `readOnlyText`로 받는다.
+  - `open`은 열었으면 `true`, 미저장 초안을 지키려고 사용자가 취소하면 `false`를 돌려준다(호출자가 그때만 화면을 옮긴다). `targetName`이 있으면 관리 상자를 숨긴다.
+  - 저장·삭제 성공 뒤 `SetEditor.close()`는 **호출자 콜백**이 화면을 옮기기 전에 부른다(홈을 그릴 때 `window.editorOpen`으로 ‘편집 중인 세트로 돌아가기’를 정하므로 순서가 중요). `onRename`·`onDelete`는 `true | 문구 | false`를 돌려주고, 이름 바꾸기 성공 문구·입력 상자 닫기는 편집기가 한다.
+  - 같은 번호·영어 단어의 원래 id·발음을 이어받는 처리(`keepWordDetails`)는 sets.js `onSave`에서 보호자 분기보다 먼저 한다(지금 동작 그대로). `window.editorOpen`은 editor.js가 호환용 사본으로 유지한다.
 - 테스트 계약: `#editorTitle #setName #photos #camera #pickPhotos #takePhoto #extractWords #cancelExtract #extractStatus #fillMeanings #wordTableBody #addRow #toggleDraftText #wordDraft #wordCount #confirmed #confirmedRow #saveSet #closeEditor #manageBox #renameSet #deleteSet #renameBox #manageStatus #photoRow #photoHelp #draftWarnings #photoPreview`, 문구 “사진을 선택했습니다”, “가져오지 못했습니다”, “취소”, “AI 사전으로 채웠어요”, “노란 칸”, “못 찾은 단어”, “먼저 영어 단어”, “다시 배포”, “N에게 보내기” 유지.
 
 ### 5.4 `parent.js` — 보호자 앱 구조
@@ -276,6 +289,7 @@ B단계에서 아이 앱(`index.html`·`quiz.js`·`family.js`·`sets.js`)에서 
 ### 5.10 테스트 설계
 
 - `tests/lib/fake-family-worker.cjs`: 지금 `family.cjs`·`daily.cjs`에 복제된 가짜 Worker 라우트(`/join /settings /records /sync /daily /sets /family… /plan /children /code /name /question`)를 한 모듈로. `createFakeWorker(page, { server, familyCode, parentCode, children })` → `{ requests, children, paths(), seedChild(), seedRecords(), setMode() }`. 두 기존 테스트가 이 모듈을 쓰도록 바꾼다(동작 동일).
+  - **결정 변경(2026-10-19, A단계 구현)**: 실제 인터페이스는 `createFakeWorker(page, { server, familyCode, parentCode, setSync = true, daily = true, recordsPageSize = 500, newWords })` → `{ requests, children, codes, gone, dailies, paths(path, method?), seedChild(id, name, code), liveSets(child), planOf(child), setMode("ok"|"abort"|"notfound") }`. 두 테스트 라우트의 합집합이고, 서로 달랐던 세 가지(옛 Worker처럼 `/sets` 404 — daily, `/daily` 언제나 꺼짐 — family, `/records` 한 페이지 2개 — family의 페이지 넘김 시험)를 옵션으로 둔다. 기록·질문은 `children.get(id).records`/`.questions`에 직접 넣으므로 `seedRecords()`는 두지 않았다. `/question`은 Worker 내부(FamilyStore) 경로라 가짜 Worker에는 라우트가 없다.
 - `tests/parent.cjs`(신규, B): parent.html 직접 열기 → 코드 입력 화면 → 틀린 코드 401 문구 → 저장 → 오늘 카드(2명: 연결된 아이·연결 안 된 아이) → 뒤로 가기(해시) → 아이 상세 탭 5개(기록 요약·틀린 단어·필터·세트 목록·오늘의 단어 폼 저장 본문·제한 시간 즉시 저장·잠금·연결 코드·이름·삭제 2단계) → 아이 추가 → 설정(코드 삭제 → 캐시 삭제·`#/setup`) → 옛 설치 호환(`index.html?mode=parent` → parent.html 리다이렉트, `daily_vocab_family_v1.parentCode` 이전) → 오프라인 캐시(라우트 차단 뒤 새로고침해도 카드 보임).
 - `tests/parent-sets.cjs`(신규, B): 세트 만들어 보내기(편집기 모듈 제목 ‘N에게 보내기’, 텍스트 모드, 전송 본문, 목록 갱신, 기기 사본 없음) → 보기·수정 → 삭제 → 틀린 단어로 복습 세트 보내기(C) → 오늘의 단어 미리보기 세트로 저장(C).
 - `tests/family.cjs`: 보호자 부분(현재 439~600행)을 삭제하고 아이 기기 흐름만 남긴다. `daily.cjs`의 보호자 계획 폼 부분은 `parent.cjs`로 옮기고, 아이 기기 쪽(카드·풀기·제한 시간 수신)은 남긴다(보호자 코드 대신 가짜 Worker에 plan을 직접 심는다).
@@ -298,6 +312,7 @@ B단계에서 아이 앱(`index.html`·`quiz.js`·`family.js`·`sets.js`)에서 
 4. `tests/lib/fake-family-worker.cjs` 신설 + `family.cjs`·`daily.cjs`가 쓰도록 변경.
 5. 버전 올리기(`index.html` 스크립트 5개, `sw.js` SHELL에 shared·editor 추가, `app-update.cjs`), `CLAUDE.md` 파일 구조·체크리스트, `DESIGN.md` 23절(이 문서 링크).
 - **완료 기준**: 9개 테스트 PASS(ID·문구 변경 없음), `index.html`에 편집기 마크업 없음, `sets.js` 편집기 코드 0행, `grep -n "familyRequest(" family.js`가 `Shared.apiRequest`를 감싼 한 곳.
+- **진행 상태(2026-10-19)**: 구현 완료(브랜치 `claude/parent-shared-e2f820`, 릴리스 `20261018-20`·캐시 v29). 9개 테스트 PASS. `familyRequest(`는 호출부 21곳에도 나오므로 기준은 ‘서버에 닿는 곳이 정의 한 곳(`Shared.apiRequest`를 감쌈)이고 family.js에 `fetch(`가 없다’로 확인했다. 설계와 다르게 한 결정은 5.2·5.3·5.10의 ‘결정 변경’.
 
 ### B. 보호자 앱 새로 쓰기 — `feat/parent-app`
 1. `parent.html`(앱 페이지: 상단 바, 뷰 섹션 6개 껍데기, 하단 탭 3개, 토스트, `#editorHost`, 부트스트랩 스크립트(버전·오류 배너·새 버전 불러오기)), `parent.css`, `parent.js`(5.4) 작성. 화면은 5.5.

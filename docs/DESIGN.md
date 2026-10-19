@@ -344,3 +344,13 @@
 ## 23. 보호자 앱 전면 개편 (2026-10-19 설계)
 
 분석·문제점·목표 아키텍처·단계별 계획은 `docs/PARENT_REDESIGN.md`. 요지: `parent.html`을 보호자 앱 자체로 분리하고 `shared.js`·`editor.js`를 두 앱이 공유, 오늘·아이들·설정 3탭 + 아이별 하위 탭, 해시 라우터, 단일 상태 저장소 + 캐시 우선, Worker 기록 페이지 읽기. 구현은 A(공통 모듈 분리) → B(보호자 앱 새로 쓰기, 아이 앱에서 보호자 모드 제거) → C(Worker 보강·행동 기능) 순서의 PR.
+
+### 23.1 A단계 완료 — 공통 모듈 분리 (2026-10-19)
+
+동작 변화 없이 두 앱이 함께 쓸 코드를 떼어 냈다. 로드 순서 `shared.js → quiz.js → family.js → editor.js → sets.js`. 버전 `20261018-20`, 캐시 v29. Worker 변경 없음.
+
+- **`shared.js`** (`window.Shared`, 상태 없음): `$`, `h(tag, attrs, ...children)`, `setFeedback`, `tidy formatCode hourLabel relativeTime durationText dayKey pctOf WEEKDAYS modeLabels`, `AI_SERVER_DEFAULT normalizeServer WORD_PATTERN PLAN_LEVELS TIME_LIMIT_CHOICES planDefaults`, `parseDraft`, `preparePhoto`/`canvasToBase64Jpeg`, `apiRequest(server, path, {method, body, passcode, timeout, signal})`(오류 `ApiError{status, code, message}`)·`describeApiError({status, code, message, path})`, `readJson/writeJson`. 기존 전역 이름은 각 파일 머리의 별칭으로 남겨 호출부·테스트가 그대로다. family.js `familyRequest`는 `Shared.apiRequest`를 감싼 한 줄.
+- **`editor.js`** (`window.SetEditor`): `mount(host, {ai, onSave, onClose, onRename?, onDelete?, guard?, onNeedAi?})`, `open(set|null, {readOnly, readOnlyText, title, targetName}) → boolean`, `close`, `isOpen`, `isDirty`, `confirmDiscard`, `setStatus`, `setWarning`, `lockSave`. 편집기 DOM(예전과 같은 ID·클래스·문구)을 모듈이 만들고 `index.html`에는 빈 `<section id="editor">`만 남았다. 표/텍스트 동기화·사진·순차 인식·`startOperation`·빈 뜻 AI 채우기·`.ai-filled`·검증·관리 상자·읽기 전용(9·15·22절)이 모두 모듈 안에 있다.
+- **`sets.js`**: `SetEditor.mount($("editor"), {ai: aiBridge, guard, onSave, onClose, onRename, onDelete, onNeedAi})`와 기기 저장 콜백(`keepWordDetails`·`saveSetLocally`·`renameSetLocally`·`deleteSetLocally`), `openEditor` 래퍼만 남았다(1,428 → 약 810행). 보호자 분기(`editorForChild` → `sendSetToChild`/`returnToChild`)는 콜백으로 감싸 그대로 두었고 B단계에서 걷어 낸다.
+- **테스트**: `tests/lib/fake-family-worker.cjs`(`createFakeWorker`)를 `family.cjs`·`daily.cjs`가 함께 쓴다. 검증 내용·순서는 그대로.
+- 설계와 다르게 한 결정(편집기를 기존 `#editor` 섹션에 붙임, `ai`를 함수로도 받음, `guard`·`onNeedAi` 옵션, 사진 도우미를 `Shared`에 둠 등)은 `docs/PARENT_REDESIGN.md` 5.2·5.3·5.10의 ‘결정 변경’.
