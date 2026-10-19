@@ -312,7 +312,7 @@ B단계에서 아이 앱(`index.html`·`quiz.js`·`family.js`·`sets.js`)에서 
 4. `tests/lib/fake-family-worker.cjs` 신설 + `family.cjs`·`daily.cjs`가 쓰도록 변경.
 5. 버전 올리기(`index.html` 스크립트 5개, `sw.js` SHELL에 shared·editor 추가, `app-update.cjs`), `CLAUDE.md` 파일 구조·체크리스트, `DESIGN.md` 23절(이 문서 링크).
 - **완료 기준**: 9개 테스트 PASS(ID·문구 변경 없음), `index.html`에 편집기 마크업 없음, `sets.js` 편집기 코드 0행, `grep -n "familyRequest(" family.js`가 `Shared.apiRequest`를 감싼 한 곳.
-- **진행 상태(2026-10-19)**: 구현 완료(브랜치 `claude/parent-shared-e2f820`, 릴리스 `20261018-20`·캐시 v29). 9개 테스트 PASS. `familyRequest(`는 호출부 21곳에도 나오므로 기준은 ‘서버에 닿는 곳이 정의 한 곳(`Shared.apiRequest`를 감쌈)이고 family.js에 `fetch(`가 없다’로 확인했다. 설계와 다르게 한 결정은 5.2·5.3·5.10의 ‘결정 변경’.
+- **진행 상태(2026-10-19)**: 구현 완료(PR #35, 브랜치 `claude/parent-shared-e2f820`, 릴리스 `20261018-20`·캐시 v29, 머지 대기). 9개 테스트 PASS. `familyRequest(`는 호출부 21곳에도 나오므로 기준은 ‘서버에 닿는 곳이 정의 한 곳(`Shared.apiRequest`를 감쌈)이고 family.js에 `fetch(`가 없다’로 확인했다. 설계와 다르게 한 결정은 5.2·5.3·5.10의 ‘결정 변경’.
 
 ### B. 보호자 앱 새로 쓰기 — `feat/parent-app`
 1. `parent.html`(앱 페이지: 상단 바, 뷰 섹션 6개 껍데기, 하단 탭 3개, 토스트, `#editorHost`, 부트스트랩 스크립트(버전·오류 배너·새 버전 불러오기)), `parent.css`, `parent.js`(5.4) 작성. 화면은 5.5.
