@@ -131,7 +131,7 @@ Web Push 전송에는 VAPID 서명(ES256 JWT)과 본문 암호화(aes128gcm)가 
 
 ## 8. 단계별 구현 계획
 
-### N1. Worker 푸시 기반 + 서비스워커 + 두 앱 UI — `feat/push-notify`
+### N1. Worker 푸시 기반 + 서비스워커 + 두 앱 UI — `feat/push-notify` (구현 완료 2026-10-19, 결정 변경은 11절)
 1. `worker/scripts/vapid.cjs`·`npm run vapid`, `wrangler.jsonc` vars(`VAPID_PUBLIC_KEY` 자리·`VAPID_SUBJECT`), `worker/README.md`(키 생성·등록·재생성 경고·배포 순서).
 2. Worker: 구독 저장·검증·API, `sendPush`(VAPID·aes128gcm), 트리거 4종, `sent:` 표시·정리, `plan.remindHour`, `deviceSettingsOf` 확장, 아이 삭제 정리, 라우트 주석.
 3. `sw.js` push/notificationclick(+캐시 이름).
@@ -159,3 +159,22 @@ Web Push 전송에는 VAPID 서명(ES256 JWT)과 본문 암호화(aes128gcm)가 
 ## 10. 구현 세션 지시서
 
 각 단계 세션은 이 문서와 `CLAUDE.md`를 읽고, 관련 테스트를 먼저 돌려 기준을 확인한 뒤 구현한다. 설계와 다르게 해야 하면 이 문서의 해당 절에 ‘결정 변경(날짜)’을 적고 PR 본문에도 쓴다. 테스트 ID·문구 계약을 바꾸면 같은 PR에서 CLAUDE.md와 테스트를 고친다. 화면 문구는 쉬운 한국어, 선택지는 최소. 외부 CDN·npm 런타임 의존성 없음(Worker 포함). 비밀값·개인정보 커밋 금지. 커밋 제목 영어 명령형, 본문 한국어. 앱 셸을 바꾸면 버전 체크리스트 전부. 완료 보고에는 바뀐 파일, 새 API, PASS 결과, 사용자가 해야 할 배포 작업(키 생성·secret·vars·deploy)과 실기기 확인 항목을 적는다. PR 머지·Worker 배포는 사용자 요청 때만.
+
+## 11. 결정 변경(2026-10-19, N1 구현)
+
+N1(Worker 푸시 기반 + `sw.js` + 두 앱 UI)을 구현하면서 설계와 다르게 하거나 더 정한 것. 나머지는 위 설계 그대로다. 구현 요약은 `docs/DESIGN.md` 25.1.
+
+1. **구독 상한(4.1)**: 아이 기기 10대·보호자 5대를 넘으면 거절하지 않고 **가장 오래 소식이 없는 구독(마지막 성공·갱신 시각)을 지운다**. 기기 목록을 관리하는 화면이 없어서, 앱을 다시 설치해 기기 id 가 바뀐 경우에도 새 기기가 늘 켜질 수 있게 했다.
+2. **같은 브라우저 중복(4.1)**: 같은 endpoint 가 다른 기기 id 로 다시 구독하면(저장 공간을 지운 뒤 다시 켬) 옛 항목을 지운다. 알림이 두 번 오지 않게 한다.
+3. **Topic(3절·4.1)**: RFC 8030 의 Topic 은 base64url 글자 32자 이하라 `finish-<childId>`(43자)는 푸시 서비스가 거절할 수 있다. `f` + 아이 id(하이픈 뺌) 앞 31자로 바꿨다. 다른 종류는 `daily`·`reminder`·`summary`·`test`.
+4. **알림 누르기(4.3)**: 같은 앱(아이 앱 / 보호자 앱) 창이 열려 있으면 `client.navigate()`를 쓰지 않고 **언제나 `focus()` + `postMessage({type:"navigate", url})`**. 아이 앱이 다시 불러와지면 시험 중 화면이 사라지기 때문이다. 아이 앱은 시험 중이 아니면 홈으로 가고 오늘의 단어를 바로 확인하며(`checkDaily({ignoreThrottle})`), 보호자 앱은 해시를 바꾼다. 열린 창이 없으면 `openWindow(url)`.
+5. **badge 생략(4.3)**: 안드로이드의 badge 는 단색 실루엣이어야 해서 컬러 앱 아이콘을 쓰면 흰 네모로 보인다. `icon`만 준다.
+6. **`/push/test` 실패(4.2)**: 푸시 서비스가 거절하면 200 `{ok:false}` 대신 502 `push_failed`(+ `status`, 만료면 ‘알림 주소가 만료됐어요…’)를 돌려 앱이 실패 문구를 보이게 했다. 성공은 `{ok:true, status}`.
+7. **실패 처리(4.1-3)**: 400·401·403 도 다른 실패처럼 `failures`를 세고(5회 연속이면 삭제) 로그에 ‘VAPID 키·서명 문제일 수 있음’을 붙인다. 키를 바꾼 뒤의 옛 구독이 저절로 정리된다. 만료(404·410)는 `push_expired`로 따로 남긴다.
+8. **문구(3절)**: `daily`는 복습이 0개면 ‘복습 0개 + ’를 빼고 ‘새 단어 K개 · 앱을 열어 풀어 보세요’. `summary`의 ‘✅ N회 · 평균’은 중단 기록을 빼고 센다(리마인더와 같은 기준). 기기도 기록도 없는 아이(아직 연결 전)는 줄에서 빼고, 보낼 줄이 없으면 보내지 않는다. 보호자 테스트 알림의 url 은 `./parent.html#/settings`.
+9. **`finish` 조건(4.1)**: ‘이번 요청 기록 수 ≤ 3’에 더해 **이번 요청에서 처음 저장된 기록만** 본다(응답을 못 받아 다시 보낸 기록에 두 번 알리지 않게). 기기 시계가 10분까지 빠른 것은 ‘방금’으로 본다.
+10. **전송 대기**: `sync`·`buildDaily`·크론은 푸시 전송(순차, 건당 10초 제한)을 기다린 뒤 응답한다(테스트 가능·단순함). 구독은 아이당 몇 대뿐이라 보통 1초 안이다.
+11. **`Shared.notify`(4.6)**: `permission()`은 묻지 않고 지금 상태만(`"granted"|"denied"|"prompt"`), 묻는 것은 `request()`(네이티브는 브리지의 `permission()`)로 나눴다. `native()`로 갤럭시 브리지를 꺼낸다. `subscribe()`는 같은 서버 키의 기존 구독을 다시 쓰고 키가 바뀌었으면 새로 만든다. 서비스워커 준비는 10초까지 기다린다.
+12. **아이 앱 상태(4.4·5)**: `family.push = {mode:"push"|"native", deviceId, childId, endpoint, enabledAt}`. `childId`를 두어 다른 아이로 다시 연결하면 옛 아이 구독을 지우고 새 아이로 다시 등록한다. 권한 요청은 터치 직후 맨 먼저 하고(아이폰), 그다음 `GET /push/key` → 구독 → 등록. 서버에서 지워진 아이(`childGone`)면 서버 구독은 이미 지워졌으므로 기기 쪽만 정리한다. 네이티브 `schedule`의 `daily`는 언제나 `{enabled, hour}`(꺼져 있으면 `enabled:false`), `reminder`는 시각이 없으면 `null`.
+13. **보호자 앱(4.5·5)**: 기기 id 는 `prefs.deviceId`에 따로 두어(`prefs.push` 밖) 알림을 껐다 켜도 같은 서버 항목을 덮어쓴다. 카드에 상태 칩 `#notifyState`와 켜졌을 때만 보이는 옵션 묶음 `#notifyOptions`를 더했고, 공부 알림 시각 결과는 `#remindStatus`에 보인다. 갤럭시 래퍼 앱 안에서 보호자 앱을 열면(브리지가 있음) 보호자 알림은 지원하지 않는다고 안내한다(보호자는 Chrome·Safari 설치 앱을 쓴다).
+14. **공통 코드**: 기기 이름 `deviceLabel`을 `family.js`에서 `Shared`로 옮겨 두 앱이 함께 쓴다. 공부 알림 선택지는 `Shared.REMIND_HOUR_CHOICES`(없음·15~22시), `planDefaults`에 `remindHour: null`.
