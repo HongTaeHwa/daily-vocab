@@ -350,3 +350,7 @@
 - **`MainActivity`의 `DownloadListener`**: 어댑터가 click 단계에서 가로채므로 보통 오지 않지만, blob:/data: 주소가 오면(어댑터를 거치지 않은 미래 경로) `__dailyVocabDownload`로 되돌리고 http(s)는 바깥 링크처럼 브라우저(`ACTION_VIEW`)로 보낸다. `DownloadManager`는 Android 8·9에서 저장 권한이 필요하고 앱에 http 내려받기가 없어 쓰지 않았다.
 - **고려한 대안**: 항상 ‘다른 이름으로 저장’ 대화상자(경로 하나, 위치 선택 가능, 매번 한 번 더 누름) 대신 Chrome과 같은 ‘조용히 다운로드 폴더 + 토스트’를 택했다(사용자 확인). `DownloadListener`에서 `evaluateJavascript`로 blob을 fetch하는 흔한 방법은 1초 뒤 revoke와 경쟁하고 파일 이름 정보가 없어 쓰지 않았다.
 - 웹앱·Worker 변경 없음(앱 셸 버전 그대로). 앱 versionCode 5 / 1.4(UA `DailyVocabApp/1.4`), 문자열 `download_saved`·`download_saved_as`·`download_failed`. 확인은 Actions ‘Android APK’ 빌드 + 실기기(설정 → 전체 백업 JSON, 기록 탭 → CSV 내려받기 → 내 파일 → 다운로드에 파일이 생기는지, 엑셀로 CSV 한글 확인). 인터페이스(begin/append/finish/abort)를 바꾸면 `bridge.js`와 `DownloadBridge.kt`를 함께 고친다.
+
+## 24. 보호자 앱 전면 개편 (2026-10-19 설계)
+
+분석·문제점·목표 아키텍처·단계별 계획은 `docs/PARENT_REDESIGN.md`. 요지: `parent.html`을 보호자 앱 자체로 분리하고 `shared.js`·`editor.js`를 두 앱이 공유, 오늘·아이들·설정 3탭 + 아이별 하위 탭, 해시 라우터, 단일 상태 저장소 + 캐시 우선, Worker 기록 페이지 읽기. 구현은 A(공통 모듈 분리) → B(보호자 앱 새로 쓰기, 아이 앱에서 보호자 모드 제거) → C(Worker 보강·행동 기능) 순서의 PR.
