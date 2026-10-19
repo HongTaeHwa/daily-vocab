@@ -13,6 +13,12 @@ let selectedFiles = [];
 let aiFilled = new Map();
 const TABLE_LIMIT = 300;
 window.editorOpen = false;
+let editorReadOnly = false; // 보호자가 아이 기기에서 세트 고치기를 잠가 ‘단어 보기’로 연 상태(family.js childSetsLocked)
+const SETS_LOCKED_TEXT = "🔒 보호자가 세트 고치기를 잠갔어요. 세트는 보호자 폰에서 고칠 수 있어요.";
+// 연결된 아이 기기에서 보호자가 세트 고치기를 잠갔는지(family.js). 보호자가 아이 세트를 고쳐 보내는 중(editorForChild)에는 해당 없다.
+function setsLockedNow() {
+  return !window.editorForChild && typeof childSetsLocked === "function" && childSetsLocked();
+}
 function draftWordCount() {
   return parseDraft($("wordDraft").value).length;
 }
@@ -41,6 +47,7 @@ function persistSets(next) {
 
 // ---- 세트 이름 바꾸기 ----
 $("renameSet").onclick = () => {
+  if (setsLockedNow()) return;
   if (sessionRunning) return;
   const set = sets.find((s) => s.id === (editingId || activeSetId));
   if (!set) return;
@@ -51,6 +58,10 @@ $("renameSet").onclick = () => {
 };
 $("renameCancel").onclick = () => $("renameBox").classList.add("hidden");
 $("renameSave").onclick = () => {
+  if (setsLockedNow()) {
+    $("manageStatus").textContent = SETS_LOCKED_TEXT;
+    return;
+  }
   if (sessionRunning) return;
   const name = $("renameInput").value.trim();
   if (!name || name.length > 120) {
@@ -83,13 +94,19 @@ function releasePhotos() {
   $("photoPreview").textContent = "";
 }
 function openEditor(set) {
+  const locked = setsLockedNow(); // 보호자가 아이 기기에서 세트 고치기를 잠갔다: 새 세트는 열지 않고, 있는 세트는 읽기 전용 ‘단어 보기’
+  if (locked && !set) {
+    status(SETS_LOCKED_TEXT);
+    return;
+  }
   if (window.editorOpen && (editingId || null) !== (set?.id || null) && !confirmDiscardDraft()) return;
   if ($("extractWords").disabled) cancelExtract();
   editingId = set?.id || null;
   selectedFiles = [];
   aiFilled = new Map();
   const target = window.editorForChild || null; // family.js: 보호자가 아이에게 보낼 세트를 만들거나 고치는 중
-  $("manageBox").classList.toggle("hidden", !set || Boolean(target)); // 아이 세트의 이름 바꾸기·삭제는 아이들 화면에서 한다
+  editorReadOnly = locked; // tableRow 가 본다: 칸은 읽기 전용, 삭제 버튼 없음
+  $("manageBox").classList.toggle("hidden", !set || Boolean(target) || locked); // 아이 세트의 이름 바꾸기·삭제는 아이들 화면에서 한다
   $("manageStatus").textContent = "";
   $("renameBox").classList.add("hidden");
   $("setName").value = set?.name || "새 세트 " + new Date().toLocaleDateString("sv-SE");
@@ -101,13 +118,22 @@ function openEditor(set) {
   $("photos").value = "";
   $("camera").value = "";
   releasePhotos();
-  $("extractStatus").textContent = set ? "" : "사진을 고르거나 찍은 뒤 ‘사진에서 단어 가져오기’를 누르세요. 직접 입력해도 돼요.";
+  $("extractStatus").textContent = locked ? SETS_LOCKED_TEXT : set ? "" : "사진을 고르거나 찍은 뒤 ‘사진에서 단어 가져오기’를 누르세요. 직접 입력해도 돼요.";
   $("draftWarnings").textContent = "";
-  $("editorTitle").textContent = (set ? "✏️ 세트 수정" : "➕ 새 세트 만들기") + (target ? ` → 🧒 ${target.name}에게 보내기` : "");
+  $("editorTitle").textContent = (locked ? "📖 단어 보기" : set ? "✏️ 세트 수정" : "➕ 새 세트 만들기") + (target ? ` → 🧒 ${target.name}에게 보내기` : "");
   window.editorOpen = true;
   setTextMode(false);
+  applyEditorReadOnly(locked);
   draftDirty = false;
   showView("editor");
+}
+// 잠긴 기기의 ‘단어 보기’: 사진·AI·단어 추가·텍스트 편집·확인란·저장을 숨기고 이름과 표(텍스트)를 읽기 전용으로 둔다. 표의 칸·삭제 버튼은 tableRow 가 editorReadOnly 를 본다.
+function applyEditorReadOnly(on) {
+  $("editor").classList.toggle("readonly", on);
+  for (const id of ["photoRow", "photoHelp", "fillMeanings", "toggleDraftText", "confirmedRow", "saveSet"]) $(id).classList.toggle("hidden", on);
+  $("addRow").classList.toggle("hidden", on || draftTextMode);
+  $("setName").readOnly = on;
+  $("wordDraft").readOnly = on;
 }
 $("createSet").onclick = () => openEditor();
 $("editSet").onclick = () => openEditor(sets.find((s) => s.id === activeSetId));
@@ -126,6 +152,7 @@ function cancelExtract() {
 $("cancelExtract").onclick = cancelExtract;
 function finishEditor() {
   window.editorOpen = false;
+  editorReadOnly = false;
   draftDirty = false;
   selectedFiles = [];
   releasePhotos();
@@ -227,6 +254,7 @@ function tableRow(r = {}) {
     if (lang) input.lang = lang;
     input.value = key === "aliases" ? (r.aliases || []).join("|") : r[key] ?? "";
     input.dataset.key = key;
+    if (editorReadOnly) input.readOnly = true; // 잠긴 기기의 ‘단어 보기’
     input.addEventListener("input", tableToDraft);
     if (aiMarks[key]) {
       // AI 사전이 채운 칸은 직접 고칠 때까지 노란색으로 표시한다.
@@ -248,7 +276,7 @@ function tableRow(r = {}) {
       e.preventDefault();
       const next = tr.nextElementSibling?.querySelector(`[data-key="${key}"]`);
       if (next) next.focus();
-      else $("addRow").click();
+      else if (!editorReadOnly) $("addRow").click();
     });
     td.append(input);
     tr.append(td);
@@ -263,7 +291,7 @@ function tableRow(r = {}) {
     tr.remove();
     tableToDraft();
   });
-  td.append(del);
+  if (!editorReadOnly) td.append(del); // 잠긴 기기의 ‘단어 보기’에는 삭제 버튼이 없다
   tr.append(td);
   return tr;
 }
@@ -307,13 +335,13 @@ function setTextMode(on) {
   draftTextMode = on;
   $("wordDraft").classList.toggle("hidden", !on);
   $("wordTableWrap").classList.toggle("hidden", on);
-  $("addRow").classList.toggle("hidden", on);
+  $("addRow").classList.toggle("hidden", on || editorReadOnly);
   $("toggleDraftText").textContent = on ? "표로 편집" : "텍스트로 편집";
   if (!on) draftToTable();
 }
 $("toggleDraftText").onclick = () => setTextMode(!draftTextMode);
 $("addRow").onclick = () => {
-  if (draftTextMode) return;
+  if (draftTextMode || editorReadOnly) return;
   $("wordTableBody").querySelector(".empty-row")?.remove();
   const ids = [...$("wordTableBody").querySelectorAll('[data-key="id"]')].map((i) => Number(i.value)).filter(Number.isInteger);
   const nextId = ids.length ? Math.max(...ids) + 1 : $("wordTableBody").children.length + 1;
@@ -334,6 +362,10 @@ $("setName").oninput = () => {
 // ---- 저장·삭제 ----
 $("saveSet").onclick = () => {
   if (sessionRunning) return;
+  if (editorReadOnly || setsLockedNow()) {
+    $("draftWarnings").textContent = SETS_LOCKED_TEXT; // 편집하는 동안 보호자가 잠갔어도 저장하지 않는다
+    return;
+  }
   const name = $("setName").value.trim(),
     words = parseDraft($("wordDraft").value);
   const duplicates = words.filter((w, i) => words.slice(0, i).some((x) => x.id === w.id || x.en.toLowerCase() === w.en.toLowerCase()));
@@ -389,6 +421,10 @@ $("saveSet").onclick = () => {
 };
 // 마지막 세트도 지울 수 있다(세트 0개 허용). 연결된 아이 기기면 다른 기기에서도 지워진다(family.js 묘비).
 $("deleteSet").onclick = () => {
+  if (setsLockedNow()) {
+    $("manageStatus").textContent = SETS_LOCKED_TEXT;
+    return;
+  }
   const targetId = editingId || activeSetId;
   const set = sets.find((s) => s.id === targetId);
   if (!set) return;
@@ -437,6 +473,7 @@ $("importSets").onchange = async () => {
   try {
     const file = $("importSets").files[0];
     if (!file) return;
+    if (setsLockedNow()) throw Error("보호자가 세트 고치기를 잠갔어요. 세트는 보호자 폰에서 만들어 보내 주세요."); // 가져오기는 새 세트를 만들어 올리므로 막는다
     if (file.size > 5 * 1024 * 1024) throw Error("5MB 이하 JSON만 가능합니다");
     const data = JSON.parse(await file.text());
     if (

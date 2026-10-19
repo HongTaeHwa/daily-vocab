@@ -60,9 +60,10 @@ function readFamily() {
     restoreCheckedAt: typeof f.restoreCheckedAt === "string" ? f.restoreCheckedAt : "",
     restoreError: typeof f.restoreError === "string" ? f.restoreError : "",
     childGone: f.childGone === true, // 서버가 404 unknown_child 를 돌려준 아이(보호자가 지움): 다시 연결할 때까지 요청하지 않는다
-    // 보호자가 정한 아이 설정(서버 plan에서 받아 둠). timeLimitSec 0 = 제한 없음
+    // 보호자가 정한 아이 설정(서버 plan에서 받아 둠). timeLimitSec 0 = 제한 없음, setsLocked = 아이 기기에서 세트 고치기 잠금
     settings: {
       timeLimitSec: Number.isInteger(f.settings?.timeLimitSec) && f.settings.timeLimitSec >= 0 ? f.settings.timeLimitSec : 0,
+      setsLocked: f.settings?.setsLocked === true,
       fetchedAt: typeof f.settings?.fetchedAt === "string" ? f.settings.fetchedAt : "",
     },
   };
@@ -107,14 +108,28 @@ function applyParentMode() {
 function childTimeLimitSec() {
   return isLinked() ? family.settings.timeLimitSec : 0;
 }
+// sets.js·홈이 본다: 보호자가 이 아이의 기기에서 세트 고치기를 잠갔는지. 연결되지 않은 기기는 잠그지 않는다.
+function childSetsLocked() {
+  return isLinked() && family.settings.setsLocked === true;
+}
+// 잠금을 홈·설정의 세트 버튼에 반영한다(새 세트 숨김, ‘단어 보기’, 안내 줄, JSON 가져오기 숨김). 편집 화면은 열 때 sets.js openEditor 가 읽기 전용으로 바꾼다.
+function applySetsLock() {
+  const locked = childSetsLocked();
+  $("createSet").classList.toggle("hidden", locked);
+  $("editSet").textContent = locked ? "📖 단어 보기" : "📖 단어 보기·수정";
+  $("setsLockNote").classList.toggle("hidden", !locked);
+  $("importSetsLabel").classList.toggle("hidden", locked);
+}
 let settingsFetching = false;
 function applySettings(data) {
   family.settings = {
     timeLimitSec: Number.isInteger(data?.timeLimitSec) && data.timeLimitSec >= 0 ? data.timeLimitSec : 0,
+    setsLocked: data?.setsLocked === true,
     fetchedAt: new Date().toISOString(),
   };
   if (typeof data?.name === "string" && tidy(data.name)) family.childName = tidy(data.name).slice(0, 20); // 보호자가 이름을 바꿨으면 반영
   writeFamily();
+  applySetsLock();
 }
 // 앱 시작·화면 복귀 때 보호자 설정을 받아 둔다(10분 간격, 시작 때는 바로). 실패하면 조용히 다음 기회에.
 async function fetchSettings(options = {}) {
@@ -538,7 +553,7 @@ $("unlinkChild").onclick = () => {
   if (!confirm(`이 기기를 ‘${family.childName}’에서 연결 해제할까요? 이 기기의 세트와 기록은 그대로 남고, 서버에 보낸 기록도 지워지지 않아요.`)) return;
   family = {
     ...family, childId: "", childName: "", joinCode: "", pendingCode: "", sendEnabled: false, pending: [], lastError: "", childGone: false,
-    setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "", settings: { timeLimitSec: 0, fetchedAt: "" }, restoreCheckedAt: "", restoreError: "",
+    setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "", settings: { timeLimitSec: 0, setsLocked: false, fetchedAt: "" }, restoreCheckedAt: "", restoreError: "",
   };
   writeFamily();
   daily = emptyDaily();
@@ -774,6 +789,7 @@ $("startDaily").onclick = () => {
 // ---- 설정 화면(아이 기기 + 보호자 폰) ----
 function renderFamilySettings(progress) {
   const linked = isLinked();
+  applySetsLock();
   $("joinBox").classList.toggle("hidden", linked);
   $("linkedBox").classList.toggle("hidden", !linked);
   if (linked) {
@@ -788,6 +804,7 @@ function renderFamilySettings(progress) {
           : family.setsSyncedAt
             ? `세트 ${sets.length}개 · 보호자·다른 기기와 같은 세트 (마지막 확인 ${new Date(family.setsSyncedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })})`
             : "세트는 아직 맞추지 않았어요. 인터넷이 되면 자동으로 보호자·다른 기기와 같아져요.";
+    if (childSetsLocked()) $("setsSyncText").textContent += " · 🔒 보호자가 세트 고치기를 잠갔어요";
     const restoredCount = historyRecords.filter((r) => r.restored).length;
     const checkedAt = family.restoreCheckedAt ? new Date(family.restoreCheckedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }) : "";
     $("restoreText").textContent = restoreInFlight
@@ -1088,7 +1105,7 @@ function durationText(ms) {
   return `${Math.floor(s / 60)}분 ${s % 60}초`;
 }
 function planOf(child) {
-  return { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, ...(child?.plan || {}) };
+  return { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false, ...(child?.plan || {}) };
 }
 const TIME_LIMIT_CHOICES = [0, 10, 15, 20, 30, 45, 60];
 const timeLimitLabel = (s) => (s ? `${s}초` : "없음");
@@ -1403,6 +1420,7 @@ function renderChildQuestions(questions) {
 // ---- 보호자 폰: 아이 세트 (아이 기기와 자동으로 같아짐) ----
 // 서버의 세트 요약(child.sets = [{id, name, count, updatedAt}])을 보여 주고, 사진으로 세트를 만들어 보내거나(편집기 재사용) 고치고 지운다.
 function renderChildSets(child) {
+  $("setsLock").checked = planOf(child).setsLocked === true;
   const list = $("childSets");
   list.textContent = "";
   const summary = (Array.isArray(child.sets) ? child.sets : []).filter((s) => s && typeof s.name === "string");
@@ -1505,6 +1523,31 @@ async function deleteChildSet(child, s) {
 }
 $("sendNewSet").onclick = () => {
   if (familyDetail?.child) openChildSetEditor(familyDetail.child, null);
+};
+// 아이 기기에서 세트 고치기 잠금: 바꾸는 즉시 계획(plan)에 setsLocked 만 저장한다. 아이 기기는 다음에 앱을 열 때 /settings 로 받는다.
+$("setsLock").onchange = async () => {
+  const c = familyDetail?.child;
+  if (!c) return;
+  const setsLocked = $("setsLock").checked;
+  $("setsLock").disabled = true;
+  setFeedback($("setsStatus"), "info", setsLocked ? "잠그는 중…" : "잠금을 푸는 중…");
+  try {
+    const data = await familyRequest("/family/" + encodeURIComponent(c.id) + "/plan", { method: "POST", body: { setsLocked }, passcode: family.parentCode });
+    familyDetail.child = { ...c, ...(data.child || {}), plan: data.child?.plan || { ...planOf(c), setsLocked } };
+    updateCachedChild(familyDetail.child);
+    setFeedback(
+      $("setsStatus"),
+      "good",
+      setsLocked
+        ? "잠갔어요. 아이 기기가 다음에 앱을 열 때부터 세트를 만들거나 고치거나 지울 수 없고 단어를 보기만 해요."
+        : "잠금을 풀었어요. 아이 기기가 다음에 앱을 열 때부터 세트를 다시 고칠 수 있어요.",
+    );
+  } catch (e) {
+    $("setsLock").checked = !setsLocked;
+    setFeedback($("setsStatus"), "bad", "저장 실패: " + e.message);
+  } finally {
+    $("setsLock").disabled = false;
+  }
 };
 // ---- 보호자 폰: 오늘의 단어 계획 ----
 function fillPlanSelects() {

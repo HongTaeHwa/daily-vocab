@@ -121,6 +121,7 @@ details.help ol{padding-left:18px;margin:8px 0}
 #wordTable .cell{display:block;width:100%;min-height:42px;padding:8px;border:1.5px solid #bfcee0;border-radius:9px;font:inherit;font-size:15px;line-height:1.35;color:var(--ink);background:#fff;resize:none;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;word-break:keep-all;field-sizing:content}
 #wordTable .cell:focus{outline:2px solid #2265ca;outline-offset:-1px}
 #wordTable .cell.ai-filled{background:#fff6d6;border-color:#e3b53d}
+#editor.readonly #wordTable .cell,#editor.readonly #setName,#editor.readonly #wordDraft{background:#f3f4f8;color:var(--navy)}
 #wordTable col.c-num{width:62px}#wordTable col.c-en{width:17%}#wordTable col.c-ko{width:31%}#wordTable col.c-alias{width:31%}#wordTable col.c-ipa{width:13%}#wordTable col.c-del{width:48px}
 #wordTable .row-delete{min-height:40px;padding:4px 12px}
 #wordTable .empty-row td{padding:16px 12px;color:var(--muted);text-align:center}
@@ -235,6 +236,7 @@ body.in-quiz main{padding-bottom:30px}
       <button type="button" class="btn outline" id="createSet">➕ 새 세트 (사진)</button>
       <button type="button" class="btn soft hidden" id="resumeEditor">✏️ 편집 중인 세트로 돌아가기</button>
     </div>
+    <p id="setsLockNote" class="muted hidden">🔒 세트는 보호자가 관리해요. 단어는 볼 수 있어요.</p>
     <div id="setStatus" role="status" class="feedback info"></div>
   </div>
   <div class="card hidden" id="comboCard">
@@ -321,20 +323,20 @@ body.in-quiz main{padding-bottom:30px}
     <h2 class="section-title" id="editorTitle">➕ 새 세트 만들기</h2>
     <label for="setName">세트 이름</label>
     <input id="setName" type="text" maxlength="120" placeholder="예: DAY 05 (161~200)">
-    <div class="photo-row">
+    <div class="photo-row" id="photoRow">
       <button type="button" class="btn" id="pickPhotos">🖼️ 사진 고르기</button><input id="photos" type="file" accept="image/*" multiple hidden>
       <button type="button" class="btn" id="takePhoto">📷 촬영 (여러 장 가능)</button><input id="camera" type="file" accept="image/*" capture="environment" hidden>
       <button type="button" class="btn primary" id="extractWords">✨ 사진에서 단어 가져오기</button>
       <button type="button" class="btn outline" id="cancelExtract" disabled>취소</button>
     </div>
-    <p class="muted">최대 10장, 장당 10MB. AI가 번호·영어·뜻·발음·허용 답안을 정리해 줍니다. 영어 단어만 있는 사진이면 뜻과 발음은 AI 사전이 채워 줍니다(노란 칸). 책과 비교해 고친 뒤 저장하세요.</p>
+    <p class="muted" id="photoHelp">최대 10장, 장당 10MB. AI가 번호·영어·뜻·발음·허용 답안을 정리해 줍니다. 영어 단어만 있는 사진이면 뜻과 발음은 AI 사전이 채워 줍니다(노란 칸). 책과 비교해 고친 뒤 저장하세요.</p>
     <div id="extractStatus" role="status" class="feedback info"></div>
     <div id="photoPreview" class="thumbs"></div>
     <div class="row-between" style="margin-top:12px"><h3 style="margin:0;font-size:16px;color:var(--navy)">단어 <span id="wordCount" class="pill">단어 없음</span></h3><div class="actionbar" style="margin:0"><button type="button" class="btn small" id="addRow">＋ 단어 추가</button><button type="button" class="btn small" id="fillMeanings">✨ 빈 뜻 AI로 채우기</button><button type="button" class="btn outline small" id="toggleDraftText">텍스트로 편집</button></div></div>
     <div id="wordTableWrap" class="table-wrap"><table id="wordTable"><colgroup><col class="c-num"><col class="c-en"><col class="c-ko"><col class="c-alias"><col class="c-ipa"><col class="c-del"></colgroup><thead><tr><th>번호</th><th>영어</th><th>뜻</th><th>다른 정답 (쉼표로 구분)</th><th>발음</th><th></th></tr></thead><tbody id="wordTableBody"></tbody></table></div>
     <textarea id="wordDraft" class="hidden" rows="10" aria-label="단어 텍스트 (한 줄에 번호, 영어, 뜻, 허용 답안, 발음; 탭으로 구분)" placeholder="1&#9;apple&#9;사과&#9;사과|사과 열매"></textarea>
     <p id="draftWarnings" role="status" class="feedback info"></p>
-    <label class="check"><input id="confirmed" type="checkbox"> 책과 비교해서 확인했어요</label>
+    <label class="check" id="confirmedRow"><input id="confirmed" type="checkbox"> 책과 비교해서 확인했어요</label>
     <div class="actionbar"><button type="button" class="btn primary" id="saveSet" style="min-width:140px;min-height:54px;font-size:17px">저장</button><button type="button" class="btn outline" id="closeEditor">닫기</button></div>
     <div id="manageBox" class="manage hidden">
       <h3 style="margin:0 0 8px;font-size:15px;color:var(--navy)">🔧 이 세트 관리 (보호자)</h3>
@@ -456,6 +458,8 @@ body.in-quiz main{padding-bottom:30px}
       <p class="muted">여기 있는 세트가 이 아이의 모든 기기(아이폰·태블릿)에 똑같이 들어가요. 아이 기기에서 만들거나 고친 세트도 여기로 올라와요. 보호자가 만들어 보내면 아이 기기가 다음에 앱을 열 때 들어가요.</p>
       <div id="childSets" class="set-list"></div>
       <div class="actionbar"><button type="button" class="btn primary" id="sendNewSet">➕ 세트 만들어 보내기 (사진)</button></div>
+      <div class="controls"><label class="check"><input type="checkbox" id="setsLock"> 🔒 아이 기기에서 세트 고치기 잠금</label></div>
+      <p class="muted">잠그면 아이 기기에서는 세트를 만들거나 고치거나 지울 수 없고 단어를 보기만 해요(찾아본 단어 세트와 AI가 인정한 답은 계속 쌓여요). 세트는 여기서 만들어 보내거나 고쳐 주세요. 아이 기기가 다음에 앱을 열 때부터 적용돼요.</p>
       <div id="setsStatus" class="feedback info" role="status"></div>
     </div>
     <div class="plan-box" id="planBox">
@@ -537,13 +541,13 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card child-only">
     <h2 class="section-title">💾 백업</h2>
-    <div class="actionbar"><button type="button" class="btn" id="exportSets">전체 백업 JSON</button><label class="btn" for="importSets">JSON 가져오기</label><input id="importSets" type="file" accept="application/json" hidden><button type="button" class="btn outline danger" id="clearHistory" disabled>시험 기록 전체 삭제</button><button type="button" class="btn hidden" id="installApp">홈 화면에 설치</button></div>
+    <div class="actionbar"><button type="button" class="btn" id="exportSets">전체 백업 JSON</button><label class="btn" for="importSets" id="importSetsLabel">JSON 가져오기</label><input id="importSets" type="file" accept="application/json" hidden><button type="button" class="btn outline danger" id="clearHistory" disabled>시험 기록 전체 삭제</button><button type="button" class="btn hidden" id="installApp">홈 화면에 설치</button></div>
     <div id="backupStatus" class="feedback info" role="status"></div>
     <p class="muted">세트·시험 기록·틀린 단어를 한 파일로 내보냅니다. 가져오기는 새 세트로 복사하며 기존 세트는 그대로입니다. AI 접속 코드는 포함되지 않습니다. Chrome 메뉴 → 홈 화면에 추가로 앱처럼 설치할 수 있습니다.</p>
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-18 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-19 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -559,7 +563,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-18';
+  var release = '20261018-19';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -595,8 +599,8 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./quiz.js?v=20261018-18" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-18" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-18" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-19" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-19" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-19" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

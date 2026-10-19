@@ -330,3 +330,13 @@
 - **뽑기** `buildComboPool`: 단어마다 `_setId`를 붙인다(세트끼리 번호가 겹칠 수 있음). 틀린 단어 먼저는 각 세트의 `daily_vocab_missed_<id>`에 있는 단어를 앞에, 골고루는 세트를 번갈아. 뽑은 순서를 지키려고 `newSession(..., {shuffle:false, combo})`.
 - **기록**: `setId: "combo"`, `setName: "종합 시험 (세트 N개)"`, `range: "세트 N개 · M문제 · 방법"`. 기록 탭 ‘전체 세트’에 보이고 보호자에게도 같은 이름. `finishRecords`는 출처 세트별로 오답 목록을 갱신(그 세트에서 이번에 푼 단어는 결과대로, 안 푼 단어는 유지 — 부분 시험이므로 교체가 아니라 병합). `againSame`은 `sessionMeta.combo`로 같은 설정으로 다시 뽑는다. `learnAlias`는 `_setId`의 세트에 학습한다. 쉬기·이어서는 큐를 저장하므로 그대로 동작.
 - Worker 변경 없음. 테스트 `tests/session.cjs`. 버전 `20261018-18`, 캐시 v27.
+
+## 22. 세트 수정 잠금 — 아이 기기에서는 단어 보기만 (2026-10-19)
+
+배경: 세트 동기화로 아이가 기기에서 고친 세트도 서버와 보호자 폰에 올라간다. 아이가 뜻·허용 답안을 고치거나 단어·세트를 지우면(부정행위·실수) 그대로 퍼지므로, 보호자가 세트 관리를 자기 폰으로 묶어 둘 수 있어야 한다.
+
+- **설정 경로**: 제한 시간과 같은 길. 보호자가 아이 상세 📚 세트 상자의 체크박스 `#setsLock`을 바꾸면 즉시 `POST /family/<id>/plan {setsLocked}`(boolean, `parsePlan`이 다른 항목은 유지). 아이 기기는 `GET /settings/<childId>`·`POST /join` 응답(`deviceSettingsOf`)의 `setsLocked`를 `daily_vocab_family_v1.settings.setsLocked`에 둔다. 앱을 열 때·화면 복귀 10분 간격으로 받으므로 바꾼 값은 다음에 앱을 열 때부터 적용된다.
+- **아이 기기**: `childSetsLocked()`(연결된 기기만) → `applySetsLock()`이 홈의 `#createSet`과 설정의 JSON 가져오기(`#importSetsLabel`)를 숨기고 `#editSet`을 ‘📖 단어 보기’로 바꾸며 `#setsLockNote`를 보인다. 편집기는 새 뷰 없이 같은 화면을 읽기 전용으로 연다(`openEditor` → `editorReadOnly`·`applyEditorReadOnly`: 사진 줄·AI 채우기·단어 추가·텍스트 편집·확인란·저장·관리 상자 숨김, 이름·칸·텍스트 readonly, ✕ 없음). 편집 중에 잠금이 도착해도 저장·이름 바꾸기·삭제·가져오기는 `setsLockedNow()`로 거절한다. 연결 해제 때 `settings`가 초기화되어 풀린다.
+- **바뀌지 않는 것**: 찾기 탭의 ‘찾아본 단어’ 세트 추가, AI 2차 채점의 허용 답안 학습(`learnAlias`), 서버에서 받은 세트 반영, 손대지 않은 예제 제거. 연결되지 않은 기기와 보호자 모드(`editorForChild`)는 영향 없음.
+- **서버에서 막지 않는 이유**: `/sets` 업로드에는 위의 자동 변경도 섞여 오고 서버는 아이가 손으로 고친 것과 구분할 수 없다. 아이폰·태블릿에서 아이가 UI를 우회할 현실적 방법이 없어 UI 잠금으로 둔다. 필요해지면 잠긴 아이의 묘비(삭제)와 `lookup` 외 새 세트만 서버가 거절하는 보강이 가능하다.
+- 테스트 `tests/worker.cjs`(plan 검증·`/settings`·`/join`), `tests/daily.cjs`(보호자 체크 → 아이 기기 반영 → 해제). 버전 `20261018-19`, 캐시 v28. Worker 재배포 필요(`parsePlan`·`settings`).

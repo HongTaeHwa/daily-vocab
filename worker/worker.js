@@ -20,8 +20,8 @@
 //   POST /family/children        보호자 코드, JSON {name} → { ok, child }   (아이 만들기: 6자리 아이 코드 발급)
 //   POST /family/<childId>/code  보호자 코드 → 아이 코드 새로 발급 { ok, child }  (옛 코드는 무효)
 //   POST /family/<childId>/name  보호자 코드, JSON {name} → 이름 바꾸기 { ok, child }
-//   POST /join                   가족·보호자 코드, JSON {code, device:{id,label}} → { ok, childId, name, timeLimitSec }   (아이 기기 연결)
-//   GET  /settings/<childId>     가족·보호자 코드 → { childId, name, timeLimitSec }   (아이 기기가 보호자 설정을 받아 감)
+//   POST /join                   가족·보호자 코드, JSON {code, device:{id,label}} → { ok, childId, name, timeLimitSec, setsLocked }   (아이 기기 연결)
+//   GET  /settings/<childId>     가족·보호자 코드 → { childId, name, timeLimitSec, setsLocked }   (아이 기기가 보호자 설정을 받아 감: 제한 시간·세트 수정 잠금)
 //   GET  /records/<childId>?since=<ISO>&limit=<n>  가족·보호자 코드 → { records:[압축 기록…], more, serverTime }
 //                                아이 기기의 기록 복원(새 기기·재설치). since가 있으면 그 시각부터(포함) 오름차순, 없으면 최신순. 최대 500개
 //   (크론, 매시) scheduled() → FamilyStore /cron: 계획 시각이 지난 아이의 그날 단어를 만든다
@@ -80,7 +80,7 @@ const MAX_DEVICE_LABEL = 40;
 const DAILY_PATH = /^\/daily\/([A-Za-z0-9-]{8,64})$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DAILY_MODEL_DEFAULT = "claude-sonnet-5-5";
-const DAILY_DEFAULTS = { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0 }; // hour는 한국 시각, timeLimitSec 0 = 제한 없음(모든 시험에 적용)
+const DAILY_DEFAULTS = { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false }; // hour는 한국 시각, timeLimitSec 0 = 제한 없음(모든 시험에 적용), setsLocked = 아이 기기에서 세트 고치기 잠금
 const SETTINGS_PATH = /^\/settings\/([A-Za-z0-9-]{8,64})$/; // 아이 기기가 보호자 설정(제한 시간 등)을 받아 가는 경로
 const RECORDS_PATH = /^\/records\/([A-Za-z0-9-]{8,64})$/; // 아이 기기가 자기 기록의 서버 사본을 내려받는 경로(기록 복원, 가족 코드)
 const RECORDS_PAGE_MAX = 500; // GET /records 한 번에 돌려주는 기록 수 상한
@@ -619,13 +619,18 @@ export class FamilyStore {
       return json(404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요. 보호자 폰의 아이들 탭에서 코드를 다시 확인해 주세요." });
     const now = new Date().toISOString();
     await this.storage.put("child:" + c.id, { ...c, devices: registerDevice(c.devices, parseDevice(body?.device), now), updatedAt: now });
-    return json(200, { ok: true, childId: c.id, name: c.name, timeLimitSec: this.planOf(c).timeLimitSec });
+    return json(200, { ok: true, childId: c.id, name: c.name, ...this.deviceSettingsOf(c) });
   }
-  // 아이 기기용 보호자 설정(이름·문제당 제한 시간). 가족 코드로 읽는다.
+  // 아이 기기가 받아 가는 보호자 설정: 문제당 제한 시간, 세트 수정 잠금. 오늘의 단어 계획(plan)에 함께 저장돼 있다.
+  deviceSettingsOf(child) {
+    const plan = this.planOf(child);
+    return { timeLimitSec: plan.timeLimitSec, setsLocked: plan.setsLocked === true };
+  }
+  // 아이 기기용 보호자 설정(이름·문제당 제한 시간·세트 수정 잠금). 가족 코드로 읽는다.
   async settings(childId) {
     const c = await this.storage.get("child:" + childId);
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-    return json(200, { childId, name: c.name, timeLimitSec: this.planOf(c).timeLimitSec });
+    return json(200, { childId, name: c.name, ...this.deviceSettingsOf(c) });
   }
   // 기록 복원(아이 기기, 가족 코드): 서버에 있는 이 아이의 압축 기록을 돌려준다. 새 기기나 다시 설치한 앱이 기록 탭을 채우는 데 쓴다.
   // since(ISO)가 있으면 그 시각부터(포함) 오름차순으로 limit개(앱은 마지막 completedAt을 다음 since로 넘기며 id로 겹침을 걸러낸다), 없으면 최신순 limit개.
@@ -898,6 +903,11 @@ function parsePlan(body, current) {
     if (!Number.isInteger(s) || s < 0 || (s > 0 && s < TIME_LIMIT_MIN) || s > TIME_LIMIT_MAX)
       return { error: `문제당 제한 시간은 0(없음) 또는 ${TIME_LIMIT_MIN}~${TIME_LIMIT_MAX}초여야 합니다.` };
     plan.timeLimitSec = s;
+  }
+  if (body?.setsLocked !== undefined) {
+    // 아이 기기에서 세트 고치기 잠금(UI 잠금: 아이 기기는 GET /settings 로 받아 새 세트·수정·삭제·가져오기를 숨긴다. /sets 업로드는 막지 않는다 — 찾아본 단어·AI가 인정한 답은 계속 올라와야 한다)
+    if (typeof body.setsLocked !== "boolean") return { error: "세트 수정 잠금(setsLocked)은 true 또는 false여야 합니다." };
+    plan.setsLocked = body.setsLocked;
   }
   plan.updatedAt = new Date().toISOString();
   return { plan };
