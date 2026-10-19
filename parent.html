@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="영단어 보호자">
 <link rel="apple-touch-icon" href="./icons/parent-apple-touch-icon.png">
-<link rel="stylesheet" href="./parent.css?v=20261018-22">
+<link rel="stylesheet" href="./parent.css?v=20261018-23">
 </head>
 <body class="no-code">
 <header class="topbar">
@@ -159,6 +159,12 @@
       <div id="limitStatus" class="feedback info" role="status"></div>
     </div>
     <div class="box">
+      <h3 class="section-title">⏰ 공부 알림</h3>
+      <div class="controls"><label for="planRemindHour">공부 알림 시각</label><select id="planRemindHour"></select></div>
+      <p class="muted">아이 기기에서 알림을 켜 두면 이 시각까지 시험이 없을 때 한 번 알려 줘요. 오늘의 단어가 켜져 있으면 도착 알림도 가요.</p>
+      <div id="remindStatus" class="feedback info" role="status"></div>
+    </div>
+    <div class="box">
       <h3 class="section-title">🗑 서버에서 삭제</h3>
       <p class="muted">이 아이의 기록·세트·아이 코드가 가족 서버에서 모두 지워지고, 연결된 기기는 다시 연결해야 해요. 아이 기기에 있는 기록은 그대로예요.</p>
       <div class="actionbar"><button type="button" class="btn outline danger small" id="deleteChild">이 아이 서버에서 삭제…</button></div>
@@ -199,9 +205,16 @@
       <div id="serverStatus" class="feedback info" role="status"></div>
     </details>
   </div>
-  <div class="card">
-    <h2 class="section-title">🔔 알림 <span class="pill">준비 중</span></h2>
-    <p class="muted">‘오늘 아직 시험을 안 봤어요’, ‘오늘의 단어를 끝냈어요’ 같은 알림을 받을 수 있게 준비하고 있어요.</p>
+  <div class="card" id="notifyCard">
+    <h2 class="section-title">🔔 알림 <span id="notifyState" class="pill">꺼짐</span></h2>
+    <p class="muted">아이가 시험을 마치면 바로, 그리고 저녁에 하루 요약을 이 폰으로 알려 줘요. 아이폰은 홈 화면에 설치한 이 앱에서만 받을 수 있어요. 아이 기기의 공부 알림 시각은 아이 화면의 설정 탭에서 정해요.</p>
+    <div class="actionbar"><button type="button" class="btn primary" id="notifyEnable">🔔 이 폰에서 알림 받기</button></div>
+    <div id="notifyOptions" class="box hidden">
+      <label class="check"><input type="checkbox" id="notifyFinish" checked> 🧒 아이가 시험을 마치면 바로</label>
+      <div class="controls"><label class="check"><input type="checkbox" id="notifySummary" checked> 🌙 저녁 요약</label><select id="notifySummaryHour" aria-label="저녁 요약 시각"></select></div>
+      <div class="actionbar"><button type="button" class="btn small outline" id="notifyTest">테스트 알림 보내기</button></div>
+    </div>
+    <div id="notifyStatus" class="feedback info" role="status"></div>
   </div>
   <div class="card">
     <h2 class="section-title">📲 설치 · 아이용 앱</h2>
@@ -210,7 +223,7 @@
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-22 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-23 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
   </div>
 </section>
@@ -224,7 +237,7 @@
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-22';
+  var release = '20261018-23';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -258,8 +271,8 @@
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./shared.js?v=20261018-22" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./editor.js?v=20261018-22" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./parent.js?v=20261018-22" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./shared.js?v=20261018-23" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./editor.js?v=20261018-23" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./parent.js?v=20261018-23" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

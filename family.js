@@ -7,9 +7,11 @@
 // 기록 복원: 새 기기나 다시 설치한 앱은 기록이 비어 있으므로 GET /records/<childId>로 서버 사본(압축 기록)을 내려받아 ‘요약 기록’(restored: true)으로 기록 탭에 넣는다(아래 ‘기록 복원’).
 // 저장 키 daily_vocab_family_v1 = {childId, childName, joinCode, pendingCode, deviceId, sendEnabled, lastSyncAt, lastError, pending:[기록 id],
 //        setsAcked:{세트 id: 수정 시각}, setsDeleted:[{id, deletedAt}], setsSyncedAt, setsError, restoreCheckedAt, restoreError,
-//        childGone(보호자가 서버에서 지운 아이: 연결 해제 → 새 코드로 다시 연결할 때까지 서버 요청 중단)}
+//        childGone(보호자가 서버에서 지운 아이: 연결 해제 → 새 코드로 다시 연결할 때까지 서버 요청 중단),
+//        settings:{timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour, fetchedAt}(보호자 설정),
+//        push:{mode:"push"|"native", deviceId, childId, endpoint, enabledAt} | null(이 기기에서 켠 알림)}
 //        daily_vocab_daily_v1  = {childId, date, words, level, note, fetchedAt, result?, disabled?, lastCheckedAt, lastError?}
-// 아이 코드·아이 이름은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다. 옛 보호자 모드가 이 키에 두던 parentCode·parentModeOff 는 보호자 앱으로 옮겨 갔고, 남아 있으면 지운다(initFamily).
+// 아이 코드·아이 이름·알림 구독은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다. 옛 보호자 모드가 이 키에 두던 parentCode·parentModeOff 는 보호자 앱으로 옮겨 갔고, 남아 있으면 지운다(initFamily).
 const FAMILY_KEY = "daily_vocab_family_v1";
 const DAILY_KEY = "daily_vocab_daily_v1";
 const FAMILY_BATCH = 50; // 한 번에 보내는 기록 수 (Worker 상한 100)
@@ -20,7 +22,8 @@ const ANCHOR_LIMIT = 60; // 교재 앵커: 최근 세트에서 보내는 영어 
 const DAILY_CHECK_MS = 10 * 60 * 1000; // 오늘 것이 없거나 꺼져 있을 때, 또는 다른 기기의 완료를 확인할 때 다시 물어보는 간격
 const JOIN_CODE_PATTERN = /^\d{6}$/;
 // shared.js 의 서식. $·setFeedback·modeLabels 는 quiz.js, AI_SERVER_DEFAULT·normalizeServer·WORD_PATTERN 은 sets.js 머리에서 꺼낸다(sets.js 의 clean 도 tidy 를 쓴다).
-const { tidy, formatCode } = Shared;
+const { tidy, formatCode, hourLabel, deviceLabel } = Shared;
+const hourOrNull = (v) => (Number.isInteger(v) && v >= 0 && v <= 23 ? v : null);
 
 function readFamily() {
   let saved = null;
@@ -51,12 +54,21 @@ function readFamily() {
     restoreCheckedAt: typeof f.restoreCheckedAt === "string" ? f.restoreCheckedAt : "",
     restoreError: typeof f.restoreError === "string" ? f.restoreError : "",
     childGone: f.childGone === true, // 서버가 404 unknown_child 를 돌려준 아이(보호자가 지움): 다시 연결할 때까지 요청하지 않는다
-    // 보호자가 정한 아이 설정(서버 plan에서 받아 둠). timeLimitSec 0 = 제한 없음, setsLocked = 아이 기기에서 세트 고치기 잠금
+    // 보호자가 정한 아이 설정(서버 plan에서 받아 둠). timeLimitSec 0 = 제한 없음, setsLocked = 아이 기기에서 세트 고치기 잠금,
+    // dailyEnabled·dailyHour = 오늘의 단어(도착 알림 시각), remindHour = 공부 알림 시각(null 이면 없음)
     settings: {
       timeLimitSec: Number.isInteger(f.settings?.timeLimitSec) && f.settings.timeLimitSec >= 0 ? f.settings.timeLimitSec : 0,
       setsLocked: f.settings?.setsLocked === true,
+      dailyEnabled: f.settings?.dailyEnabled === true,
+      dailyHour: hourOrNull(f.settings?.dailyHour) ?? 16,
+      remindHour: hourOrNull(f.settings?.remindHour),
       fetchedAt: typeof f.settings?.fetchedAt === "string" ? f.settings.fetchedAt : "",
     },
+    // 이 기기에서 켠 알림(Web Push 구독 또는 갤럭시 앱 로컬 알림). 없으면 null
+    push:
+      f.push && typeof f.push === "object" && ["push", "native"].includes(f.push.mode) && typeof f.push.childId === "string"
+        ? { mode: f.push.mode, deviceId: idLike(f.push.deviceId), childId: idLike(f.push.childId), endpoint: typeof f.push.endpoint === "string" ? f.push.endpoint : "", enabledAt: typeof f.push.enabledAt === "string" ? f.push.enabledAt : "" }
+        : null,
   };
 }
 let family = readFamily();
@@ -81,11 +93,17 @@ function applySettings(data) {
   family.settings = {
     timeLimitSec: Number.isInteger(data?.timeLimitSec) && data.timeLimitSec >= 0 ? data.timeLimitSec : 0,
     setsLocked: data?.setsLocked === true,
+    dailyEnabled: data?.dailyEnabled === true,
+    dailyHour: hourOrNull(data?.dailyHour) ?? 16,
+    remindHour: hourOrNull(data?.remindHour),
     fetchedAt: new Date().toISOString(),
   };
   if (typeof data?.name === "string" && tidy(data.name)) family.childName = tidy(data.name).slice(0, 20); // 보호자가 이름을 바꿨으면 반영
   writeFamily();
   applySetsLock();
+  // 알림: 갤럭시 앱은 바뀐 시각으로 다시 예약하고, Web Push 는 구독이 사라졌거나 바뀌었으면 다시 등록한다
+  nativeSchedule();
+  refreshNotify();
 }
 // 앱 시작·화면 복귀 때 보호자 설정을 받아 둔다(10분 간격, 시작 때는 바로). 실패하면 조용히 다음 기회에.
 async function fetchSettings(options = {}) {
@@ -104,17 +122,7 @@ async function fetchSettings(options = {}) {
 function writeFamily() {
   return Shared.writeJson(FAMILY_KEY, family);
 }
-// 보호자 화면에 보일 기기 이름. iPadOS는 Mac처럼 보이므로 터치 지원으로 가른다.
-function deviceLabel() {
-  const ua = navigator.userAgent || "";
-  if (/DailyVocabApp\//.test(ua)) return /Mobile/.test(ua) ? "Android 폰(앱)" : "Android 태블릿(앱)"; // 갤럭시용 래퍼 앱(android/)
-  if (/iPhone/.test(ua)) return "iPhone";
-  if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return "iPad";
-  if (/Android/.test(ua)) return /Mobile/.test(ua) ? "Android 폰" : "Android 태블릿";
-  if (/Windows/.test(ua)) return "Windows PC";
-  if (/Macintosh/.test(ua)) return "Mac";
-  return "기타 기기";
-}
+// 보호자 화면에 보일 기기 이름은 Shared.deviceLabel(위 별칭 deviceLabel).
 function ensureDeviceId() {
   if (!family.deviceId) {
     family.deviceId = crypto.randomUUID();
@@ -178,7 +186,11 @@ function noteChildGone(e) {
   if (e?.code !== "unknown_child" || !isLinked()) return false;
   if (!family.childGone) {
     family.childGone = true;
+    // 서버가 이 아이의 알림 구독을 이미 지웠다: 이 기기의 구독·예약만 정리한다(다시 연결하면 알림을 새로 켠다)
+    const prev = family.push;
+    family.push = null;
     writeFamily();
+    dropPush(prev, { server: false });
     renderFamilySettings();
   }
   return true;
@@ -189,6 +201,11 @@ function syncReady() {
 // quiz.js 의 saveSession 이 기록을 확정할 때(완료·중단) 부른다.
 function queueFamilySync(record) {
   if (record.daily) noteDailyResult(record);
+  // 갤럭시 앱 로컬 알림: 오늘 시험을 끝냈으니 오늘의 공부 리마인더는 건너뛴다(Web Push 리마인더는 서버가 기록을 보고 정한다)
+  if (!record.partial && family.push?.mode === "native")
+    try {
+      Shared.notify.native()?.skipToday("reminder");
+    } catch {}
   if (!syncReady() && !family.sendEnabled) return;
   if (!family.pending.includes(record.id)) family.pending.push(record.id);
   writeFamily();
@@ -468,11 +485,15 @@ $("childCode").addEventListener("keydown", (e) => {
 $("unlinkChild").onclick = () => {
   if (!isLinked()) return;
   if (!confirm(`이 기기를 ‘${family.childName}’에서 연결 해제할까요? 이 기기의 세트와 기록은 그대로 남고, 서버에 보낸 기록도 지워지지 않아요.`)) return;
+  const prevPush = family.push;
   family = {
     ...family, childId: "", childName: "", joinCode: "", pendingCode: "", sendEnabled: false, pending: [], lastError: "", childGone: false,
-    setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "", settings: { timeLimitSec: 0, setsLocked: false, fetchedAt: "" }, restoreCheckedAt: "", restoreError: "",
+    setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "", restoreCheckedAt: "", restoreError: "", push: null,
+    settings: { timeLimitSec: 0, setsLocked: false, dailyEnabled: false, dailyHour: 16, remindHour: null, fetchedAt: "" },
   };
   writeFamily();
+  dropPush(prevPush); // 이 기기의 알림도 끈다(서버 구독 삭제)
+  notifyNote = null;
   daily = emptyDaily();
   writeDaily();
   $("familySend").checked = false;
@@ -703,6 +724,136 @@ $("startDaily").onclick = () => {
   newSession(false, words, { setId: "daily:" + daily.date, setName: "오늘의 단어 " + dailyLabel(daily.date) }, { rangeLabel: "오늘의 단어", daily: daily.date });
 };
 
+// ---- 아이 기기: 알림(2B) ----
+// 아이는 ‘🔔 이 기기에서 알림 받기’ 하나만 켠다. 시각은 보호자가 보호자 앱에서 정한다(오늘의 단어 시각 → 📬 도착, 공부 알림 시각 remindHour → ✏️ 리마인더).
+// Web Push(아이폰 홈 화면 앱·Android Chrome): 권한(사용자 터치 안) → GET /push/key → 구독 → POST /push/subscribe(가족 코드) → family.push.
+// 갤럭시 래퍼 앱(window.DailyVocabNotify, N2): 권한 → schedule({daily, reminder}) 로 앱이 스스로 띄운다(서버 구독 없음). 시험을 끝내면 skipToday("reminder").
+// 앱 시작·설정을 받을 때(applySettings) 구독이 사라졌거나 endpoint 가 바뀌었으면(브라우저 갱신·키 교체·다른 아이로 연결) 다시 등록한다(권한이 granted 일 때만).
+// 연결 해제·알림 끄기는 브라우저 구독과 서버 구독을 함께 지우고, 서버에서 지워진 아이(childGone)면 이 기기 것만 정리한다.
+let notifyBusy = false, notifyRefreshing = false;
+let notifyNote = null; // #notifyHelp 에 보일 {kind, text}
+const pushDeviceInfo = () => ({ id: ensureDeviceId(), label: deviceLabel() });
+// 갤럭시 앱에 지금 보호자 설정의 시각을 알려 준다(로컬 알림 예약).
+function nativeSchedule() {
+  const bridge = Shared.notify.native();
+  if (!bridge || family.push?.mode !== "native" || !isLinked() || family.childGone) return;
+  const s = family.settings;
+  try {
+    bridge.schedule({ daily: { enabled: s.dailyEnabled, hour: s.dailyHour }, reminder: Number.isInteger(s.remindHour) ? { hour: s.remindHour } : null });
+  } catch {}
+}
+// 서버 공개 키 → 브라우저 구독 → POST /push/subscribe. 성공하면 family.push 에 남긴다.
+async function registerPush() {
+  const { publicKey } = await familyRequest("/push/key", { method: "GET", passcode: syncPasscode() });
+  const subscription = await Shared.notify.subscribe(publicKey);
+  await familyRequest("/push/subscribe", { body: { role: "child", childId: family.childId, device: pushDeviceInfo(), subscription }, passcode: syncPasscode() });
+  family.push = { mode: "push", deviceId: family.deviceId, childId: family.childId, endpoint: subscription.endpoint, enabledAt: family.push?.enabledAt || new Date().toISOString() };
+  writeFamily();
+}
+async function enableNotify() {
+  const support = Shared.notify.support();
+  if (notifyBusy || !isLinked() || family.childGone || !["push", "native"].includes(support)) return;
+  notifyBusy = true;
+  notifyNote = { kind: "info", text: "알림을 켜는 중…" };
+  renderNotify();
+  try {
+    const permission = await Shared.notify.request(); // 권한 요청은 터치 직후 맨 먼저(아이폰은 사용자 터치 안에서만 묻는다)
+    if (permission !== "granted") {
+      notifyNote = { kind: "bad", text: "알림 권한이 꺼져 있어요. 기기 설정에서 이 앱의 알림을 허용해 주세요." };
+      return;
+    }
+    if (support === "native") {
+      family.push = { mode: "native", deviceId: ensureDeviceId(), childId: family.childId, endpoint: "", enabledAt: new Date().toISOString() };
+      writeFamily();
+      nativeSchedule();
+    } else {
+      if (!syncPasscode()) throw Error("먼저 위의 ‘보호자 설정 · AI 연결’에서 접속 코드를 저장하세요.");
+      await registerPush();
+    }
+    notifyNote = { kind: "good", text: "알림을 켰어요. 보호자가 정한 시각에 이 기기로 알려 줘요." };
+  } catch (e) {
+    noteChildGone(e);
+    notifyNote = { kind: "bad", text: e?.code === "push_unconfigured" ? e.message : "알림을 켜지 못했어요: " + (e?.message || e) };
+  } finally {
+    notifyBusy = false;
+    renderNotify();
+  }
+}
+// 이 기기의 알림을 끈다: 브라우저 구독 해지 + 서버 구독 삭제(server), 갤럭시 앱은 예약 취소. 실패해도 넘어간다(서버에 남은 구독은 다음 전송 때 만료로 지워진다).
+async function dropPush(prev, { server = true } = {}) {
+  if (!prev) return;
+  if (prev.mode === "native") {
+    try {
+      Shared.notify.native()?.cancel();
+    } catch {}
+    return;
+  }
+  try {
+    await Shared.notify.unsubscribe();
+  } catch {}
+  if (server && prev.childId && syncPasscode())
+    await familyRequest("/push/unsubscribe", { body: { role: "child", childId: prev.childId, device: { id: prev.deviceId || ensureDeviceId() } }, passcode: syncPasscode() }).catch(() => {});
+}
+async function disableNotify() {
+  if (notifyBusy || !family.push) return;
+  notifyBusy = true;
+  const prev = family.push;
+  family.push = null;
+  writeFamily();
+  notifyNote = { kind: "info", text: "알림을 끄는 중…" };
+  renderNotify();
+  try {
+    await dropPush(prev);
+  } finally {
+    notifyBusy = false;
+    notifyNote = { kind: "good", text: "알림을 껐어요." };
+    renderNotify();
+  }
+}
+// 앱 시작·설정 수신 때: 켜 둔 알림이 그대로인지 확인하고, 구독이 없어졌거나 바뀌었으면(또는 다른 아이로 연결했으면) 다시 등록한다.
+async function refreshNotify() {
+  const prev = family.push;
+  if (!prev || prev.mode !== "push" || notifyBusy || notifyRefreshing || !isLinked() || family.childGone || !syncPasscode()) return; // 갤럭시 앱은 applySettings 의 nativeSchedule 이 맡는다
+  if (Shared.notify.support() !== "push" || Shared.notify.permission() !== "granted") return;
+  notifyRefreshing = true;
+  try {
+    const current = await Shared.notify.current();
+    if (current && current.endpoint === prev.endpoint && prev.childId === family.childId) return;
+    if (prev.childId && prev.childId !== family.childId)
+      // 다른 아이로 바꿔 연결했다: 옛 아이에게 등록한 이 기기의 구독은 지운다
+      await familyRequest("/push/unsubscribe", { body: { role: "child", childId: prev.childId, device: { id: prev.deviceId || ensureDeviceId() } }, passcode: syncPasscode() }).catch(() => {});
+    await registerPush();
+  } catch (e) {
+    noteChildGone(e); // 그 밖의 오류(오프라인·옛 Worker)는 다음에 앱을 열 때 다시 해 본다
+  } finally {
+    notifyRefreshing = false;
+    renderNotify();
+  }
+}
+function renderNotify() {
+  const support = Shared.notify.support();
+  const on = Boolean(family.push);
+  const s = family.settings;
+  const denied = support === "push" && Shared.notify.permission() === "denied";
+  let text;
+  if (on && denied && family.push.mode === "push") text = "알림 권한이 꺼져 있어요. 기기 설정에서 켜 주세요";
+  else if (on)
+    text = ["🔔 알림 켜짐", s.dailyEnabled ? "오늘의 단어 도착" : "", Number.isInteger(s.remindHour) ? "공부 알림 " + hourLabel(s.remindHour) : "공부 알림 없음(보호자 설정)"].filter(Boolean).join(" · ");
+  else if (support === "none") text = "이 브라우저는 알림을 지원하지 않아요";
+  else if (support === "install") text = "홈 화면에 설치한 앱에서만 알림을 켤 수 있어요";
+  else if (denied) text = "알림 권한이 꺼져 있어요. 기기 설정에서 켜 주세요";
+  else text = "알림 꺼짐";
+  $("notifyText").textContent = text;
+  const button = $("notifyEnable");
+  button.textContent = on ? "🔕 알림 끄기" : "🔔 이 기기에서 알림 받기";
+  button.classList.toggle("hidden", !on && !["push", "native"].includes(support));
+  button.disabled = notifyBusy || family.childGone;
+  const guide =
+    support === "install" && !on ? "아이폰·아이패드: Safari 공유(⬆) → ‘홈 화면에 추가’로 설치한 앱을 열고, 그 앱의 설정 → 가족 기록함에서 아이 코드를 넣은 뒤 알림을 켜 주세요(iOS 16.4 이상)." : "";
+  setFeedback($("notifyHelp"), notifyNote?.kind || "info", notifyNote?.text || guide);
+}
+$("notifyEnable").onclick = () => (family.push ? disableNotify() : enableNotify());
+
 // ---- 설정 화면(가족 기록함) ----
 function renderFamilySettings(progress) {
   const linked = isLinked();
@@ -734,6 +885,7 @@ function renderFamilySettings(progress) {
             ? `보호자에게 보낸 기록은 ‘서버 기록 다시 가져오기’로 가져올 수 있어요 · 마지막 확인 ${checkedAt}`
             : "새 기기나 다시 설치한 앱은 기록이 비어 있으면 보호자에게 보냈던 기록을 서버에서 자동으로 가져와요.";
     $("restoreRecords").disabled = !restoreReady() || restoreInFlight;
+    renderNotify();
   }
   $("unlinkChild").classList.toggle("attention", linked && family.childGone); // 지워진 아이는 ‘연결 해제’가 다음 할 일이라 눈에 띄게
   const pill = $("familyState");
@@ -818,6 +970,13 @@ function initFamily() {
     checkDaily({ ignoreThrottle: true }); // 앱을 새로 열 때는 10분 제한 없이 확인한다(보호자가 방금 켰을 수 있다)
     syncSets({ force: true }).then(() => restoreRecords()); // 보호자·다른 기기가 바꾼 세트를 받고 이 기기의 변경을 올린 뒤, 기록이 비어 있으면(새 기기·재설치) 서버 사본을 가져온다
   }
+  // 알림을 눌러 이미 열린 앱으로 돌아오면 sw.js 가 {type:"navigate"} 를 보낸다: 시험 중이 아니면 홈(오늘의 단어 카드)으로, 오늘의 단어는 바로 확인한다.
+  if ("serviceWorker" in navigator)
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      if (e.data?.type !== "navigate") return;
+      if (!sessionRunning) showView("home");
+      checkDaily({ ignoreThrottle: true });
+    });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
     if (family.pending.length) flushFamilySync();

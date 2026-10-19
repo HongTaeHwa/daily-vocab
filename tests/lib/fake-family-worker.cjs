@@ -1,21 +1,24 @@
 // 가짜 가족 Worker — tests/family.cjs · daily.cjs · parent.cjs · parent-sets.cjs 공용. Playwright 라우트로 worker/worker.js 의 FamilyStore 역할을 흉내 낸다.
-// 라우트: /join /settings/<id> /records/<id> /sync /sets/<id> /daily/<id> /grade /recognize /define, 보호자 /family /family/<id> /family/<id>/records /family/children
+// 라우트: /join /settings/<id> /records/<id> /sync /sets/<id> /daily/<id> /grade /recognize /define /push/(key|subscribe|unsubscribe|test), 보호자 /family /family/<id> /family/<id>/records /family/children
 //        /family/<id>/(plan|code|name) /family/<id>/sets(/<setId>). 질문(/tutor 의 FamilyStore /question)은 seedChild 뒤 child.questions 에 직접 넣는다.
 //
-// const fake = await createFakeWorker(page, { server, familyCode, parentCode, setSync, daily, recordsPageSize, pagedDetail, detailPageSize, newWords });
+// const fake = await createFakeWorker(page, { server, familyCode, parentCode, setSync, daily, recordsPageSize, pagedDetail, detailPageSize, newWords, push });
 //   setSync (기본 true)       /sets/<id>·/family/<id>/sets 를 처리한다. false 면 옛 Worker처럼 404 not_found 이고 아이에게 세트 저장소가 없다(요약은 /sync 의 세트 목록).
 //   daily (기본 true)         /daily/<id> 조회·생성(복습 최대 3 + newWords). false 면 언제나 409 plan_disabled.
 //   recordsPageSize (기본 500) /records 한 페이지 최대 개수(페이지 넘김을 시험하려면 작게).
 //   pagedDetail (기본 true)   /family/<id> 가 ?days(기본 30)·limit(기본 200)로 기록을 줄이고 recordCount·more 를 붙이며 /family/<id>/records?before&limit 를 처리한다.
 //                             false 면 옛 Worker(2026-10-19 이전)처럼 상세가 전체 기록을 주고(recordCount·more 없음) /family/<id>/records 는 404 not_found.
 //   detailPageSize (기본 500)  /family/<id>/records 한 페이지 최대 개수(‘더 보기’ 페이지 넘김을 시험하려면 작게).
+//   push (기본 true)          알림 경로: GET /push/key → {publicKey}, POST /push/subscribe·unsubscribe·test(아이 role 은 가족·보호자 코드, 보호자 role 은 보호자 코드만).
+//                             false 면 VAPID 키가 없는 Worker 처럼 /push/… 가 503 push_unconfigured.
 //   목록(GET /family)의 기록은 Worker와 같이 최근 14일(20개 미만이면 최신 20개)이다.
-// → { requests, children, codes, gone, dailies, paths(path, method?), seedChild(id, name, code), liveSets(child), planOf(child), setMode("ok"|"abort"|"notfound") }
+// → { requests, children, codes, gone, dailies, pushSubs, paths(path, method?), seedChild(id, name, code), liveSets(child), planOf(child), setMode("ok"|"abort"|"notfound") }
+//   pushSubs: Map("child:<childId>:<deviceId>" | "parent:<deviceId>" → 구독 요청 본문)
 //   requests: [{method, path, search, passcode, body}], children: Map(id → 아이), codes: Map(아이 코드 → id), gone: 지운 아이 id(그 id 의 /sync 는 404 unknown_child).
 "use strict";
 const DEFAULT_NEW_WORDS = ["glimpse", "verdict", "linger", "thrive", "plead", "subtle", "wither", "forge", "ample", "dwell", "exert", "notion"];
 
-async function createFakeWorker(page, { server, familyCode, parentCode, setSync = true, daily = true, recordsPageSize = 500, pagedDetail = true, detailPageSize = 500, newWords = DEFAULT_NEW_WORDS } = {}) {
+async function createFakeWorker(page, { server, familyCode, parentCode, setSync = true, daily = true, recordsPageSize = 500, pagedDetail = true, detailPageSize = 500, newWords = DEFAULT_NEW_WORDS, push = true } = {}) {
   const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "GET, POST, DELETE, OPTIONS" };
   const reply = (route, status, body) => route.fulfill({ status, headers: cors, contentType: "application/json", body: JSON.stringify(body) });
   const notFound = (route) => reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
@@ -24,13 +27,19 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
   const codes = new Map(); // 아이 코드 → childId
   const gone = new Set(); // 보호자가 지운 아이 id(Worker의 gone:<id> 묘비): 그 id의 /sync 는 404 unknown_child
   const dailies = new Map(); // childId:date → 오늘의 단어
+  const pushSubs = new Map(); // 알림 구독
   let nextCode = 777777, nextSetId = 1, mode = "ok";
   const now = () => new Date().toISOString();
   const localDate = () => {
     const d = new Date();
     return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
   };
-  const planOf = (c) => ({ enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false, ...(c.plan || {}) });
+  const planOf = (c) => ({ enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false, remindHour: null, ...(c.plan || {}) });
+  // 아이 기기가 받아 가는 보호자 설정(Worker deviceSettingsOf 와 같은 항목)
+  const deviceSettings = (c) => {
+    const p = planOf(c);
+    return { timeLimitSec: p.timeLimitSec, setsLocked: p.setsLocked, dailyEnabled: p.enabled === true, dailyHour: p.hour, remindHour: Number.isInteger(p.remindHour) ? p.remindHour : null };
+  };
   const seedChild = (id, name, code) => {
     children.set(id, { id, name, joinCode: code, devices: {}, sets: [], ...(setSync ? { setStore: new Map() } : {}), records: new Map(), questions: [], lastTestAt: null, createdBy: "parent" });
     codes.set(code, id);
@@ -90,14 +99,14 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
       const c = children.get(codes.get(code));
       if (!c || c.joinCode !== code) return reply(route, 404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요." });
       touchDevice(c, body.device);
-      return reply(route, 200, { ok: true, childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec, setsLocked: planOf(c).setsLocked });
+      return reply(route, 200, { ok: true, childId: c.id, name: c.name, ...deviceSettings(c) });
     }
     const sm = /^\/settings\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (sm && req.method() === "GET") {
       if (!familyOk) return unauthorized();
       const c = children.get(sm[1]);
       if (!c) return unknownChild();
-      return reply(route, 200, { childId: c.id, name: c.name, timeLimitSec: planOf(c).timeLimitSec, setsLocked: planOf(c).setsLocked });
+      return reply(route, 200, { childId: c.id, name: c.name, ...deviceSettings(c) });
     }
     const rm = /^\/records\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (rm && req.method() === "GET") {
@@ -165,6 +174,28 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
       if (!planOf(c).enabled) return reply(route, 409, { error: "plan_disabled", message: "보호자가 아직 오늘의 단어를 켜지 않았어요." });
       if (req.method() === "GET") return reply(route, 404, { error: "no_daily", message: "오늘의 단어가 아직 없어요." });
       return reply(route, 200, makeDaily(c, date));
+    }
+    const pushM = /^\/push\/(key|subscribe|unsubscribe|test)$/.exec(url.pathname);
+    if (pushM && req.method() === (pushM[1] === "key" ? "GET" : "POST")) {
+      // 알림(Web Push): 키·구독·해지·테스트. 보호자 role 은 보호자 코드만(Worker 와 같은 코드 역할)
+      if (!familyOk) return unauthorized();
+      if (!push) return reply(route, 503, { error: "push_unconfigured", message: "알림 서버가 아직 준비되지 않았어요. 보호자가 Worker에 알림 키(VAPID)를 등록하면 켤 수 있어요." });
+      if (pushM[1] === "key") return reply(route, 200, { publicKey: "BFakeVapidPublicKeyForTests" });
+      if (body?.role === "parent" && passcode !== parentCode) return reply(route, 401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." });
+      if (!["child", "parent"].includes(body?.role) || !body?.device?.id) return reply(route, 400, { error: "bad_request", message: "role·device.id 가 필요합니다." });
+      if (body.role === "child" && !children.has(body.childId)) return unknownChild();
+      const key = body.role === "parent" ? "parent:" + body.device.id : "child:" + body.childId + ":" + body.device.id;
+      if (pushM[1] === "subscribe") {
+        if (!/^https:\/\//.test(body.subscription?.endpoint || "") || !body.subscription?.keys?.p256dh || !body.subscription?.keys?.auth) return reply(route, 400, { error: "bad_request", message: "알림 주소·키가 올바르지 않습니다." });
+        pushSubs.set(key, body);
+        return reply(route, 200, { ok: true });
+      }
+      if (pushM[1] === "unsubscribe") {
+        pushSubs.delete(key);
+        return reply(route, 200, { ok: true });
+      }
+      if (!pushSubs.has(key)) return reply(route, 404, { error: "no_subscription", message: "서버에 이 기기의 알림 등록이 없어요. 알림을 껐다가 다시 켜 주세요." });
+      return reply(route, 200, { ok: true, status: 201 });
     }
     if (url.pathname === "/recognize" && req.method() === "POST") {
       // 사진 인식 가짜 응답(보호자 앱 편집기가 보호자 코드로 부르는지 확인용): 사진마다 apple 한 단어
@@ -269,6 +300,7 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
     codes,
     gone,
     dailies,
+    pushSubs,
     paths: (path, method) => requests.filter((r) => r.path === path && (!method || r.method === method)),
     seedChild,
     liveSets,

@@ -6,6 +6,7 @@
 // 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보내고, 동기화된 세트가 있으면 그 단어를 앵커로 보낸다.
 // 보호자가 서버에서 아이를 지우면(404 unknown_child) 기기는 안내·연결 해제 강조 뒤 요청을 멈추고, 연결 해제 → 새 코드로 다시 연결한다.
 // 기록 복원: 연결하면 서버에 있던 이 아이의 기록이 요약 기록으로 기록 탭에 들어오고(다시 보내지 않음, 틀린 단어 다시 풀기), ‘서버 기록 다시 가져오기’는 겹치지 않게 여러 페이지를 받으며, 기록 전체 삭제 뒤에는 자동 복원하지 않는다.
+// 알림(2B): 가짜 구독(tests/lib/fake-push.cjs)으로 켜기·끄기·다시 등록·권한 거부·연결 해제·미설정 Worker·설치 안내, 갤럭시 앱 브리지의 schedule·skipToday·cancel.
 // Worker는 라우트로 가짜 응답을 준다(tests/lib/fake-family-worker.cjs).
 const { chromium } = require("playwright");
 const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
@@ -343,8 +344,156 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert((await page.textContent("#familyState")).includes("켜짐"), "state pill back on");
   assert(syncs().slice(-1)[0].body.child.id === HANEUL2 && syncs().slice(-1)[0].body.records.length >= 1 || syncs().some((r) => r.body.child.id === HANEUL2 && r.body.records.length >= 1), "history resent to the new child");
 
+  // ---- 알림(2B): 가짜 구독(window.__dailyVocabPushImpl)으로 ‘이 기기에서 알림 받기’ → GET /push/key · POST /push/subscribe(가족 코드) → 상태 문구
+  //      → 다시 열면 그대로 · 브라우저가 구독을 바꾸면 다시 등록 → 보호자 시각 변경 반영 → 권한 거부 → 끄기(/push/unsubscribe) → 연결 해제 때도 해지
+  //      → 미설정 Worker(503)·설치 안 한 아이폰·지원 안 하는 브라우저 안내 → 갤럭시 앱 브리지(window.DailyVocabNotify)면 schedule·완료 뒤 skipToday·cancel ----
+  const linkNotifyDevice = async (fakeOptions, initScript, childId, code, plan) => {
+    const ctx = await browser.newContext({ viewport: { width: 800, height: 1100 }, serviceWorkers: "block" });
+    await ctx.addInitScript(initScript);
+    const p = await ctx.newPage();
+    p.on("pageerror", (e) => errors.push("notify: " + e.message));
+    const f = await createFakeWorker(p, { server: SERVER, familyCode: FAMILY_CODE, parentCode: PARENT_CODE, daily: false, ...fakeOptions });
+    const c = f.seedChild(childId, "용한", code);
+    c.plan = plan;
+    c.setStore.set("yong-set", { id: "yong-set", name: "용한 세트", words: exampleWords, updatedAt: "2026-10-01T00:00:00.000Z" });
+    await p.goto(url + "?child=" + code);
+    await waitFor(() => p.evaluate(() => document.getElementById("familyStatus").textContent.includes("접속 코드를 저장")), "notify: waits for the passcode");
+    await p.fill("#aiServer", SERVER);
+    await p.fill("#aiPasscode", FAMILY_CODE);
+    await p.click("#saveAi");
+    await waitFor(() => p.evaluate(() => document.getElementById("familyStatus").textContent.includes("마지막 전송")), "notify: linked");
+    await waitFor(() => p.evaluate(() => sets.length === 1 && sets[0].id === "yong-set"), "notify: child's set synced");
+    return { ctx, p, f };
+  };
+  const { fakePushScript, fakeNativeScript } = require("./lib/fake-push.cjs");
+  const YONG = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
+  const { ctx: nctx, p: np, f: nf } = await linkNotifyDevice({}, fakePushScript, YONG, "135790", { enabled: true, hour: 16, remindHour: 20 });
+  const nHas = (sel, t) => np.evaluate(([s, x]) => (document.querySelector(s)?.textContent || "").includes(x), [sel, t]);
+  const nFamily = () => np.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")));
+  const nPush = () => np.evaluate(() => JSON.parse(localStorage.getItem("__test_push") || "{}"));
+  assert((await np.isVisible("#notifyBox")) && (await np.textContent("#notifyText")) === "알림 꺼짐" && (await np.textContent("#notifyEnable")) === "🔔 이 기기에서 알림 받기", "notify box starts off: " + (await np.textContent("#notifyText")));
+  assert(nf.paths("/push/key").length === 0 && nf.paths("/push/subscribe").length === 0, "nothing sent before the child turns it on");
+  await np.click("#notifyEnable");
+  await waitFor(() => nHas("#notifyText", "🔔 알림 켜짐"), "notifications on");
+  assert((await np.textContent("#notifyText")) === "🔔 알림 켜짐 · 오늘의 단어 도착 · 공부 알림 오후 8시", "status line with the parent's times: " + (await np.textContent("#notifyText")));
+  assert((await nHas("#notifyHelp", "알림을 켰어요")) && (await np.textContent("#notifyEnable")) === "🔕 알림 끄기", "button flips to off");
+  const keyReqs = nf.paths("/push/key", "GET"), subReqs = nf.paths("/push/subscribe", "POST");
+  assert(keyReqs.length === 1 && keyReqs[0].passcode === FAMILY_CODE && (await nPush()).key === "BFakeVapidPublicKeyForTests" && (await nPush()).requests === 1, "server key fetched with the family code and handed to the browser");
+  const nDevice = (await nFamily()).deviceId;
+  assert(
+    subReqs.length === 1 && subReqs[0].passcode === FAMILY_CODE && subReqs[0].body.role === "child" && subReqs[0].body.childId === YONG &&
+      subReqs[0].body.device.id === nDevice && typeof subReqs[0].body.device.label === "string" &&
+      subReqs[0].body.subscription.endpoint === "https://push.test/sub/1" && subReqs[0].body.subscription.keys.auth.length === 22,
+    "subscribe body (role child, childId, device, subscription): " + JSON.stringify(subReqs[0]?.body).slice(0, 200),
+  );
+  let nfam = await nFamily();
+  assert(nfam.push && nfam.push.mode === "push" && nfam.push.childId === YONG && nfam.push.endpoint === "https://push.test/sub/1" && nfam.push.deviceId === nDevice, "family.push stored: " + JSON.stringify(nfam.push));
+  assert(nfam.settings.dailyEnabled === true && nfam.settings.dailyHour === 16 && nfam.settings.remindHour === 20, "settings carry the alarm times: " + JSON.stringify(nfam.settings));
+  // 다시 열어도 구독이 같으면 다시 등록하지 않는다 → 브라우저가 구독을 바꾸면(설정을 받을 때) 다시 등록한다
+  const openNotify = async () => {
+    await np.click("#tabSettings");
+    await np.evaluate(() => { document.getElementById("familySettings").open = true; });
+  };
+  const settingsBefore = nf.paths("/settings/" + YONG).length;
+  await np.reload();
+  await waitFor(() => np.evaluate(() => typeof sets !== "undefined" && document.getElementById("appStatus").textContent.includes("준비")), "notify: reloaded");
+  await waitFor(() => nf.paths("/settings/" + YONG).length > settingsBefore, "settings fetched on launch");
+  await new Promise((r) => setTimeout(r, 300));
+  assert(nf.paths("/push/subscribe").length === 1, "same subscription → no re-registration");
+  await np.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem("__test_push"));
+    s.sub.endpoint = "https://push.test/sub/renewed";
+    localStorage.setItem("__test_push", JSON.stringify(s));
+  });
+  await np.reload();
+  await waitFor(() => nf.paths("/push/subscribe").length === 2, "re-registered after the browser renewed the subscription");
+  assert(nf.paths("/push/subscribe")[1].body.subscription.endpoint === "https://push.test/sub/renewed", "new endpoint sent");
+  await waitFor(async () => (await nFamily()).push?.endpoint === "https://push.test/sub/renewed", "family.push follows the new endpoint");
+  // 보호자가 공부 알림 시각을 끄면 상태 문구가 따라간다
+  nf.children.get(YONG).plan.remindHour = null;
+  await np.evaluate(() => fetchSettings({ force: true }));
+  await openNotify();
+  await waitFor(() => nHas("#notifyText", "공부 알림 없음(보호자 설정)"), "status follows the parent's remind hour: ");
+  // 끄기 → 브라우저 구독 해지 + 서버 구독 삭제
+  await np.click("#notifyEnable");
+  await waitFor(() => nf.paths("/push/unsubscribe", "POST").length === 1, "unsubscribe sent");
+  const unsub = nf.paths("/push/unsubscribe", "POST")[0];
+  assert(unsub.passcode === FAMILY_CODE && unsub.body.role === "child" && unsub.body.childId === YONG && unsub.body.device.id === nDevice, "unsubscribe body: " + JSON.stringify(unsub.body));
+  await waitFor(() => nHas("#notifyHelp", "알림을 껐어요"), "off message");
+  assert((await np.textContent("#notifyText")) === "알림 꺼짐" && !(await nPush()).sub && (await nFamily()).push === null && nf.pushSubs.size === 0, "everything off");
+  // 권한을 거부하면 안내하고 구독하지 않는다
+  await np.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem("__test_push"));
+    s.answer = "denied";
+    localStorage.setItem("__test_push", JSON.stringify(s));
+  });
+  await np.click("#notifyEnable");
+  await waitFor(() => nHas("#notifyHelp", "알림 권한이 꺼져 있어요"), "denied permission explained");
+  assert(nf.paths("/push/subscribe").length === 2 && (await nFamily()).push === null && (await nHas("#notifyText", "알림 권한이 꺼져 있어요")), "no subscription without permission");
+  // 다시 허용해 켜고 → 연결 해제하면 알림도 꺼진다(서버 구독 삭제)
+  await np.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem("__test_push"));
+    s.answer = "granted";
+    localStorage.setItem("__test_push", JSON.stringify(s));
+  });
+  await np.click("#notifyEnable");
+  await waitFor(() => nf.paths("/push/subscribe").length === 3 && nf.pushSubs.size === 1, "on again");
+  await waitFor(() => nHas("#notifyText", "🔔 알림 켜짐"), "status on again");
+  np.once("dialog", (d) => d.accept());
+  await np.click("#unlinkChild");
+  await waitFor(() => nf.paths("/push/unsubscribe", "POST").length === 2 && nf.pushSubs.size === 0, "unlinking removes the server subscription");
+  assert(!(await nPush()).sub && (await nFamily()).push === null, "unlinking removes the browser subscription");
+  // 아이 기기 기록·세트 동기화는 알림과 상관없이 그대로(위에서 연결·전송 확인). 미설정 Worker(503)·설치 안 한 아이폰·지원 안 하는 브라우저 안내
+  await nctx.close();
+  const { ctx: uctx, p: up } = await linkNotifyDevice({ push: false }, fakePushScript, YONG, "135790", { enabled: false, hour: 16 });
+  await up.click("#tabSettings");
+  await up.evaluate(() => { document.getElementById("familySettings").open = true; });
+  await up.click("#notifyEnable");
+  await waitFor(() => up.evaluate(() => document.getElementById("notifyHelp").textContent.includes("알림 서버가 아직 준비되지 않았어요")), "unconfigured Worker message");
+  assert((await up.textContent("#notifyText")) === "알림 꺼짐" && (await up.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).push)) === null, "stays off when the server has no keys");
+  await up.evaluate(() => localStorage.setItem("__test_push", JSON.stringify({ support: "install" })));
+  await up.reload();
+  await up.click("#tabSettings");
+  await up.evaluate(() => { document.getElementById("familySettings").open = true; });
+  await waitFor(() => up.evaluate(() => document.getElementById("notifyText").textContent === "홈 화면에 설치한 앱에서만 알림을 켤 수 있어요"), "iPhone Safari tab → install first");
+  assert((await up.isHidden("#notifyEnable")) && (await up.textContent("#notifyHelp")).includes("홈 화면에 추가"), "install guide instead of the button");
+  await up.evaluate(() => localStorage.setItem("__test_push", JSON.stringify({ support: "none" })));
+  await up.reload();
+  await waitFor(() => up.evaluate(() => document.getElementById("notifyText").textContent === "이 브라우저는 알림을 지원하지 않아요"), "unsupported browser");
+  assert(await up.isHidden("#notifyEnable"), "no button when unsupported");
+  await uctx.close();
+  // 갤럭시 앱 브리지: 서버 구독 없이 앱에 시각을 넘기고(schedule), 시험을 끝내면 오늘 리마인더를 건너뛰고(skipToday), 끄면 취소(cancel)
+  const { ctx: gctx, p: gp, f: gf } = await linkNotifyDevice({}, fakeNativeScript, YONG, "135790", { enabled: true, hour: 17, remindHour: 19 });
+  const nativeLog = () => gp.evaluate(() => JSON.parse(localStorage.getItem("__test_native") || "[]"));
+  await gp.click("#tabSettings");
+  await gp.evaluate(() => { document.getElementById("familySettings").open = true; });
+  assert((await gp.textContent("#notifyText")) === "알림 꺼짐" && (await nativeLog()).length === 0, "bridge untouched until the child turns it on");
+  await gp.click("#notifyEnable");
+  await waitFor(() => gp.evaluate(() => document.getElementById("notifyText").textContent.startsWith("🔔 알림 켜짐")), "native notifications on");
+  let nlog = await nativeLog();
+  assert(JSON.stringify(nlog) === JSON.stringify([["permission"], ["schedule", { daily: { enabled: true, hour: 17 }, reminder: { hour: 19 } }]]), "bridge permission + schedule: " + JSON.stringify(nlog));
+  assert(gf.paths("/push/key").length === 0 && gf.paths("/push/subscribe").length === 0 && (await gp.textContent("#notifyText")) === "🔔 알림 켜짐 · 오늘의 단어 도착 · 공부 알림 오후 7시", "no server subscription for the app's local alarms");
+  assert((await gp.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).push.mode)) === "native", "native mode remembered");
+  await gp.reload();
+  await waitFor(async () => (await nativeLog()).filter((e) => e[0] === "schedule").length === 2, "schedule sent again when the settings arrive on launch");
+  await gp.click('[data-mode="en_ko"]');
+  await gp.selectOption("#range", "0");
+  await gp.click("#start");
+  for (let i = 0; i < 10; i++) {
+    await gp.click("#unknown");
+    await gp.click("#next");
+  }
+  assert(await gp.isVisible("#finish"), "native: quiz finished");
+  await waitFor(async () => (await nativeLog()).some((e) => e[0] === "skipToday" && e[1] === "reminder"), "finished quiz skips today's reminder");
+  await gp.click("#tabSettings");
+  await gp.evaluate(() => { document.getElementById("familySettings").open = true; });
+  await gp.click("#notifyEnable");
+  await waitFor(async () => (await nativeLog()).slice(-1)[0][0] === "cancel", "turning off cancels the local alarms");
+  assert((await gp.textContent("#notifyText")) === "알림 꺼짐" && gf.paths("/push/unsubscribe").length === 0, "native off without server calls");
+  await gctx.close();
+
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: child app without a parent mode + child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, no auto-restore after clearing) + set sync (pull on join, parent's set received, device delete, empty state) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin");
+  console.log("PASS: child app without a parent mode + child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, no auto-restore after clearing) + set sync (pull on join, parent's set received, device delete, empty state) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin + notifications (push on/off, re-register, denied, unlink, 503/install/unsupported, Galaxy bridge schedule/skipToday/cancel)");
   await browser.close();
 })().catch((e) => {
   console.error(e);

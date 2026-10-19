@@ -1,5 +1,5 @@
 // Cloudflare Worker 프록시(worker/worker.js) 단위 테스트. Node만 필요(Playwright 불필요).
-// Anthropic 호출은 globalThis.fetch 를 바꿔 가짜 응답으로 대체한다.
+// Anthropic 호출은 globalThis.fetch 를 바꿔 가짜 응답으로 대체한다. 알림(Web Push)은 가짜 푸시 서비스로 받아 VAPID 서명을 검증하고 본문을 복호화한다.
 const assert = require("assert");
 const path = require("path");
 const { pathToFileURL } = require("url");
@@ -728,7 +728,7 @@ const { pathToFileURL } = require("url");
   data = await familyCase("/family/" + kid.id, { method: "GET", ...PARENT }, 200);
   assert.deepEqual(data.child.anchor.words, ["authority", "devote", "evident"], "anchor cleaned and deduped");
   assert.equal(data.child.anchor.setName, "중등 DAY05");
-  assert.deepEqual(data.child.plan, { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false }, "default plan");
+  assert.deepEqual(data.child.plan, { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false, remindHour: null }, "default plan");
   assert.equal(data.today.exists, false);
   await familyCase("/sync", { body: { child: kid, anchor: { words: "nope" } } }, 400, "anchor");
   // 빈 앵커(기기에 손대지 않은 예제 세트뿐)는 저장된 수준 기준을 지우고, 앵커를 아예 안 보내면 그대로 둔다
@@ -759,7 +759,7 @@ const { pathToFileURL } = require("url");
   assert.equal(data.child.plan.timeLimitSec, 15);
   assert.equal(data.child.plan.dailyCount, 5, "other plan fields kept");
   data = await familyCase("/settings/" + kid.id, { method: "GET" }, 200);
-  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15, setsLocked: false }, "settings for the device");
+  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15, setsLocked: false, dailyEnabled: true, dailyHour: 16, remindHour: null }, "settings for the device");
   await familyCase("/settings/99999999-aaaa-4bbb-8ccc-dddddddddddd", { method: "GET" }, 404, "unknown_child");
   await familyCase("/settings/" + kid.id, { method: "GET", passcode: "nope" }, 401);
   await familyCase("/settings/" + kid.id, { method: "POST", body: {} }, 404);
@@ -768,7 +768,7 @@ const { pathToFileURL } = require("url");
   data = await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { setsLocked: true } }, 200);
   assert.deepEqual([data.child.plan.setsLocked, data.child.plan.timeLimitSec, data.child.plan.dailyCount], [true, 15, 5], "lock stored without touching the other plan fields");
   data = await familyCase("/settings/" + kid.id, { method: "GET" }, 200);
-  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15, setsLocked: true }, "settings carry the lock to the device");
+  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15, setsLocked: true, dailyEnabled: true, dailyHour: 16, remindHour: null }, "settings carry the lock to the device");
   data = await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { setsLocked: false } }, 200);
   assert.equal(data.child.plan.setsLocked, false, "lock released");
   await familyCase("/sync", { body: { child: kid, records: [rec("kt", hoursAgo(0.2), { total: 4, correct: 2, timeouts: 2, missed: [] })] } }, 200);
@@ -1068,8 +1068,347 @@ const { pathToFileURL } = require("url");
   await familyCase("/records/" + rid, { method: "GET" }, 404, "unknown_child");
   await familyCase("/family/" + rid + "/records", { method: "GET", ...PARENT }, 404, "unknown_child");
 
+  // ---- 알림(2B, Web Push): 키·구독 검증·코드 역할·VAPID 서명·aes128gcm 암호화·트리거 4종(daily·reminder·finish·summary)·만료 정리 ----
+  // 암호화와 서명은 이 테스트가 받는 기기 쪽에서 Node WebCrypto 로 직접 복호화·검증한다(Worker 구현을 확인하는 유일한 자동 검증).
+  const nodeCrypto = require("crypto");
+  const { subtle } = nodeCrypto.webcrypto;
+  const b64u = (buf) => Buffer.from(buf).toString("base64url");
+  const vapidPair = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const VAPID_PUBLIC = b64u(await subtle.exportKey("raw", vapidPair.publicKey));
+  const VAPID_PRIVATE = (await subtle.exportKey("jwk", vapidPair.privateKey)).d;
+  const VAPID_SUBJECT = "https://hongtaehwa.github.io/daily-vocab/";
+  const vapidVerifyKey = nodeCrypto.createPublicKey({ key: await subtle.exportKey("jwk", vapidPair.publicKey), format: "jwk" });
+  const PUSH_HOST = "https://push.example.test";
+  const browsers = new Map(); // endpoint → 가짜 브라우저(기기 키 쌍 + auth)
+  const newBrowser = async (path) => {
+    const pair = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+    const raw = new Uint8Array(await subtle.exportKey("raw", pair.publicKey));
+    const auth = new Uint8Array(nodeCrypto.randomBytes(16));
+    const b = { pair, raw, auth, subscription: { endpoint: PUSH_HOST + path, keys: { p256dh: b64u(raw), auth: b64u(auth) } } };
+    browsers.set(b.subscription.endpoint, b);
+    return b;
+  };
+  const hkdfNode = async (salt, ikm, info, len) =>
+    new Uint8Array(await subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, await subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]), len * 8));
+  // RFC 8291/8188 복호화(받는 기기 쪽): salt(16) | rs(4) | idlen(1) | 보낸 쪽 임시 공개 키 | 암호문 → 평문 JSON
+  const decryptPush = async (b, body) => {
+    const salt = body.slice(0, 16);
+    const rs = Buffer.from(body.slice(16, 20)).readUInt32BE(0);
+    const idlen = body[20];
+    const asPublic = body.slice(21, 21 + idlen);
+    assert.deepEqual([rs, idlen, asPublic[0]], [4096, 65, 4], "aes128gcm header: rs 4096, keyid = uncompressed P-256 point");
+    const asKey = await subtle.importKey("raw", asPublic, { name: "ECDH", namedCurve: "P-256" }, false, []);
+    const shared = new Uint8Array(await subtle.deriveBits({ name: "ECDH", public: asKey }, b.pair.privateKey, 256));
+    const ikm = await hkdfNode(b.auth, shared, Buffer.concat([Buffer.from("WebPush: info\0"), b.raw, asPublic]), 32);
+    const cek = await hkdfNode(salt, ikm, Buffer.from("Content-Encoding: aes128gcm\0"), 16);
+    const nonce = await hkdfNode(salt, ikm, Buffer.from("Content-Encoding: nonce\0"), 12);
+    const aes = await subtle.importKey("raw", cek, "AES-GCM", false, ["decrypt"]);
+    const plain = new Uint8Array(await subtle.decrypt({ name: "AES-GCM", iv: nonce }, aes, body.slice(21 + idlen)));
+    let end = plain.length - 1;
+    while (end > 0 && plain[end] === 0) end--;
+    assert.equal(plain[end], 2, "last-record delimiter 0x02");
+    return JSON.parse(Buffer.from(plain.slice(0, end)).toString("utf8"));
+  };
+  // VAPID: Authorization "vapid t=<JWT>, k=<공개 키>" → ES256(raw r||s) 서명을 공개 키로 검증, aud·exp·sub
+  const checkVapid = (authorization, endpoint) => {
+    const m = /^vapid t=([^,\s]+), k=([A-Za-z0-9_-]+)$/.exec(authorization || "");
+    assert(m, "vapid authorization header: " + authorization);
+    assert.equal(m[2], VAPID_PUBLIC, "k = VAPID public key");
+    const [h, p, s] = m[1].split(".");
+    assert(nodeCrypto.verify("sha256", Buffer.from(h + "." + p), { key: vapidVerifyKey, dsaEncoding: "ieee-p1363" }, Buffer.from(s, "base64url")), "JWT signature verifies with the VAPID public key");
+    assert.deepEqual(JSON.parse(Buffer.from(h, "base64url").toString()), { typ: "JWT", alg: "ES256" });
+    const claims = JSON.parse(Buffer.from(p, "base64url").toString());
+    const now = Date.now() / 1000;
+    assert(claims.aud === new URL(endpoint).origin && claims.sub === VAPID_SUBJECT && claims.exp > now + 11.9 * 3600 && claims.exp <= now + 12 * 3600 + 5, "JWT claims: " + JSON.stringify(claims));
+  };
+  // 푸시 서비스 모의: PUSH_HOST 로 가는 요청을 기록하고 상태를 돌려준다(기본 201, "throw" 면 네트워크 오류). 나머지는 오늘의 단어 Anthropic 모의.
+  const pushLog = [];
+  const pushStatus = new Map();
+  globalThis.fetch = async (url, init) => {
+    if (!String(url).startsWith(PUSH_HOST)) return dailyMock(url, init);
+    pushLog.push({ endpoint: String(url), headers: init.headers, body: new Uint8Array(init.body) });
+    const status = pushStatus.get(String(url)) ?? 201;
+    if (status === "throw") throw new TypeError("fetch failed");
+    return new Response(null, { status });
+  };
+  // 보낸 푸시를 열어 본다: {endpoint, headers, msg}. 매번 서명·암호화를 검증한다.
+  const sentSince = async (n) =>
+    Promise.all(
+      pushLog.slice(n).map(async (e) => {
+        checkVapid(e.headers.authorization, e.endpoint);
+        assert(e.headers["content-encoding"] === "aes128gcm" && e.headers["content-type"] === "application/octet-stream" && e.headers.urgency === "normal", "push headers: " + JSON.stringify({ ...e.headers, authorization: "…" }));
+        assert(!Buffer.from(e.body).toString("utf8").includes("매일") && !Buffer.from(e.body).toString("utf8").includes("title"), "body is encrypted");
+        return { endpoint: e.endpoint, headers: e.headers, msg: await decryptPush(browsers.get(e.endpoint), e.body) };
+      }),
+    );
+  // 로그에 endpoint·키가 남지 않는지 본다(상태 코드만)
+  const errorLines = [];
+  const realError = console.error;
+  console.error = (...args) => {
+    errorLines.push(args.map(String).join(" "));
+    realError(...args);
+  };
+  const pushStore = new FamilyStore({ storage: familyStorage() }, { ...env, PARENT_PASSCODE: "parent-9999", VAPID_PUBLIC_KEY: VAPID_PUBLIC, VAPID_PRIVATE_KEY: VAPID_PRIVATE, VAPID_SUBJECT });
+  const penv = {
+    ...fenv,
+    VAPID_PUBLIC_KEY: VAPID_PUBLIC,
+    VAPID_PRIVATE_KEY: VAPID_PRIVATE,
+    VAPID_SUBJECT,
+    FAMILY: { idFromName: (n) => "id:" + n, get: () => ({ fetch: (u, init) => pushStore.fetch(new Request(u, init)) }) },
+  };
+  const pcase = (p, opts, expect, includes) => familyCase(p, { ...opts, env: opts.env || penv }, expect, includes);
+  const kstAt = (date, hh, mm = 0) => new Date(Date.parse(`${date}T${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:00+09:00`)).toISOString();
+  const runPushCron = async (date, hour) => {
+    const pend = [];
+    await worker.scheduled({ scheduledTime: Date.parse(kstAt(date, hour)) }, penv, { waitUntil: (p) => pend.push(p) });
+    await Promise.all(pend);
+  };
+  const pushKeys = async (prefix) => [...(await pushStore.storage.list({ prefix })).keys()];
+  const pause = () => new Promise((r) => setTimeout(r, 3));
+
+  // 키: 미설정 Worker 는 /push/… 모두 503 push_unconfigured(다른 기능은 그대로), 설정되면 가족·보호자 코드로 공개 키
+  data = await familyCase("/push/key", { method: "GET" }, 503, "push_unconfigured");
+  assert(data.message.includes("알림 서버가 아직 준비되지 않았어요"), "unconfigured message: " + data.message);
+  await familyCase("/push/subscribe", { body: {} }, 503, "push_unconfigured");
+  await familyCase("/push/test", { body: {} }, 503, "push_unconfigured");
+  await pcase("/push/key", { method: "GET", env: { ...penv, VAPID_PRIVATE_KEY: "short" } }, 503, "형식");
+  await pcase("/push/key", { method: "GET", env: { ...penv, VAPID_PUBLIC_KEY: "" } }, 503, "push_unconfigured");
+  data = await pcase("/push/key", { method: "GET" }, 200);
+  assert.deepEqual(data, { publicKey: VAPID_PUBLIC }, "public key for the family code");
+  await pcase("/push/key", { method: "GET", ...PARENT }, 200);
+  await pcase("/push/key", { method: "GET", passcode: "nope" }, 401);
+  await pcase("/push/key", { body: {} }, 404, "not_found");
+  await pcase("/push/subscribe", { method: "GET" }, 404, "not_found");
+  await pcase("/push/other", { body: {} }, 404, "not_found");
+  limiter.keys.length = 0;
+  limiter.allow = true;
+  await pcase("/push/key", { method: "GET", env: { ...penv, RATE_LIMITER: limiter } }, 200);
+  assert(limiter.keys[0].startsWith("/push:"), "push has its own rate-limit bucket: " + limiter.keys[0]);
+
+  // 보호자 구독(보호자 코드만): 기본 kinds 모두 켬·요약 21시. 아이가 아직 없으면 저녁 요약은 보내지 않는다.
+  const devP = { id: "parent-phone-1", label: "iPhone" };
+  const bP = await newBrowser("/sub/parent-1");
+  const parentSub = (b, device, extra = {}) => ({ role: "parent", device, subscription: b.subscription, ...extra });
+  await pcase("/push/subscribe", { body: parentSub(bP, devP) }, 401, "보호자 코드"); // 가족 코드로는 보호자 구독을 만들 수 없다
+  await pcase("/push/subscribe", { ...PARENT, body: parentSub(bP, devP, { summaryHour: 24 }) }, 400, "summaryHour");
+  await pcase("/push/subscribe", { ...PARENT, body: parentSub(bP, devP, { kinds: { finish: "yes" } }) }, 400, "kinds");
+  await pcase("/push/subscribe", { ...PARENT, body: parentSub(bP, devP) }, 200);
+  let stored = await pushStore.storage.get("push:parent:" + devP.id);
+  assert.deepEqual([stored.endpoint, stored.kinds, stored.summaryHour, stored.failures, stored.label], [bP.subscription.endpoint, { finish: true, summary: true }, 21, 0, "iPhone"], "parent subscription stored");
+  const D0 = kstDate(9), D1 = kstDate(10), D2 = kstDate(11), D3 = kstDate(12), D4 = kstDate(13);
+  await runPushCron(D0, 21);
+  assert.equal(pushLog.length, 0, "no summary without children");
+  // 테스트 알림(보호자): VAPID 서명·암호화·헤더를 실제로 풀어 확인
+  await pcase("/push/test", { body: { role: "parent", device: devP } }, 401, "보호자 코드");
+  data = await pcase("/push/test", { ...PARENT, body: { role: "parent", device: devP } }, 200);
+  assert.deepEqual(data, { ok: true, status: 201 });
+  let got = await sentSince(0);
+  assert.equal(got.length, 1);
+  assert.deepEqual(got[0].msg, { title: "🔔 알림이 잘 와요", body: "매일 영단어 알림 설정이 끝났어요", url: "./parent.html#/settings", tag: "test" }, "decrypted test push");
+  assert.deepEqual([got[0].endpoint, got[0].headers.ttl, got[0].headers.topic], [bP.subscription.endpoint, "300", "test"], "test push TTL and topic");
+  assert((await pushStore.storage.get("push:parent:" + devP.id)).lastOkAt, "lastOkAt after a delivered push");
+  await pcase("/push/test", { ...PARENT, body: { role: "parent", device: { id: "unknown-device-1" } } }, 404, "no_subscription");
+
+  // 아이 기기 구독(가족 코드): 검증 → 저장 → 테스트 알림
+  const pkid = (await pcase("/family/children", { ...PARENT, body: { name: "용한" } }, 200)).child;
+  const pkid2 = (await pcase("/family/children", { ...PARENT, body: { name: "한나" } }, 200)).child;
+  const devA = { id: "child-phone-a1", label: "iPhone" }, devB = { id: "child-tablet-b1", label: "Android 태블릿" };
+  const bA = await newBrowser("/sub/child-a"), bA2 = await newBrowser("/sub/child-a2");
+  const childSub = (b, device = devA, extra = {}) => ({ role: "child", childId: pkid.id, device, subscription: b.subscription, ...extra });
+  await pcase("/push/subscribe", { body: { ...childSub(bA), role: "x" } }, 400, "role");
+  await pcase("/push/subscribe", { body: { ...childSub(bA), childId: undefined } }, 400, "childId");
+  await pcase("/push/subscribe", { body: { ...childSub(bA), device: { id: "bad id" } } }, 400, "device.id");
+  for (const bad of [
+    { endpoint: "http://push.example.test/sub/x" },
+    { endpoint: PUSH_HOST + "/" + "x".repeat(1000) },
+    { endpoint: "not a url" },
+    { keys: { p256dh: "short", auth: bA.subscription.keys.auth } },
+    { keys: { p256dh: "A" + bA.subscription.keys.p256dh.slice(1), auth: bA.subscription.keys.auth } }, // 0x04(비압축 점)로 시작하지 않음
+    { keys: { p256dh: bA.subscription.keys.p256dh, auth: "!".repeat(22) } },
+    { keys: { p256dh: bA.subscription.keys.p256dh, auth: bA.subscription.keys.auth + "AAAA" } },
+  ])
+    await pcase("/push/subscribe", { body: { ...childSub(bA), subscription: { ...bA.subscription, ...bad } } }, 400, "알림");
+  await pcase("/push/subscribe", { body: { ...childSub(bA), childId: "99999999-aaaa-4bbb-8ccc-dddddddddddd" } }, 404, "unknown_child");
+  await pcase("/push/subscribe", { body: childSub(bA), passcode: "nope" }, 401);
+  await pcase("/push/subscribe", { body: { ...childSub(bA), subscription: { ...bA.subscription, keys: { p256dh: bA.subscription.keys.p256dh + "=", auth: bA.subscription.keys.auth + "==" } } } }, 200); // 패딩 있는 base64url 도 받는다
+  await pcase("/push/subscribe", { body: childSub(bA) }, 200);
+  let n = pushLog.length;
+  data = await pcase("/push/test", { body: { role: "child", childId: pkid.id, device: devA } }, 200);
+  got = await sentSince(n);
+  assert.deepEqual([got.length, got[0].endpoint, got[0].msg.url, got[0].msg.title], [1, bA.subscription.endpoint, "./", "🔔 알림이 잘 와요"], "child test push decrypted");
+  // 같은 기기가 다시 구독하면 덮어쓰고, 같은 브라우저(endpoint)가 다른 기기 id 로 오면 옛 것을 지운다(알림이 두 번 오지 않게)
+  await pcase("/push/subscribe", { body: childSub(bA2) }, 200);
+  assert.deepEqual(await pushKeys("push:child:" + pkid.id + ":"), ["push:child:" + pkid.id + ":" + devA.id], "re-subscribe replaces");
+  assert.equal((await pushStore.storage.get("push:child:" + pkid.id + ":" + devA.id)).endpoint, bA2.subscription.endpoint);
+  await pcase("/push/subscribe", { body: childSub(bA2, devB) }, 200);
+  assert.deepEqual(await pushKeys("push:child:" + pkid.id + ":"), ["push:child:" + pkid.id + ":" + devB.id], "same endpoint under a new device id replaces the old entry");
+  await pcase("/push/subscribe", { body: childSub(bA, devA) }, 200);
+  assert.equal((await pushKeys("push:child:" + pkid.id + ":")).length, 2, "two child devices subscribed");
+  // 보호자 기기는 5대까지: 넘으면 가장 오래 소식이 없는 구독부터 지운다
+  for (let i = 2; i <= 6; i++) {
+    await pause();
+    await pcase("/push/subscribe", { ...PARENT, body: parentSub(await newBrowser("/sub/parent-" + i), { id: "parent-phone-" + i, label: "폰" }) }, 200);
+  }
+  let parentKeys = await pushKeys("push:parent:");
+  assert(parentKeys.length === 5 && !parentKeys.includes("push:parent:" + devP.id), "parent devices capped at 5, the oldest dropped: " + parentKeys.join(","));
+  for (let i = 2; i <= 6; i++) await pcase("/push/unsubscribe", { ...PARENT, body: { role: "parent", device: { id: "parent-phone-" + i } } }, 200);
+  await pcase("/push/unsubscribe", { ...PARENT, body: { role: "parent", device: { id: "parent-phone-9" } } }, 200); // 없어도 ok
+  await pcase("/push/unsubscribe", { body: { role: "parent", device: { id: "parent-phone-9" } } }, 401, "보호자 코드");
+  assert.deepEqual(await pushKeys("push:parent:"), [], "parent subscriptions removed");
+  await pcase("/push/subscribe", { ...PARENT, body: parentSub(bP, devP) }, 200);
+
+  // 🧒 시험 마침(보호자 폰): /sync 로 처음 들어온 방금 끝낸 완료 기록 1건 → 문구·Topic·TTL. 아이 기기로는 가지 않는다.
+  const finishTopic = "f" + pkid.id.replace(/-/g, "").slice(0, 31);
+  n = pushLog.length;
+  const fin = rec("fin1", hoursAgo(0.02), { correct: 9, awayCount: 1, awayMs: 2000, timeouts: 1 });
+  await pcase("/sync", { body: { child: { id: pkid.id, name: "다른이름" }, records: [fin] } }, 200);
+  got = await sentSince(n);
+  assert.equal(got.length, 1, "one finish push to the parent");
+  assert.deepEqual(got[0].msg, {
+    title: "🧒 용한 · DAY04 9/10 (90점)",
+    body: "영어 → 한글 · 121~130번 ⚠️ 화면 이탈 1회 · ⏱ 시간 초과 1개",
+    url: "./parent.html#/child/" + pkid.id + "/records",
+    tag: "finish-" + pkid.id,
+  }, "finish message (server name, score, warnings)");
+  assert.deepEqual([got[0].endpoint, got[0].headers.ttl, got[0].headers.topic], [bP.subscription.endpoint, "3600", finishTopic], "finish TTL and per-child topic");
+  assert(finishTopic.length <= 32 && /^[A-Za-z0-9]+$/.test(finishTopic), "topic fits RFC 8030 (≤32 base64url chars)");
+  n = pushLog.length;
+  await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [fin] } }, 200); // 다시 보낸 기록
+  await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("fin2", hoursAgo(0.02), { partial: true })] } }, 200); // 중단
+  await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("fin3", hoursAgo(7))] } }, 200); // 7시간 전
+  await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [1, 2, 3, 4].map((i) => rec("bulkf" + i, hoursAgo(0.05 * i))) } }, 200); // 밀린 기록 4개
+  assert.equal(pushLog.length, n, "no finish push for a resend, a partial, an old record or a backlog of 4");
+  await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("fin4", hoursAgo(0.03), { correct: 5 }), rec("fin5", hoursAgo(0.01), { partial: true })] } }, 200);
+  got = await sentSince(n);
+  assert.deepEqual([got.length, got[0].msg.title, got[0].msg.body], [1, "🧒 용한 · DAY04 5/10 (50점)", "영어 → 한글 · 121~130번"], "the completed one of a small batch, no warnings");
+  await pcase("/push/subscribe", { ...PARENT, body: parentSub(bP, devP, { kinds: { finish: false, summary: true } }) }, 200);
+  n = pushLog.length;
+  await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("fin6", hoursAgo(0.01))] } }, 200);
+  assert.equal(pushLog.length, n, "finish switched off on the parent phone");
+  await pcase("/push/subscribe", { ...PARENT, body: parentSub(bP, devP) }, 200);
+
+  // 공부 알림 시각(plan.remindHour): null 또는 0~23, 다른 계획 항목 유지. 아이 기기 설정(/settings·/join)에 오늘의 단어·알림 시각이 함께 간다.
+  await pcase("/family/" + pkid.id + "/plan", { ...PARENT, body: { remindHour: 24 } }, 400, "remindHour");
+  await pcase("/family/" + pkid.id + "/plan", { ...PARENT, body: { remindHour: "20" } }, 400, "remindHour");
+  await pcase("/family/" + pkid.id + "/plan", { ...PARENT, body: { remindHour: 1.5 } }, 400, "remindHour");
+  await pcase("/family/" + pkid.id + "/plan", { body: { remindHour: 20 } }, 401, "보호자 코드");
+  data = await pcase("/family/" + pkid.id + "/plan", { ...PARENT, body: { enabled: true, dailyCount: 5, remindHour: 20 } }, 200);
+  assert.deepEqual([data.child.plan.remindHour, data.child.plan.enabled, data.child.plan.hour], [20, true, 16], "remindHour saved with the plan");
+  data = await pcase("/family/" + pkid.id + "/plan", { ...PARENT, body: { timeLimitSec: 10 } }, 200);
+  assert.equal(data.child.plan.remindHour, 20, "remindHour kept when other fields change");
+  data = await pcase("/settings/" + pkid.id, { method: "GET" }, 200);
+  assert.deepEqual(data, { childId: pkid.id, name: "용한", timeLimitSec: 10, setsLocked: false, dailyEnabled: true, dailyHour: 16, remindHour: 20 }, "device settings carry the alarm times");
+  data = await pcase("/join", { body: { code: pkid2.joinCode, device: { id: "child2-phone-1", label: "iPhone" } } }, 200);
+  assert.deepEqual([data.dailyEnabled, data.dailyHour, data.remindHour], [false, 16, null], "join carries the alarm times");
+
+  // 📬 오늘의 단어 도착: 아이 기기가 스스로 만들면 없음, 보호자의 ‘지금 만들기’·크론이 만들면 아이의 모든 기기에
+  n = pushLog.length;
+  data = await pcase("/daily/" + pkid.id, { body: { date: D0, origin: "parent" } }, 200); // 아이 기기(가족 코드)가 만든 것: 본문의 origin 은 믿지 않는다
+  assert.equal(pushLog.length, n, "no arrival push when the child device made it");
+  data = await pcase("/daily/" + pkid.id, { ...PARENT, body: { date: kstDate(8) } }, 200);
+  got = await sentSince(n);
+  const reviewN = data.words.filter((w) => w.kind === "review").length;
+  assert(reviewN > 0, "daily has review words");
+  assert.deepEqual(got.map((g) => g.endpoint).sort(), [bA.subscription.endpoint, bA2.subscription.endpoint].sort(), "arrival push to both child devices only");
+  assert.deepEqual(got[0].msg, { title: `📬 오늘의 단어 ${data.words.length}개가 도착했어요`, body: `복습 ${reviewN}개 + 새 단어 ${data.words.length - reviewN}개 · 앱을 열어 풀어 보세요`, url: "./", tag: "daily" }, "arrival message");
+  assert.deepEqual([got[0].headers.ttl, got[0].headers.topic], ["86400", "daily"]);
+  // 크론(16시)이 만들면 도착 알림, 같은 크론에서 리마인더 시각(20시)이 아니면 리마인더 없음
+  n = pushLog.length;
+  await runPushCron(D1, 16);
+  got = await sentSince(n);
+  assert.deepEqual(got.map((g) => g.msg.tag), ["daily", "daily"], "cron-made daily → arrival push to the two devices");
+
+  // ✏️ 공부 리마인더: remindHour(20시)에 그날(한국 날짜) 끝낸 시험이 없으면 하루 1번, 시각이 다르거나 이미 했으면 없음
+  n = pushLog.length;
+  await runPushCron(D1, 19);
+  assert.equal(pushLog.length, n, "no reminder before the hour");
+  await runPushCron(D1, 20);
+  got = await sentSince(n);
+  assert.deepEqual(got.map((g) => g.msg.tag).sort(), ["reminder", "reminder"], "reminder to both child devices");
+  assert.deepEqual(got[0].msg, { title: "✏️ 오늘 아직 단어 시험을 안 봤어요", body: "짧게라도 한 번 풀어 볼까요?", url: "./", tag: "reminder" });
+  assert.equal(got[0].headers.ttl, "86400");
+  assert(await pushStore.storage.get(`sent:${pkid.id}:${D1}:reminder`), "reminder marked as sent for the day");
+  n = pushLog.length;
+  await runPushCron(D1, 20);
+  assert.equal(pushLog.length, n, "only once a day");
+  await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("d2a", kstAt(D2, 10), { correct: 8 })] } }, 200); // D2 오전에 시험을 봤다
+  n = pushLog.length;
+  await runPushCron(D2, 20);
+  got = await sentSince(n);
+  assert(!got.some((g) => g.msg.tag === "reminder"), "no reminder after a finished test that day");
+  await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("d3p", kstAt(D3, 10), { partial: true })] } }, 200); // D3 에는 중단 기록뿐
+  n = pushLog.length;
+  await runPushCron(D3, 20);
+  got = await sentSince(n);
+  assert.equal(got.filter((g) => g.msg.tag === "reminder").length, 2, "a partial record does not count as studying");
+
+  // 🌙 저녁 요약: 보호자 기기의 summaryHour(21시)에 아이별 오늘 한 줄, 하루 1번. 다른 시각의 보호자 기기는 그 시각에.
+  const devQ = { id: "parent-tablet-q", label: "iPad" };
+  const bQ = await newBrowser("/sub/parent-q");
+  await pcase("/push/subscribe", { ...PARENT, body: parentSub(bQ, devQ, { summaryHour: 22, kinds: { finish: false, summary: true } }) }, 200);
+  await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("d2b", kstAt(D2, 20, 30), { correct: 9, daily: D2 })] } }, 200); // 크론이 만든 D2 오늘의 단어를 풀었다
+  n = pushLog.length;
+  await runPushCron(D2, 21);
+  got = await sentSince(n);
+  assert.equal(got.length, 1, "summary to the 21h parent device only");
+  assert.deepEqual(got[0].msg, { title: "🌙 오늘 공부", body: "용한 ✅ 2회 · 평균 85점 · 오늘의 단어 ✅\n한나 ⬜ 아직", url: "./parent.html#/", tag: "summary" }, "summary lines per child");
+  assert.deepEqual([got[0].endpoint, got[0].headers.ttl, got[0].headers.topic], [bP.subscription.endpoint, "86400", "summary"]);
+  n = pushLog.length;
+  await runPushCron(D2, 21);
+  assert.equal(pushLog.length, n, "summary once a day");
+  await runPushCron(D2, 22);
+  got = await sentSince(n);
+  assert.deepEqual([got.length, got[0].endpoint, got[0].msg.body], [1, bQ.subscription.endpoint, "용한 ✅ 2회 · 평균 85점 · 오늘의 단어 ✅\n한나 ⬜ 아직"], "22h device gets it at 22");
+  await pcase("/push/subscribe", { ...PARENT, body: parentSub(bP, devP, { kinds: { finish: true, summary: false } }) }, 200);
+  n = pushLog.length;
+  await runPushCron(D3, 21);
+  assert.equal(pushLog.length, n, "summary switched off");
+  // remindHour 를 끄면 리마인더 없음
+  await pcase("/family/" + pkid.id + "/plan", { ...PARENT, body: { remindHour: null } }, 200);
+  n = pushLog.length;
+  await runPushCron(D4, 20);
+  got = await sentSince(n);
+  assert(!got.some((g) => g.msg.tag === "reminder"), "no reminder when remindHour is null");
+  // 3일 지난 ‘보냄’ 표시는 크론이 지운다
+  assert((await pushKeys("sent:")).some((k) => k.includes(":" + D1 + ":")), "D1 marks exist");
+  await runPushCron(kstDate(14), 3);
+  const sentLeft = await pushKeys("sent:");
+  assert(!sentLeft.some((k) => k.includes(":" + D1 + ":")) && sentLeft.some((k) => k.includes(":" + D2 + ":")), "marks older than 3 days removed: " + sentLeft.join(","));
+
+  // 만료·실패 정리: 404/410 → 바로 지움, 그 밖(5xx·네트워크·401 등)은 5번 연달아면 지움. 로그에는 상태 코드만(endpoint·키 없음).
+  pushStatus.set(bA.subscription.endpoint, 410);
+  data = await pcase("/push/test", { body: { role: "child", childId: pkid.id, device: devA } }, 502, "push_failed");
+  assert(data.message.includes("만료") && data.status === 410, "expired subscription reported: " + data.message);
+  assert.equal(await pushStore.storage.get("push:child:" + pkid.id + ":" + devA.id), undefined, "410 removes the subscription");
+  await pcase("/push/test", { body: { role: "child", childId: pkid.id, device: devA } }, 404, "no_subscription");
+  const failKey = "push:child:" + pkid.id + ":" + devB.id;
+  for (const [i, status] of [500, "throw", 429, 401, 503].entries()) {
+    pushStatus.set(bA2.subscription.endpoint, status);
+    await pcase("/push/test", { body: { role: "child", childId: pkid.id, device: devB } }, 502, "push_failed");
+    if (i < 4) assert.equal((await pushStore.storage.get(failKey)).failures, i + 1, "failure counted: " + status);
+  }
+  assert.equal(await pushStore.storage.get(failKey), undefined, "five failures in a row remove the subscription");
+  assert(errorLines.some((l) => l.includes("push_rejected") && l.includes("401")), "rejections logged with the status");
+  const secrets = [PUSH_HOST, "push.example.test", VAPID_PRIVATE, bA.subscription.keys.p256dh, bA.subscription.keys.auth, bA2.subscription.keys.auth];
+  assert(!errorLines.some((l) => secrets.some((s) => l.includes(s))), "logs carry no endpoint or key: " + errorLines.filter((l) => l.includes("push")).join(" | "));
+  // 성공하면 실패 횟수는 0으로
+  pushStatus.clear();
+  await pcase("/push/subscribe", { body: childSub(bA2, devB) }, 200);
+  pushStatus.set(bA2.subscription.endpoint, 500);
+  await pcase("/push/test", { body: { role: "child", childId: pkid.id, device: devB } }, 502);
+  pushStatus.clear();
+  await pcase("/push/test", { body: { role: "child", childId: pkid.id, device: devB } }, 200);
+  assert.equal((await pushStore.storage.get(failKey)).failures, 0, "a delivered push resets the failure count");
+  // 아이를 지우면 그 아이 기기들의 구독과 ‘보냄’ 표시도 지운다(보호자 구독은 남는다)
+  await pcase("/family/" + pkid.id, { method: "DELETE", ...PARENT }, 200);
+  assert.deepEqual([await pushKeys("push:child:" + pkid.id + ":"), await pushKeys("sent:" + pkid.id + ":")], [[], []], "child subscriptions and marks removed with the child");
+  assert((await pushKeys("push:parent:")).length === 2, "parent subscriptions stay");
+  await pcase("/push/subscribe", { body: childSub(bA) }, 404, "unknown_child");
+  console.error = realError;
+  globalThis.fetch = dailyMock;
+
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/tutor help/fallback retry/upstream error mapping/family store/detail window+record pages/daily words/child codes/set sync/record restore",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/tutor help/fallback retry/upstream error mapping/family store/detail window+record pages/daily words/child codes/set sync/record restore/web push (key, subscriptions, VAPID JWT verified, aes128gcm decrypted, daily/reminder/finish/summary, expiry cleanup)",
   );
 })().catch((e) => {
   console.error(e);

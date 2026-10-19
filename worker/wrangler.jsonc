@@ -12,7 +12,12 @@
     // 오늘의 단어 생성 모델(텍스트만, 하루 아이당 20단어 안팎). 품질이 아쉬우면 claude-opus-5-5 로.
     "DAILY_MODEL": "claude-sonnet-5-5",
     // 앱이 배포된 주소만 허용 (쉼표로 여러 개). 로컬 개발은 .dev.vars 에서 덮어쓴다.
-    "ALLOWED_ORIGINS": "https://hongtaehwa.github.io"
+    "ALLOWED_ORIGINS": "https://hongtaehwa.github.io",
+    // 알림(Web Push): 푸시 서비스가 보는 연락처(URL). 이메일은 저장소에 두지 않는다.
+    "VAPID_SUBJECT": "https://hongtaehwa.github.io/daily-vocab/",
+    // 알림 공개 키: npm run vapid 로 만든 VAPID_PUBLIC_KEY 를 여기에 붙인다(공개 값). 비어 있으면 알림이 꺼진 채(앱에 ‘알림 서버가 아직 준비되지 않았어요’).
+    // 짝이 되는 비밀 키는 npx wrangler secret put VAPID_PRIVATE_KEY 로만 넣는다. 키를 바꾸면 모든 기기에서 알림을 다시 켜야 한다.
+    "VAPID_PUBLIC_KEY": ""
   },
   // Anthropic 호출을 북미에 고정된 Durable Object(worker.js의 AnthropicRelay)로 보낸다.
   // 한국발 요청이 Cloudflare 홍콩(HKG)에서 실행되면 Anthropic이 403 "Request not allowed"로 거절하기 때문.
@@ -28,8 +33,9 @@
     { "tag": "v2", "new_sqlite_classes": ["FamilyStore"] }
   ],
   // 오늘의 단어: 매시 0분(UTC)에 scheduled()가 실행되어 한국 시각 기준 계획 시각이 지난 아이의 그날 단어를 만든다.
+  // 같은 크론이 알림도 보낸다: 공부 리마인더(아이별 remindHour)·저녁 요약(보호자 기기별 summaryHour).
   "triggers": { "crons": ["0 * * * *"] },
-  // IP당 분당 요청 수 제한. 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE)은 여기에 적지 않고 wrangler secret put 으로 넣는다.
+  // IP당 분당 요청 수 제한. 비밀값(ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE, VAPID_PRIVATE_KEY)은 여기에 적지 않고 wrangler secret put 으로 넣는다.
   "ratelimits": [
     {
       "name": "RATE_LIMITER",

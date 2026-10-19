@@ -82,7 +82,22 @@
   // 오늘의 단어 수준·문제당 제한 시간 선택지와 계획 기본값(Worker parsePlan 과 같은 항목).
   const PLAN_LEVELS = ["초등 고학년 상위권", "중1", "중2 상위권", "중3·고1", "고1·수능 기초", "고2·수능 실전"];
   const TIME_LIMIT_CHOICES = [0, 10, 15, 20, 30, 45, 60];
-  const planDefaults = (plan) => ({ enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false, ...(plan || {}) });
+  const planDefaults = (plan) => ({ enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false, remindHour: null, ...(plan || {}) });
+  // 공부 알림 시각 선택지(보호자 앱 아이 설정 탭, 한국 시각): 없음(null) 또는 오후 3시~오후 10시
+  const REMIND_HOUR_CHOICES = [null, 15, 16, 17, 18, 19, 20, 21, 22];
+
+  // ---- 기기 ----
+  // 보호자 화면·알림 구독에 보일 기기 이름. iPadOS는 Mac처럼 보이므로 터치 지원으로 가른다.
+  function deviceLabel() {
+    const ua = navigator.userAgent || "";
+    if (/DailyVocabApp\//.test(ua)) return /Mobile/.test(ua) ? "Android 폰(앱)" : "Android 태블릿(앱)"; // 갤럭시용 래퍼 앱(android/)
+    if (/iPhone/.test(ua)) return "iPhone";
+    if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return "iPad";
+    if (/Android/.test(ua)) return /Mobile/.test(ua) ? "Android 폰" : "Android 태블릿";
+    if (/Windows/.test(ua)) return "Windows PC";
+    if (/Macintosh/.test(ua)) return "Mac";
+    return "기타 기기";
+  }
 
   // ---- 세트 초안 텍스트 ----
   // 한 줄에 `번호\t영어\t뜻\t별칭|별칭\t발음`(발음은 선택). 탭이 모자라면 ‘번호 영어 뜻’ 공백 구분도 읽는다. 편집기와 백업 검증이 함께 쓴다.
@@ -159,7 +174,8 @@
       return "가족 서버에 연결하지 못했어요. 인터넷 연결을 확인하세요.";
     }
     if (status === 401) return String(path).startsWith("/family") ? "보호자 코드가 맞지 않아요. 다시 입력해 주세요." : "접속 코드가 맞지 않아요. 보호자 설정 · AI 연결에서 다시 입력하세요.";
-    if (status === 404 && !["unknown_child", "no_daily", "unknown_code"].includes(code))
+    if (code === "push_unconfigured") return "알림 서버가 아직 준비되지 않았어요. 보호자가 Worker에 알림 키를 등록하면 켤 수 있어요.";
+    if (status === 404 && !["unknown_child", "no_daily", "unknown_code", "no_subscription"].includes(code))
       return "AI 서버가 아직 이 기능을 지원하지 않아요. 보호자가 Worker를 새 버전으로 다시 배포해 주세요.";
     if (status === 403) return "이 주소에서는 가족 서버를 쓸 수 없어요. 보호자가 ALLOWED_ORIGINS를 확인해 주세요.";
     if (typeof message === "string" && message) return message;
@@ -226,12 +242,94 @@
     }
   }
 
+  // ---- 알림 (Web Push · 갤럭시 앱 로컬 알림) ----
+  // support(): "native"(갤럭시 래퍼 앱의 window.DailyVocabNotify — N2 에서 생긴다) | "push"(PushManager) | "install"(아이폰·아이패드의 Safari 탭: 홈 화면에 설치한 앱에서만 된다) | "none"
+  // permission(): 지금 권한 "granted"|"denied"|"prompt"(묻지 않음). request(): 권한 요청(사용자 터치 안에서 부른다) → 같은 값. 네이티브는 브리지의 permission()(요청 포함).
+  // subscribe(서버 공개 키) → 구독 {endpoint, keys:{p256dh, auth}}(PushSubscription.toJSON; 같은 키의 구독이 있으면 그것), current() → 지금 구독 | null, unsubscribe() → boolean.
+  // native() → 갤럭시 브리지 {available, permission(), schedule({daily, reminder}), skipToday(kind), cancel()} | null.
+  // 테스트: window.__dailyVocabPushImpl 이 있으면 support·permission·request·subscribe·current·unsubscribe 를 그것으로 바꿔 쓴다(Playwright addInitScript 의 가짜 구독).
+  const testPush = () => window.__dailyVocabPushImpl || null;
+  const nativeNotify = () => (window.DailyVocabNotify && window.DailyVocabNotify.available ? window.DailyVocabNotify : null);
+  const appleMobile = () => /iPhone|iPad|iPod/.test(navigator.userAgent || "") || (/Macintosh/.test(navigator.userAgent || "") && navigator.maxTouchPoints > 1);
+  const standalone = () => navigator.standalone === true || (typeof matchMedia === "function" && matchMedia("(display-mode: standalone)").matches);
+  const permissionOf = (p) => (p === "granted" || p === "denied" ? p : "prompt");
+  function base64UrlBytes(text) {
+    const s = String(text || "").trim().replace(/=+$/, "").replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(s + "===".slice((s.length + 3) % 4));
+    return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  }
+  const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  // 서비스워커 등록을 기다린다(앱이 sw.js 를 등록한다). 10초 안에 준비되지 않으면 실패.
+  function pushRegistration() {
+    if (!("serviceWorker" in navigator)) return Promise.reject(Error("이 브라우저는 알림을 지원하지 않아요."));
+    return Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, reject) => setTimeout(() => reject(Error("앱 준비가 끝나지 않았어요. 앱을 다시 열어 주세요.")), 10000)),
+    ]);
+  }
+  async function currentPushSubscription() {
+    if (!("serviceWorker" in navigator)) return null;
+    const reg = await navigator.serviceWorker.getRegistration();
+    return reg && reg.pushManager ? reg.pushManager.getSubscription() : null;
+  }
+  const notify = Object.freeze({
+    support() {
+      const t = testPush();
+      if (t) return t.support ? t.support() : "push";
+      if (nativeNotify()) return "native";
+      if (appleMobile() && !standalone()) return "install";
+      if ("serviceWorker" in navigator && "PushManager" in window && "Notification" in window) return "push";
+      return "none";
+    },
+    native: nativeNotify,
+    permission() {
+      const t = testPush();
+      if (t) return permissionOf(t.permission());
+      return typeof Notification === "undefined" ? "denied" : permissionOf(Notification.permission);
+    },
+    async request() {
+      const t = testPush();
+      if (t) return permissionOf(await t.request());
+      const bridge = nativeNotify();
+      if (bridge) return permissionOf(bridge.permission());
+      if (typeof Notification === "undefined") return "denied";
+      return permissionOf(await Notification.requestPermission());
+    },
+    async subscribe(serverKey) {
+      const t = testPush();
+      if (t) return t.subscribe(serverKey);
+      const key = base64UrlBytes(serverKey);
+      const reg = await pushRegistration();
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        const old = existing.options && existing.options.applicationServerKey;
+        if (!old || sameBytes(new Uint8Array(old), key)) return existing.toJSON();
+        await existing.unsubscribe(); // 서버 키가 바뀌었다(Worker 키 교체): 새 키로 다시 만든다
+      }
+      return (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key })).toJSON();
+    },
+    async current() {
+      const t = testPush();
+      if (t) return t.current();
+      const sub = await currentPushSubscription();
+      return sub ? sub.toJSON() : null;
+    },
+    async unsubscribe() {
+      const t = testPush();
+      if (t) return t.unsubscribe();
+      const sub = await currentPushSubscription();
+      return sub ? sub.unsubscribe() : false;
+    },
+  });
+
   window.Shared = Object.freeze({
     $, h, setFeedback,
     tidy, formatCode, hourLabel, relativeTime, durationText, dayKey, pctOf, WEEKDAYS, modeLabels,
-    AI_SERVER_DEFAULT, normalizeServer, WORD_PATTERN, PLAN_LEVELS, TIME_LIMIT_CHOICES, planDefaults,
+    AI_SERVER_DEFAULT, normalizeServer, WORD_PATTERN, PLAN_LEVELS, TIME_LIMIT_CHOICES, REMIND_HOUR_CHOICES, planDefaults,
+    deviceLabel,
     parseDraft, preparePhoto, canvasToBase64Jpeg,
     ApiError, apiRequest, describeApiError,
     readJson, writeJson,
+    notify,
   });
 })();

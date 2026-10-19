@@ -1,6 +1,6 @@
 # AI 사진 인식·사전 프록시 (Cloudflare Worker)
 
-앱(GitHub Pages)은 Anthropic API를 직접 부르지 않고 이 Worker만 호출합니다. 사진 인식(`/recognize`), 영어 단어 목록의 뜻·발음을 찾는 AI 사전(`/define`), 아이 기기가 보낸 시험 기록을 저장해 보호자 폰에 보여 주는 가족 기록함(`/sync`, `/family`), 아이 단위 세트 저장소(`/sets`, `/family/<childId>/sets`), 그리고 매일 아이 수준에 맞는 ‘오늘의 단어’를 만드는 생성기(`/daily`, 크론)를 처리합니다. Anthropic API 키는 Worker의 비밀값에만 있고, 앱·저장소·태블릿 어디에도 들어가지 않습니다. 가족용 **접속 코드**가 맞는 요청만 처리합니다.
+앱(GitHub Pages)은 Anthropic API를 직접 부르지 않고 이 Worker만 호출합니다. 사진 인식(`/recognize`), 영어 단어 목록의 뜻·발음을 찾는 AI 사전(`/define`), 아이 기기가 보낸 시험 기록을 저장해 보호자 폰에 보여 주는 가족 기록함(`/sync`, `/family`), 아이 단위 세트 저장소(`/sets`, `/family/<childId>/sets`), 매일 아이 수준에 맞는 ‘오늘의 단어’를 만드는 생성기(`/daily`, 크론), 그리고 아이 기기·보호자 폰으로 보내는 알림(Web Push, `/push/…`, 크론)을 처리합니다. Anthropic API 키는 Worker의 비밀값에만 있고, 앱·저장소·태블릿 어디에도 들어가지 않습니다. 가족용 **접속 코드**가 맞는 요청만 처리합니다.
 
 ```
 태블릿 앱 ──(사진 + 접속 코드)──▶ Worker ──(API 키)──▶ Anthropic
@@ -67,6 +67,43 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 - 비용: 아이당 하루 1회, 텍스트 20단어 안팎이라 1원 미만 수준입니다. 품질이 아쉬우면 `DAILY_MODEL`을 `claude-opus-5-5`로 바꾸고 `npm run deploy`.
 - 크론은 Workers 무료 플랜에서 동작합니다. 배포 로그의 `scheduled` 항목 또는 `npm run tail`의 `daily_cron` 줄로 확인할 수 있습니다.
 
+## 알림 (Web Push · VAPID 키)
+
+아이 기기에 📬 오늘의 단어 도착·✏️ 공부 리마인더를, 보호자 폰에 🧒 시험 마침·🌙 저녁 요약을 보냅니다. Worker가 **Web Push**(VAPID 서명 + RFC 8291 aes128gcm 본문 암호화, 외부 라이브러리 없이 WebCrypto)로 Apple·Google 푸시 서비스에 보내고, 앱의 서비스워커(`sw.js`)가 알림을 띄웁니다. 푸시 서비스는 지역 제한이 없어 북미 중계(RELAY)를 거치지 않습니다. 설계는 `docs/NOTIFICATIONS.md`.
+
+**처음 한 번: 키 만들기·등록 (약 2분)**
+1. 키 쌍 만들기(화면에만 출력되고 파일로 저장되지 않습니다):
+   ```bash
+   npm run vapid
+   ```
+2. 출력된 `VAPID_PUBLIC_KEY` 값을 `wrangler.jsonc`의 `vars`에서 `"VAPID_PUBLIC_KEY": ""` 자리에 붙입니다(공개 값이라 커밋해도 됩니다). `VAPID_SUBJECT`는 앱 주소(`https://hongtaehwa.github.io/daily-vocab/`) 그대로 둡니다(이메일을 저장소에 두지 않으려고 URL을 씁니다).
+3. 출력된 `VAPID_PRIVATE_KEY` 값을 비밀값으로 넣습니다(프롬프트에 오른쪽 클릭이나 Ctrl+Shift+V로 붙여넣기). 이 값은 파일·메모·채팅에 남기지 마세요:
+   ```bash
+   npx wrangler secret put VAPID_PRIVATE_KEY
+   ```
+4. 배포:
+   ```bash
+   npm run deploy
+   ```
+5. 아이 기기(설정 → 가족 기록함 → 🔔 이 기기에서 알림 받기)와 보호자 폰(보호자 앱 ⚙️ 설정 → 🔔 알림)에서 켜고 `테스트 알림 보내기`로 확인합니다. 아이폰은 홈 화면에 설치한 앱에서만 됩니다(iOS 16.4+).
+
+키가 없거나 형식이 틀리면 `/push/…`가 503 `push_unconfigured`를 돌려주고 앱은 ‘알림 서버가 아직 준비되지 않았어요’를 보입니다. 다른 기능에는 영향이 없습니다. 배포 순서는 앱(Pages)이 먼저 머지돼도 괜찮습니다(키 등록·배포 뒤 기기에서 켜면 됩니다).
+
+**⚠️ 키를 바꾸지 마세요**: 이미 쓰고 있는 키를 바꾸면(`npm run vapid`를 다시 실행해 등록) 모든 기기의 구독이 무효가 되어 알림이 끊깁니다. 바꿔야 한다면 바꾼 뒤 **모든 아이 기기와 보호자 폰에서 알림을 껐다가 다시 켜야** 합니다(다시 켤 때 앱이 새 키로 구독을 새로 만듭니다. 옛 키의 구독은 전송이 5번 실패하면 서버가 지웁니다).
+
+**보내는 것과 때**
+- `daily`(아이 기기): 크론이 그날 오늘의 단어를 만든 직후, 또는 보호자가 ‘오늘 것 지금 만들기’(`POST /daily/<id>`를 보호자 코드로)로 만든 직후. 아이 기기가 앱을 열어 스스로 만든 때는 보내지 않습니다.
+- `reminder`(아이 기기): 매시 크론에서 아이 계획의 `remindHour`(한국 시각)와 같은 시각에, 그날(한국 날짜) 끝낸 기록(중단 제외)이 없으면 하루 한 번(`sent:<childId>:<날짜>:reminder` 표시).
+- `finish`(보호자 폰): `/sync`로 처음 들어온 완료 기록 중 6시간 안에 끝낸 가장 최근 1건. 한 번에 4개 이상 오면 밀린 기록으로 보고 보내지 않습니다. 보호자 기기의 `kinds.finish`가 꺼져 있으면 보내지 않습니다. 같은 아이 것은 `Topic`으로 합쳐집니다.
+- `summary`(보호자 폰): 매시 크론에서 보호자 기기의 `summaryHour`(기본 21)와 같은 시각에 하루 한 번, 아이별 그날 한 줄(기기도 기록도 없는 아이는 뺌, 보낼 아이가 없으면 보내지 않음).
+- `test`: `POST /push/test`.
+- 문구는 Worker가 만들고(`PUSH_TEXT`), 아이 이름·세트 이름·점수·경고 횟수 외에는 넣지 않습니다. TTL은 daily·reminder·summary 1일, finish 1시간, test 5분.
+
+**구독 저장·정리**
+- `push:child:<childId>:<deviceId>`(가족 코드로만 만듦, 아이당 10대), `push:parent:<deviceId>`(보호자 코드로만, 5대). 같은 기기는 덮어쓰고, 같은 브라우저(endpoint)가 다른 기기 id로 오면 옛 것을 지우며, 상한을 넘으면 가장 오래 소식이 없는 구독부터 지웁니다.
+- 푸시 서비스가 404·410(만료)을 주면 바로 지우고, 그 밖의 실패(5xx·429·네트워크·400/401/403)가 5번 연달아면 지웁니다. 로그에는 상태 코드와 종류만 남고 endpoint·키는 남기지 않습니다(400/401/403은 키 문제일 수 있다는 표시).
+- 아이를 지우면 그 아이 기기들의 구독과 ‘보냄’ 표시도 지웁니다. 크론이 3일 지난 `sent:` 표시를 지웁니다.
+
 ## 지역 차단과 북미 중계 (Durable Object)
 
 한국에서 온 요청은 Cloudflare의 홍콩(HKG) 데이터센터에서 실행될 때가 있는데, Anthropic은 홍콩발 요청을 `403 forbidden: Request not allowed`로 거절합니다. 그래서 Worker는 Anthropic 호출만 북미에 고정된 Durable Object(`AnthropicRelay`, `locationHint: wnam`)를 통해 보냅니다. `wrangler.jsonc`의 `durable_objects`와 `migrations`가 이 설정이며, 무료 플랜에서 동작합니다.
@@ -86,6 +123,7 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 | 분당 요청 제한 | `wrangler.jsonc`의 `ratelimits[0].simple.limit` (기본 30회/분, IP당) |
 | 접속 코드 변경 | `npx wrangler secret put APP_PASSCODE` 후 태블릿의 보호자 설정에서 새 코드 저장 |
 | 보호자 코드 등록·변경 | `npm run parent-code`(= `npx wrangler secret put PARENT_PASSCODE`) 후 보호자 폰의 설정 → 가족 기록함에 새 코드 저장 |
+| 알림 키 | `npm run vapid` → `wrangler.jsonc`의 `VAPID_PUBLIC_KEY` + `npx wrangler secret put VAPID_PRIVATE_KEY` → `npm run deploy`(위 ‘알림’ 절). 한 번 등록한 키는 바꾸지 않습니다 |
 | 워크스페이스 지정 | 키가 특정 워크스페이스에 묶여 있지 않아 `anthropic-workspace-id` 오류가 나면 `wrangler.jsonc`의 `vars`에 `"ANTHROPIC_WORKSPACE_ID": "wrkspc_…"`(Settings → Workspaces의 ID 열) 추가 후 `npm run deploy` |
 | API 키 교체 | `npx wrangler secret put ANTHROPIC_API_KEY` |
 | 요청 로그 보기 | `npm run tail` |
@@ -115,13 +153,17 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 | `GET /family/<childId>?days=<1~365>&limit=<1~500>` · 보호자 코드 | 한 아이의 상세 `{ child, records, recordCount, more, today, questions }`. `records`는 최근 `days`일(기본 30) 안에서 최신순 최대 `limit`개(기본 200), `recordCount`는 전체 기록 수, `more`는 보낸 것보다 오래된 기록이 있으면 true(`questions`는 문제 물어보기 요약 최신 100개). 숫자가 아니거나 범위 밖이면 400, 모르는 아이는 404 `unknown_child` |
 | `GET /family/<childId>/records?before=<ISO>&limit=<1~500>` · 보호자 코드 | 보호자 앱 ‘더 보기’: `before`보다 먼저 끝난(미포함) 기록을 최신순으로 `limit`개(기본 100), `before`가 없으면 가장 최근부터. `{ records, more, serverTime }`. 잘못된 `before`·`limit`는 400, 모르는 아이는 404 `unknown_child`. 요청 제한은 `/family` 버킷 |
 | `DELETE /family/<childId>` · 보호자 코드 | 아이 항목과 기록·오늘의 단어 삭제. `{ ok, deleted }` |
-| `POST /family/<childId>/plan` · 보호자 코드 · JSON `{ enabled, level, dailyCount, hour, timeLimitSec }` | 오늘의 단어 계획과 문제당 제한 시간(0 또는 5~120초, 모든 시험에 적용) 저장(빠진 항목은 유지). `{ ok, child }` |
-| `GET /settings/<childId>` · 가족 또는 보호자 코드 | 아이 기기가 받아 가는 보호자 설정 `{ childId, name, timeLimitSec }` |
+| `POST /family/<childId>/plan` · 보호자 코드 · JSON `{ enabled, level, dailyCount, hour, timeLimitSec, setsLocked, remindHour }` | 오늘의 단어 계획과 문제당 제한 시간(0 또는 5~120초, 모든 시험에 적용)·세트 수정 잠금·공부 알림 시각(`null` 또는 0~23시, 한국 시각) 저장(빠진 항목은 유지). `{ ok, child }` |
+| `GET /settings/<childId>` · 가족 또는 보호자 코드 | 아이 기기가 받아 가는 보호자 설정 `{ childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour }` |
 | `GET /records/<childId>?since=<ISO>&limit=<n>` · 가족 또는 보호자 코드 | 기록 복원: 아이 기기가 자기 기록의 서버 사본을 내려받습니다. `since`가 있으면 그 시각부터(포함) 오름차순, 없으면 최신순으로 `limit`개(최대 500). `{ records: [/sync 와 같은 압축 기록 + receivedAt], more, serverTime }`. 앱은 마지막 `completedAt`을 다음 `since`로 넘기며 겹치는 id는 걸러냅니다. 모르는 아이는 404 `unknown_child`, 잘못된 `since`는 400 |
 | `POST /family/children` · 보호자 코드 · JSON `{ name }` | 아이 만들기. 6자리 `joinCode`가 든 `{ ok, child }` |
 | `POST /family/<childId>/code` · 보호자 코드 | 아이 코드 새로 발급(옛 코드 무효). `{ ok, child }` |
 | `POST /family/<childId>/name` · 보호자 코드 · JSON `{ name }` | 이름 바꾸기. `{ ok, child }` |
-| `POST /join` · 가족 또는 보호자 코드 · JSON `{ code, device: { id, label } }` | 아이 기기 연결. `{ ok, childId, name, timeLimitSec }`. 모르는 코드는 404 `unknown_code` |
+| `POST /join` · 가족 또는 보호자 코드 · JSON `{ code, device: { id, label } }` | 아이 기기 연결. `{ ok, childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour }`. 모르는 코드는 404 `unknown_code` |
+| `GET /push/key` · 가족 또는 보호자 코드 | 알림 공개 키 `{ publicKey }`. 키가 없거나 형식이 틀리면 503 `push_unconfigured`(아래 `/push/…` 모두 같음). 요청 제한 버킷 `/push` |
+| `POST /push/subscribe` · 아이: 가족 코드 / 보호자: 보호자 코드 · JSON `{ role: "child", childId, device: { id, label }, subscription: { endpoint, keys: { p256dh, auth } } }` 또는 `{ role: "parent", device, subscription, kinds: { finish, summary }, summaryHour }` | 알림 구독 저장(같은 기기는 덮어씀). endpoint는 1,000자 이하 https, p256dh 87~88자·auth 22~24자 base64url, `summaryHour` 0~23(기본 21), `kinds` 기본 모두 켬. 보호자 구독에 가족 코드면 401, 모르는 아이는 404 `unknown_child`. `{ ok }` |
+| `POST /push/unsubscribe` · 같은 코드 · JSON `{ role, childId?, device: { id } }` | 구독 삭제(없어도 `{ ok }`) |
+| `POST /push/test` · 같은 코드 · JSON `{ role, childId?, device: { id } }` | 테스트 알림 ‘🔔 알림이 잘 와요’. `{ ok, status }`, 구독이 없으면 404 `no_subscription`, 푸시 서비스가 거절하면 502 `push_failed`(만료면 구독 삭제) |
 | `POST /sets/<childId>` · 가족 또는 보호자 코드 · JSON `{ device?, known: [{ id, updatedAt }], sets: [{ id, name, words, updatedAt }], deleted: [{ id, deletedAt }] }` | 아이 기기의 세트 동기화. `{ ok, sets: [기기에 없거나 더 새 세트 전체], deleted: [지워진 id], summary: [{ id, name, count, updatedAt }], syncedAt }`. 아이당 50세트 초과는 400 `too_many_sets` |
 | `GET /family/<childId>/sets` · 보호자 코드 | 아이의 세트 요약 `{ sets: [{ id, name, count, updatedAt }] }` |
 | `POST /family/<childId>/sets` · 보호자 코드 · JSON `{ set: { id?, name, words } }` | 세트 만들어 보내기(또는 같은 id로 고치기). `{ ok, set: { id, name, count, updatedAt }, summary }` |
@@ -134,8 +176,10 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 
 보안 메모: Origin 검사와 CORS는 다른 웹사이트가 이 Worker를 쓰지 못하게 막고, 접속 코드는 주소를 아는 사람의 무단 사용을 막습니다. 접속 코드는 태블릿 브라우저에 저장되므로, 기기를 잃어버리면 코드를 바꾸세요. 피해 범위는 어차피 Anthropic 콘솔의 사용 한도로 제한됩니다.
 
-`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의)·오늘의 단어(계획·앵커·생성·완료·크론)·아이 코드(아이 만들기·연결·기기·코드 재발급·이름)를 Node에서 확인합니다 (`node tests/worker.cjs`).
+`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의)·오늘의 단어(계획·앵커·생성·완료·크론)·아이 코드(아이 만들기·연결·기기·코드 재발급·이름)·알림(키·구독 검증·코드 역할, 가짜 푸시 서비스로 받은 요청의 VAPID JWT를 공개 키로 검증하고 본문을 RFC 8291로 복호화, 트리거 4종·하루 1번·만료 정리)을 Node에서 확인합니다 (`node tests/worker.cjs`).
 
 2026-10-18 이전에 배포한 Worker에는 `/define`과 가족 기록함(`/sync`, `/family`), 세트 동기화(`/sets`)가 없어 앱의 ‘빈 뜻 AI로 채우기’와 가족 기록함이 “다시 배포” 안내를 띄웁니다. `npm run deploy`로 다시 배포하면 됩니다(앱 배포와 별개, 먼저 배포해도 옛 앱과 호환).
 
 2026-10-19(보호자 앱 C단계) 이전 Worker는 상세(`GET /family/<childId>`)에 `days`·`limit`를 무시하고 전체 기록을 주며 ‘더 보기’ 경로(`/family/<childId>/records`)가 없습니다. 보호자 앱은 그때도 오류 없이 최신 200개만 쓰고 ‘더 보기’ 버튼을 숨기니, 편할 때 `npm run deploy`로 다시 배포하면 됩니다(새 Worker는 옛 보호자 앱과도 호환).
+
+2026-10-19(알림 N1) 이전 Worker에는 `/push/…`가 없어 앱의 ‘알림 받기’가 “다시 배포” 안내를 띄웁니다. 위 ‘알림’ 절대로 키를 등록하고 `npm run deploy` 하세요. 새 Worker의 `/settings`·`/join` 응답에 `dailyEnabled`·`dailyHour`·`remindHour`가 더해졌고 옛 앱은 이를 무시합니다.

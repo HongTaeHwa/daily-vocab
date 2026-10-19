@@ -399,3 +399,15 @@
 ## 25. 알림(2B) — 아이 기기 리마인더와 보호자 알림 (2026-10-19 설계)
 
 설계는 `docs/NOTIFICATIONS.md`. 요지: Worker가 Web Push(VAPID + aes128gcm, WebCrypto만)로 아이 기기에 📬 오늘의 단어 도착·✏️ 공부 리마인더(보호자가 정한 `plan.remindHour`)를, 보호자 폰에 🧒 시험 마침(`/sync` 직후)·🌙 저녁 요약(`summaryHour`)을 보내고 `sw.js`가 띄운다. 아이폰은 홈 화면에 설치한 앱에서만, 갤럭시 래퍼 앱은 Web Push가 없어 로컬 알림(N2, v1.5)으로 같은 두 가지를 띄운다. 구현은 N1(Worker 푸시 기반 + sw.js + 두 앱 UI) → N2(android/) 순서의 PR.
+
+### 25.1 N1 완료 — Worker Web Push 기반 + 서비스워커 + 두 앱 알림 UI (2026-10-19)
+
+릴리스 `20261018-23`, 캐시 v32. **Worker 재배포와 VAPID 키 등록 필요**(`cd worker && npm run vapid` → `npx wrangler secret put VAPID_PRIVATE_KEY` → `wrangler.jsonc`의 `VAPID_PUBLIC_KEY` 채우기 → `npm run deploy`). 키가 없는 Worker 에서는 `/push/…`가 503 `push_unconfigured`이고 앱은 안내만 하며 다른 기능은 그대로다.
+
+- **Worker**: `GET /push/key`, `POST /push/subscribe·unsubscribe·test`(아이 구독은 가족 코드, 보호자 구독은 보호자 코드만, 버킷 `/push`), 구독 키 `push:child:<childId>:<deviceId>`·`push:parent:<deviceId>`, `sendPush`(VAPID ES256 JWT + RFC 8291 aes128gcm, WebCrypto 만, RELAY 안 씀) → `deliver`(404·410 삭제, 5회 연속 실패 삭제, 로그엔 상태 코드만). 트리거: `daily`(크론·보호자 ‘지금 만들기’로 만든 직후, `origin`은 Worker 가 코드 역할로 정함), `reminder`(`plan.remindHour` 시각에 그날 완료 기록이 없으면), `finish`(`/sync`의 새 완료 기록, 6시간 안, 한 번에 3개 이하), `summary`(보호자 기기의 `summaryHour`), 하루 1번 표시 `sent:`(3일 뒤 크론이 정리). `plan.remindHour`(null|0~23), `/settings`·`/join`에 `dailyEnabled, dailyHour, remindHour`. 아이 삭제 때 구독·표시도 삭제.
+- **sw.js**: `push`(→ `showNotification`, 보호자 알림은 보호자 아이콘)·`notificationclick`(같은 앱 창이 있으면 focus + `navigate` 메시지, 없으면 새 창).
+- **shared.js**: `Shared.notify`(`support`·`permission`·`request`·`subscribe`·`current`·`unsubscribe`·`native`, 테스트 훅 `window.__dailyVocabPushImpl`), `deviceLabel`, `REMIND_HOUR_CHOICES`.
+- **아이 앱**: 설정 → 가족 기록함 `#notifyBox`(‘🔔 이 기기에서 알림 받기’ 하나, 상태 ‘🔔 알림 켜짐 · 오늘의 단어 도착 · 공부 알림 오후 8시’). Web Push 구독 또는 갤럭시 브리지(`window.DailyVocabNotify`가 있으면 `schedule`·완료 뒤 `skipToday`·`cancel`), 설정을 받을 때마다 구독 확인·재등록, 연결 해제·지워진 아이 때 정리. `family.push`, `settings` 확장(백업 제외).
+- **보호자 앱**: ⚙️ 설정 🔔 카드(이 폰에서 받기·시험 마침·저녁 요약 18~23시·테스트 알림, `prefs.push`·`prefs.deviceId`, 코드 삭제 때 해지), 아이 설정 탭 ⏰ 공부 알림 시각(`#planRemindHour`, 즉시 저장).
+- **테스트**: `tests/worker.cjs`가 가짜 푸시 서비스로 받은 요청의 VAPID JWT 를 공개 키로 검증하고 본문을 RFC 8291로 복호화한다(암호화 구현의 자동 검증). `family.cjs`·`parent.cjs`는 가짜 구독(`tests/lib/fake-push.cjs`)으로 켜기·끄기·재등록·미설정 Worker 를, `family.cjs`는 가짜 갤럭시 브리지도 확인. 11개 PASS. `sw.js`의 알림 표시·누르기는 실기기 확인 항목.
+- 설계와 다르게 한 결정은 `docs/NOTIFICATIONS.md` 11절 ‘결정 변경(2026-10-19, N1 구현)’.
