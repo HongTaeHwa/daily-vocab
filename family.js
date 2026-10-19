@@ -2,7 +2,7 @@
 // family.js — 가족 기록함 + 오늘의 단어 + 아이 코드 연결.
 // 보호자 폰은 보호자 코드를 저장하면 생기는 ‘아이들’ 탭에서 아이를 만들고(6자리 아이 코드·전용 링크), 아이별 기록을 보고, 오늘의 단어 계획을 정한다.
 // 아이 기기(아이폰·태블릿)는 아이 코드나 전용 링크(?child=코드)로 연결되어 시험을 마칠 때마다 압축 기록을 보내고 매일 ‘오늘의 단어’를 받는다.
-// 같은 코드를 넣은 기기는 한 아이로 묶인다. quiz.js 다음, sets.js 앞에 불러오고 sets.js가 마지막에 initFamily()를 부른다.
+// 같은 코드를 넣은 기기는 한 아이로 묶인다. shared.js·quiz.js 다음, editor.js·sets.js 앞에 불러오고 sets.js가 마지막에 initFamily()를 부른다.
 // 세트는 아이에게 속한다: 연결된 기기는 POST /sets/<childId>로 세트를 올리고 다른 기기·보호자가 바꾼 것을 받아 같은 아이의 기기가 항상 같은 세트를 본다(아래 ‘세트 동기화’).
 // 기록 복원: 새 기기나 다시 설치한 앱은 기록이 비어 있으므로 GET /records/<childId>로 서버 사본(압축 기록)을 내려받아 ‘요약 기록’(restored: true)으로 기록 탭에 넣는다(아래 ‘기록 복원’).
 // 저장 키 daily_vocab_family_v1 = {childId, childName, joinCode, pendingCode, deviceId, sendEnabled, lastSyncAt, lastError, pending:[기록 id], parentCode,
@@ -21,11 +21,8 @@ const FAMILY_MISSED_LIMIT = 200; // 기록 하나에 담는 틀린 단어 수 (W
 const ANCHOR_LIMIT = 60; // 교재 앵커: 최근 세트에서 보내는 영어 단어 수 (Worker 상한과 같음)
 const DAILY_CHECK_MS = 10 * 60 * 1000; // 오늘 것이 없거나 꺼져 있을 때, 또는 다른 기기의 완료를 확인할 때 다시 물어보는 간격
 const JOIN_CODE_PATTERN = /^\d{6}$/;
-const PLAN_LEVELS = ["초등 고학년 상위권", "중1", "중2 상위권", "중3·고1", "고1·수능 기초", "고2·수능 실전"];
-const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
-const tidy = (s) => String(s ?? "").replace(/[\t\r\n]+/g, " ").trim();
-const hourLabel = (h) => (h < 12 ? "오전 " : "오후 ") + (h % 12 || 12) + "시";
-const formatCode = (code) => (code ? String(code).slice(0, 3) + " " + String(code).slice(3) : "");
+// shared.js 의 서식·날짜·계획 상수. $·setFeedback·modeLabels 는 quiz.js, AI_SERVER_DEFAULT·normalizeServer·WORD_PATTERN 은 sets.js 머리에서 꺼낸다.
+const { tidy, formatCode, hourLabel, relativeTime, durationText, dayKey, pctOf, WEEKDAYS, PLAN_LEVELS, TIME_LIMIT_CHOICES, planDefaults } = Shared;
 const appBaseUrl = () => new URL("./", location.href).href;
 const linkFor = (code) => appBaseUrl() + "?child=" + code;
 
@@ -146,12 +143,7 @@ async function fetchSettings(options = {}) {
   }
 }
 function writeFamily() {
-  try {
-    localStorage.setItem(FAMILY_KEY, JSON.stringify(family));
-    return true;
-  } catch {
-    return false;
-  }
+  return Shared.writeJson(FAMILY_KEY, family);
 }
 // 보호자 화면에 보일 기기 이름. iPadOS는 Mac처럼 보이므로 터치 지원으로 가른다.
 function deviceLabel() {
@@ -180,43 +172,9 @@ function familyServer() {
 function syncPasscode() {
   return aiConfig()?.passcode || family.parentCode || "";
 }
+// 요청·오류 문구는 shared.js apiRequest/describeApiError(오류는 ApiError{status, code, message}).
 async function familyRequest(path, { method = "POST", body, passcode, timeout = FAMILY_TIMEOUT_MS } = {}) {
-  const server = familyServer();
-  if (!server) throw Object.assign(Error("AI 서버 주소가 올바르지 않아요. 보호자 설정 · AI 연결을 확인하세요."), { status: 0 });
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  let response;
-  try {
-    response = await fetch(server + path, {
-      method,
-      headers: { "content-type": "application/json", "x-app-passcode": passcode },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch (e) {
-    throw Object.assign(
-      Error(e?.name === "AbortError" ? "가족 서버가 응답하지 않아요(시간 초과)." : "가족 서버에 연결하지 못했어요. 인터넷 연결을 확인하세요."),
-      { status: 0 },
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch {}
-  if (response.status === 200 && payload) return payload;
-  const viewing = path.startsWith("/family");
-  const code = payload?.error;
-  let message;
-  if (response.status === 401) message = viewing ? "보호자 코드가 맞지 않아요. 다시 입력해 주세요." : "접속 코드가 맞지 않아요. 보호자 설정 · AI 연결에서 다시 입력하세요.";
-  else if (response.status === 404 && !["unknown_child", "no_daily", "unknown_code"].includes(code))
-    message = "AI 서버가 아직 이 기능을 지원하지 않아요. 보호자가 Worker를 새 버전으로 다시 배포해 주세요.";
-  else if (response.status === 403) message = "이 주소에서는 가족 서버를 쓸 수 없어요. 보호자가 ALLOWED_ORIGINS를 확인해 주세요.";
-  else if (typeof payload?.message === "string" && payload.message) message = payload.message;
-  else if (response.status === 429) message = "요청이 너무 많아요. 잠시 후 다시 시도하세요.";
-  else message = `가족 서버 오류 ${response.status}`;
-  throw Object.assign(Error(message), { status: response.status, code });
+  return Shared.apiRequest(familyServer(), path, { method, body, passcode, timeout });
 }
 
 // ---- 아이 기기: 기록 보내기 ----
@@ -1081,33 +1039,10 @@ function renderMissedTop(records) {
     box.append(chip);
   }
 }
-// 오늘·최근 7일은 이 폰의 현지 날짜로 센다(서버는 한국 시각으로 저장).
-const dayKey = (value) => {
-  const d = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(d.getTime()) ? "" : [d.getFullYear(), d.getMonth() + 1, d.getDate()].join("-");
-};
-const pctOf = (r) => (r.total ? Math.round((r.correct / r.total) * 100) : 0);
-function relativeTime(iso) {
-  const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms)) return "";
-  const minutes = Math.floor(ms / 60000);
-  if (minutes < 1) return "방금";
-  if (minutes < 60) return minutes + "분 전";
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return hours + "시간 전";
-  const days = Math.floor(hours / 24);
-  if (days < 7) return days + "일 전";
-  return new Date(iso).toLocaleDateString("ko-KR");
-}
-function durationText(ms) {
-  if (!Number.isInteger(ms) || ms < 0) return "";
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)}분 ${s % 60}초`;
-}
+// 오늘·최근 7일은 이 폰의 현지 날짜로 센다(dayKey, shared.js).
 function planOf(child) {
-  return { enabled: false, level: "중2 상위권", dailyCount: 10, hour: 16, timeLimitSec: 0, setsLocked: false, ...(child?.plan || {}) };
+  return planDefaults(child?.plan);
 }
-const TIME_LIMIT_CHOICES = [0, 10, 15, 20, 30, 45, 60];
 const timeLimitLabel = (s) => (s ? `${s}초` : "없음");
 function dailyStatusText(c) {
   const plan = planOf(c);

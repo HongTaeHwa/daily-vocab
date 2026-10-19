@@ -1,6 +1,9 @@
 "use strict";
 // sets.js — 세트 만들기·수정(단어 표 편집기, 이름 바꾸기, 사진 → AI 서버), 백업/가져오기, 보호자 설정(AI 연결), 설치·서비스워커.
 // 시험 진행·기록·화면 전환은 quiz.js 에 있다. 보호자 설정(AI 연결) 동작은 바꾸지 않는다.
+// shared.js 의 서버 주소·단어 규칙·초안 파서(family.js·테스트도 이 전역 이름을 쓴다). clean 은 tidy 의 옛 이름.
+const { AI_SERVER_DEFAULT, normalizeServer, WORD_PATTERN, parseDraft, readJson, writeJson } = Shared;
+const clean = tidy;
 let editingId = null,
   extractGeneration = 0,
   photoUrls = [];
@@ -208,27 +211,6 @@ $("pickPhotos").onclick = () => $("photos").click();
 $("takePhoto").onclick = () => $("camera").click();
 
 // ---- 초안(텍스트) ↔ 단어 표 ----
-function parseDraft(text) {
-  const rows = text
-    .split("\n")
-    .filter((l) => l.trim())
-    .map((line, i) => {
-      let parts = line.split("\t");
-      if (parts.length < 3) {
-        const match = line.trim().match(/^(?:(\d+)\s+)?([A-Za-z][A-Za-z '-]*?)\s+([가-힣].*)$/);
-        parts = match ? [match[1] || String(i + 1), match[2], match[3], ""] : ["" + (i + 1), line, "", ""];
-      }
-      return {
-        id: parts[0].trim(),
-        en: parts[1].trim(),
-        ko: parts[2].trim(),
-        aliases: (parts[3] || "").split("|").map((x) => x.trim()).filter(Boolean),
-        ipa: (parts[4] || "").trim(),
-        hangul: "",
-      };
-    });
-  return rows;
-}
 function updateWordCount(n) {
   $("wordCount").textContent = n ? `${n}단어` : "단어 없음";
 }
@@ -575,28 +557,12 @@ function canvasToBase64Jpeg(canvas) {
 // 앱은 Worker 주소와 가족용 접속 코드만 저장한다. Anthropic API 키는 Worker 비밀값에만 있다.
 // 설정은 이 브라우저의 localStorage에만 두고 백업 JSON·CSV로 내보내지 않는다.
 const AI_STORAGE_KEY = "daily_vocab_ai_v2";
-// 배포한 Worker 주소. 보호자는 접속 코드만 입력하면 된다.
-const AI_SERVER_DEFAULT = "https://daily-vocab-ai.reonwipe.workers.dev";
+// 배포한 Worker 주소(AI_SERVER_DEFAULT)와 주소 검사(normalizeServer)는 shared.js. 보호자는 접속 코드만 입력하면 된다.
 try {
   localStorage.removeItem("daily_vocab_ai_v1"); // 이전 버전이 기기에 저장했던 API 키 제거
 } catch {}
-const clean = (s) => String(s ?? "").replace(/[\t\r\n]+/g, " ").trim();
-function normalizeServer(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  try {
-    const u = new URL(raw);
-    const local = ["localhost", "127.0.0.1"].includes(u.hostname);
-    if (u.protocol === "https:" || (u.protocol === "http:" && local)) return u.origin + u.pathname.replace(/\/+$/, "");
-  } catch {}
-  return null;
-}
 function savedAi() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(AI_STORAGE_KEY) || "null");
-    if (parsed && typeof parsed === "object") return parsed;
-  } catch {}
-  return null;
+  return readJson(AI_STORAGE_KEY, (v) => v && typeof v === "object");
 }
 function aiConfig() {
   const saved = savedAi();
@@ -755,8 +721,7 @@ async function judgeMeaning(word, answer) {
 judgeMeaning.available = () => Boolean(aiConfig()) && navigator.onLine !== false;
 
 // ---- AI 작업 공통(사진 인식·빈 뜻 채우기): 한 번에 하나만, 취소·시간 초과·버튼 잠금 ----
-// 사전에 물어볼 수 있는 영어: 영문자로 시작하는 단어·짧은 구(공백, 마침표, 하이픈, 아포스트로피, 40자 이하). Worker와 같은 규칙.
-const WORD_PATTERN = /^[A-Za-z][A-Za-z .'’-]{0,39}$/;
+// 사전에 물어볼 수 있는 영어 규칙(WORD_PATTERN)은 shared.js(Worker와 같은 규칙).
 const DEFINE_BATCH = 40;
 function requireAiConfig(reason) {
   const config = aiConfig();
@@ -1007,20 +972,13 @@ const LOOKUP_LIMIT = 500;
 const LOOKUP_TIMEOUT_MS = 30000;
 const lookupKey = (en) => String(en || "").trim().toLowerCase();
 function readLookups() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(LOOKUPS_KEY) || "[]");
-    return Array.isArray(saved) ? saved.filter((x) => x && typeof x.en === "string" && typeof x.ko === "string").slice(0, LOOKUP_LIMIT) : [];
-  } catch {
-    return [];
-  }
+  return (readJson(LOOKUPS_KEY, Array.isArray) || []).filter((x) => x && typeof x.en === "string" && typeof x.ko === "string").slice(0, LOOKUP_LIMIT);
 }
 let lookups = readLookups();
 let lookupBusy = false;
 let currentLookup = null;
 function writeLookups() {
-  try {
-    localStorage.setItem(LOOKUPS_KEY, JSON.stringify(lookups));
-  } catch {}
+  writeJson(LOOKUPS_KEY, lookups);
 }
 function rememberLookup(entry) {
   const key = lookupKey(entry.en), now = new Date().toISOString();
@@ -1226,19 +1184,12 @@ const TUTOR_LIMIT = 100;
 const TUTOR_TIMEOUT_MS = 120000;
 const TUTOR_KIND_LABELS = { explain: "풀이 설명", translate: "해석", grammar: "어법 설명", check: "내 답 확인", ask: "직접 질문" };
 function readTutorHistory() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(TUTOR_KEY) || "[]");
-    return Array.isArray(saved) ? saved.filter((x) => x && typeof x.id === "string" && typeof x.askedAt === "string").slice(0, TUTOR_LIMIT) : [];
-  } catch {
-    return [];
-  }
+  return (readJson(TUTOR_KEY, Array.isArray) || []).filter((x) => x && typeof x.id === "string" && typeof x.askedAt === "string").slice(0, TUTOR_LIMIT);
 }
 let tutorHistory = readTutorHistory();
 let tutorFile = null, tutorKind = "explain", tutorAbort = null, tutorPreviewUrl = "";
 function writeTutorHistory() {
-  try {
-    localStorage.setItem(TUTOR_KEY, JSON.stringify(tutorHistory));
-  } catch {}
+  writeJson(TUTOR_KEY, tutorHistory);
 }
 function setTutorFile(file) {
   tutorFile = file || null;
