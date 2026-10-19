@@ -257,6 +257,8 @@
 - 아이 기기 동작·서버는 바뀌지 않았다. 버전 `20261018-7`, 캐시 v16(셸에 parent.html·보호자 매니페스트·아이콘 추가).
 - 보완(2026-10-18): 아이 기기에는 보호자 코드 칸(`#parentBox`)과 ‘아이 기기처럼 보기’를 아예 보이지 않는다. 보호자 코드는 보호자 화면(`parent.html` 설치 또는 ‘설치 없이 보호자 화면 열기’ = `?mode=parent`)에서만 넣는다. 보호자는 갤럭시 APK가 필요 없다(APK는 시험을 푸는 아이 태블릿용). 이미 코드를 저장한 기기는 그대로 보호자 모드다. 버전 `20261018-8`, 캐시 v17.
 
+> 2026-10-19: 이 절의 보호자 모드(아이 앱 안에서 `?mode=parent`·`isParentMode`로 화면을 바꾸던 방식)는 보호자 앱 `parent.html`로 대체됐다(24.2절). 옛 설치는 자동으로 옮겨진다.
+
 ## 15. 세트 동기화 — 세트는 아이 단위 (2026-10-18)
 
 배경: 보호자 화면에서 모든 아이가 똑같은 세트 하나(기본 예제)를 보였다. 세트는 기기 안(localStorage)에만 있고 가족 기록함은 세트 이름·개수만 받았기 때문이다. 새로 설치한 앱(갤럭시 APK의 WebView, 아이폰 홈 화면 앱)은 모두 예제 세트 하나로 시작하고, 아들이 예전 브라우저에서 만든 세트 3개는 그 브라우저에만 남아 있었다. 사용자가 ‘아이 단위 세트 동기화(빈 상태 허용·보호자 세트 보내기)’를 승인했다.
@@ -364,3 +366,17 @@
 - **`sets.js`**: `SetEditor.mount($("editor"), {ai: aiBridge, guard, onSave, onClose, onRename, onDelete, onNeedAi})`와 기기 저장 콜백(`keepWordDetails`·`saveSetLocally`·`renameSetLocally`·`deleteSetLocally`), `openEditor` 래퍼만 남았다(1,428 → 약 810행). 보호자 분기(`editorForChild` → `sendSetToChild`/`returnToChild`)는 콜백으로 감싸 그대로 두었고 B단계에서 걷어 낸다.
 - **테스트**: `tests/lib/fake-family-worker.cjs`(`createFakeWorker`)를 `family.cjs`·`daily.cjs`가 함께 쓴다. 검증 내용·순서는 그대로.
 - 설계와 다르게 한 결정(편집기를 기존 `#editor` 섹션에 붙임, `ai`를 함수로도 받음, `guard`·`onNeedAi` 옵션, 사진 도우미를 `Shared`에 둠 등)은 `docs/PARENT_REDESIGN.md` 5.2·5.3·5.10의 ‘결정 변경’.
+
+### 24.2 B단계 완료 — 보호자 앱 새로 쓰기 (2026-10-19)
+
+보호자 앱을 아이 앱의 ‘모드’에서 떼어 `parent.html` 자체를 보호자 앱으로 만들었다. 릴리스 `20261018-21`, 캐시 v30. Worker 변경 없음(재배포 불필요).
+
+- **페이지·코드**: `parent.html`(상단 바·뷰 섹션 6개 `#setup #today #children #child #editor #settings`·하단 탭 3개·토스트·부트스트랩) + `parent.css`(공통 토큰·편집기 규칙은 index.html 에서 복사, 두 앱 CSS는 합치지 않음) + `parent.js`(약 1,350행, 전역 `window.ParentApp`). 로드 순서 `shared.js → editor.js → parent.js`. 아이 앱 코드(quiz.js·family.js·sets.js)는 싣지 않는다.
+- **구조(5.4)**: 저장 키 `daily_vocab_parent_v1` 하나 + `migrate()`(키가 없을 때 1회: `daily_vocab_family_v1.parentCode`, `daily_vocab_ai_v2.server`, `daily_vocab_family_cache_v1.children` → 옛 캐시·`daily_vocab_mode_v1` 삭제, 아이 키에서는 `parentCode`·`parentModeOff`만 제거), `createStore`(patch 마다 저장·다시 그리기, 1MB 넘으면 오래 본 아이 상세부터 저장 제외), `putChild`(목록·상세 동시 갱신), `api`(`Shared.apiRequest` + 보호자 코드), 해시 라우터(`#/`·`#/children`·`#/child/<id>/<탭>`·`#/child/<id>/sets/<new|id>`·`#/settings`·`#/setup`, 코드 없으면 `#/setup`, `history.state.idx`로 앱 안에서만 되돌아가기, 하위 탭은 history 를 늘리지 않음, 편집기를 떠날 때 미저장 확인), `computeStats` 순수 함수, 캐시 우선 자동 갱신(시작·화면 복귀·온라인 복귀·라우트 진입 때 10분 경과 시).
+- **화면(5.5)**: 오늘(아이마다 카드 1장 — 오늘 횟수·평균·🔥 연속·오늘의 단어·⚠️/⏱/📷·7일 띠·이번 주 vs 지난주 ▲▼, 기기 없는 아이는 코드·링크 복사), 아이들(목록·아이 추가 → 그 아이 설정 탭), 아이 화면 하위 탭 5개(기록: 요약 띠·자주 틀린 단어·세트/기간 필터·날짜별 기록 / 세트: 행 통계·보기·수정·삭제·보내기·🔒 잠금 즉시 저장 / 오늘의 단어: 계획 폼·지금 만들기·미리보기 / 설정: 코드·링크·기기·이름·⏱ 제한 시간 즉시 저장·이름 확인 2단계 삭제 / 질문), 설정(코드 바꾸기·삭제, 고급 서버 주소, 🔔 알림 자리, 아이용 앱 열기·설치 안내, 앱 정보), 코드 입력(확인 뒤에만 저장, 설치 안내 접힘). 결과 문구는 토스트 + 칸 아래 문구(아이별 기억).
+- **데이터**: Worker 의 `GET /family/<id>`가 아직 전체 기록을 주므로 최신 200개만 캐시·표시하고 ‘전체 N회 중 최근 200개’를 알린다. 통계는 그 안(30일 창)에서 계산. 코드 입력 → 오늘 카드까지 요청은 `GET /family` 1회.
+- **아이 앱 정리(5.8)**: `index.html`에서 `#family` 뷰·`#tabFamily`·`#parentBox`·`#parentModeRow`·`.child-only`·보호자 CSS 제거, `quiz.js` `showView` 보호자 분기 제거, `family.js` 보호자 대시보드·모드 판정 약 840행 제거(1,671 → 834행), `sets.js` `editorForChild` 분기·`aiConfig`의 보호자 코드 대체 제거. 남은 `parentCode`·`parentModeOff`는 `initFamily`가 지운다.
+- **호환**: `index.html` `<head>`의 동기 스크립트가 `?mode=parent`, `daily_vocab_mode_v1 === "parent"`, 보호자 코드만 있고 아이로 연결되지 않은 기기를 `location.replace("./parent.html")`로 옮기고 `document.write('<plaintext>')`로 나머지 문서를 읽지 않는다(아이 앱 스크립트가 옛 코드를 지우기 전에 보호자 앱이 이전). `?mode=child`는 기억한 모드를 지운다. `manifest-parent.webmanifest`의 `start_url`은 `/daily-vocab/parent.html`.
+- **서비스워커**: SHELL 에 `parent.js`·`parent.css` 추가, 오프라인 내비게이션은 경로가 `parent.html`이면 보호자 앱 셸.
+- **테스트**: `tests/parent.cjs`·`tests/parent-sets.cjs` 신설(가짜 Worker 공용, `/recognize`·`/define` 추가), `family.cjs`·`daily.cjs`는 아이 기기 흐름만(보호자가 보낸 세트·계획은 가짜 Worker 에 직접 심음), `pwa.cjs`에 보호자 앱 오프라인 셸·모든 화면 3가지 폭·매니페스트, `app-update.cjs`에 보호자 앱 버전·자원. 11개 PASS.
+- 설계와 다르게 한 결정은 `docs/PARENT_REDESIGN.md` 5.4·5.5·5.8·5.10의 ‘결정 변경(2026-10-19, B단계 구현)’.
