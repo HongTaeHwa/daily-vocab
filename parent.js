@@ -565,6 +565,119 @@
     if (e.key === "Enter") $("saveParentStart").click();
   });
 
+  // ===== [today] 오늘 (#/): 아이마다 카드 한 장 =====
+  function dailyText(c) {
+    const plan = planDefaults(c.plan);
+    if (!plan.enabled) return "📬 오늘의 단어 꺼짐";
+    const t = c.today;
+    if (t?.completed) return `오늘의 단어 ✅ ${t.completed.correct} / ${t.completed.total}`;
+    if (t?.exists) return "📬 오늘의 단어 도착 · 아직 안 풀었어요";
+    return `📬 오늘의 단어 아직 없음 (${hourLabel(plan.hour)}에 만들어요)`;
+  }
+  function weekStrip(days) {
+    return h(
+      "div",
+      { class: "week-dots", "aria-label": "최근 7일 시험" },
+      days.map((d) =>
+        h(
+          "span",
+          { class: "day" + (d.count ? " done" : "") + (d.today ? " today" : ""), title: d.count ? `${d.label}: ${d.count}회 · 평균 ${d.avg}점` : `${d.label}: 시험 없음` },
+          h("small", null, d.weekday),
+          h("b", null, d.count ? `${d.avg}점` : "·"),
+        ),
+      ),
+    );
+  }
+  function trendText(week, prev) {
+    const parts = [`이번 주 ${week.count}회` + (week.count ? ` · 평균 ${week.avg}점` : "")];
+    parts.push(prev.count ? `지난주 ${prev.count}회 · ${prev.avg}점` : "지난주 기록 없음");
+    const line = h("p", { class: "muted" }, parts.join(" · "));
+    if (week.count && prev.count && week.avg !== prev.avg) {
+      const up = week.avg > prev.avg;
+      line.append(" ", h("span", { class: up ? "trend-up" : "trend-down" }, `${up ? "▲" : "▼"} ${Math.abs(week.avg - prev.avg)}점`));
+    }
+    return line;
+  }
+  function childCard(c) {
+    const linked = devicesOf(c).length > 0;
+    const go = () => router.go(childPath(c.id, linked ? "records" : "settings"));
+    const card = h("article", { class: "child-card" + (linked ? "" : " unlinked"), dataset: { child: c.id }, tabindex: 0, role: "link", "aria-label": `${c.name} 자세히 보기`, onclick: go });
+    card.onkeydown = (e) => {
+      if (e.key === "Enter") go();
+    };
+    const stop = (fn) => (e) => {
+      e.stopPropagation();
+      fn();
+    };
+    const head = h("div", { class: "child-head" }, h("strong", { class: "child-name" }, "🧒 " + c.name));
+    if (!linked) {
+      // 아직 기기가 없는 아이: 지금 할 일(코드·링크 보내기) 하나만
+      const code = JOIN_CODE.test(c.joinCode || "") ? c.joinCode : "";
+      head.append(h("span", { class: "pill warn" }, "연결 전"));
+      card.append(
+        head,
+        h("p", { class: "card-line" }, "📲 아이 기기를 연결해 주세요"),
+        code ? h("p", { class: "card-line" }, "아이 코드 ", h("strong", { class: "code-text" }, formatCode(code))) : h("p", { class: "muted" }, "아이 코드가 없어요. 설정에서 코드를 새로 만들어 주세요."),
+        h(
+          "div",
+          { class: "actionbar" },
+          code ? h("button", { type: "button", class: "btn small primary", onclick: stop(() => copyText(linkFor(code), "아이 전용 링크", c.id)) }, "링크 복사") : null,
+          h("button", { type: "button", class: "btn small outline", onclick: stop(go) }, "연결 방법 보기"),
+        ),
+      );
+      return card;
+    }
+    const records = recordsOf(c.id);
+    const stats = computeStats(records, { days: 7 });
+    const t = stats.today;
+    head.append(
+      h(
+        "span",
+        { class: "badges" },
+        h("span", { class: "pill " + (t.count ? "ok" : "warn") }, t.count ? `오늘 시험 ✅ ${t.count}회 · 평균 ${t.avg}점` : "오늘 시험 아직"),
+        stats.streak ? h("span", { class: "streak" }, `🔥 ${stats.streak}일`) : null,
+      ),
+    );
+    const latest = records[0];
+    const warnings = [t.away ? `⚠️ 오늘 화면 이탈 ${t.away}회` : "", t.timeouts ? `⏱ 시간 초과 ${t.timeouts}개` : ""].filter(Boolean);
+    card.append(
+      head,
+      h("p", { class: "card-line" }, dailyText(c)),
+      warnings.length ? h("p", { class: "warn-line" }, warnings.join(" · ")) : null,
+      c.questionCount ? h("p", { class: "card-line" }, `📷 물어본 문제 ${c.questionCount}개` + (c.lastQuestionAt ? ` · 마지막 ${relativeTime(c.lastQuestionAt)}` : "")) : null,
+      weekStrip(stats.days),
+      trendText(stats.week, stats.prevWeek),
+      h(
+        "p",
+        { class: "muted" },
+        latest ? `마지막 시험: ${relativeTime(latest.completedAt)} · ${latest.setName} · ${pctOf(latest)}점${latest.partial ? " (중단)" : ""}` : "아직 시험 기록이 없어요.",
+      ),
+    );
+    return card;
+  }
+  views.today = () => {
+    const s = store.get();
+    $("todayDate").textContent = dateText(new Date());
+    const box = $("familyOverview");
+    box.textContent = "";
+    if (!s.children.length) {
+      const fetched = Boolean(s.fetchedAt);
+      box.append(
+        h(
+          "div",
+          { class: "empty-box" },
+          h("strong", null, fetched ? "아직 등록된 아이가 없어요" : loading ? "아이들 기록을 불러오는 중…" : "아직 불러온 기록이 없어요"),
+          fetched ? h("p", { class: "muted" }, "‘아이 추가’에서 아이를 만들고, 받은 아이 코드를 아이 기기에 넣어 주세요.") : null,
+          fetched ? h("div", { class: "actionbar", style: "justify-content:center" }, h("button", { type: "button", class: "btn primary", id: "goAddChild", onclick: () => router.go("#/children") }, "➕ 아이 추가")) : null,
+        ),
+      );
+      return;
+    }
+    if (!s.children.some((c) => recordsOf(c.id).length))
+      box.append(h("p", { class: "muted", style: "grid-column:1/-1;margin:0" }, "아직 기록을 보낸 아이가 없어요. 아이 기기를 연결하면 시험을 마칠 때마다 여기에 보여요."));
+    for (const c of s.children) box.append(childCard(c));
+  };
+
   // ===== [start] 시작: 탭·새로고침·라우터·자동 갱신 =====
   $("tabToday").onclick = () => router.go("#/");
   $("tabChildren").onclick = () => router.go("#/children");
