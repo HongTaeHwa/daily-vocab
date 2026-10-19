@@ -147,11 +147,13 @@ AI 인식은 보호자가 한 번 만들어 두는 **가족용 AI 서버**(Cloud
 
 ## 배포
 
-`main` 브랜치의 루트 디렉터리를 GitHub Pages 게시 소스로 사용합니다. 진입점은 `index.html`이며 빌드 단계가 없습니다. 사진 인식은 `worker/`의 Cloudflare Worker가 담당하며 별도로 배포합니다. 앱 셸(`index.html`, `quiz.js`, `family.js`, `sets.js`)을 바꿀 때는 버전 문자열과 `sw.js`의 CACHE 버전을 함께 올립니다(`CLAUDE.md` 참고).
+`main` 브랜치의 루트 디렉터리를 GitHub Pages 게시 소스로 사용합니다. 진입점은 `index.html`이며 빌드 단계가 없습니다. 사진 인식은 `worker/`의 Cloudflare Worker가 담당하며 별도로 배포합니다. 앱 셸(`index.html`, `shared.js`, `quiz.js`, `family.js`, `editor.js`, `sets.js`)을 바꿀 때는 버전 문자열과 `sw.js`의 CACHE 버전을 함께 올립니다(`CLAUDE.md` 참고).
 
 ## 개발 및 브라우저 검증
 
 앱은 빌드나 런타임 패키지 없이 정적 서버로 실행합니다. `node .claude/dev-server.cjs`가 저장소를 GitHub Pages와 같은 `/daily-vocab/` 경로(`http://127.0.0.1:8000/daily-vocab/`)로 제공합니다.
+
+화면 코드는 전역 스크립트 다섯 개를 이 순서로 불러옵니다: `shared.js`(공통 도우미·서버 요청) → `quiz.js`(화면 전환·시험·기록) → `family.js`(가족 기록함·오늘의 단어·보호자 화면) → `editor.js`(세트 편집기) → `sets.js`(세트 저장·백업·AI 연결·찾기·문제 물어보기). 가족 서버 가짜 응답은 `tests/lib/fake-family-worker.cjs` 하나를 `family`·`daily` 테스트가 함께 씁니다.
 
 테스트는 전역 설치된 Playwright(`npm i -g playwright && npx playwright install chromium`)로 실행합니다. `node .claude/run-tests.cjs`가 서버를 자동으로 띄우고 아래를 모두 실행합니다. 개별 실행은 `CHROMIUM_PATH=/usr/bin/chromium node tests/browser.cjs`처럼 하며 기본 URL은 `APP_URL`로 바꿀 수 있습니다. 테스트는 별도의 브라우저 컨텍스트에서 실행하므로 실제 사용자 저장 자료에 영향을 주지 않습니다.
 

@@ -18,7 +18,7 @@ const { chromium } = require("playwright");
     }),
   );
   await p.goto(url);
-  if (!(await p.textContent("#appStatus")).includes("20261018-19"))
+  if (!(await p.textContent("#appStatus")).includes("20261018-20"))
     throw Error("version missing");
   await p.click("#createSet");
   await p.setInputFiles("#photos", {

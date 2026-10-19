@@ -1,13 +1,12 @@
 "use strict";
 // quiz.js — 데이터 로드/이전, 화면(뷰) 전환, 시험 진행(쉬기·이어서·그만하기), 결과, 기록, 음성 인식.
-// 세트 편집·사진 인식·백업·보호자 설정은 sets.js 에 있다. 저장 키는 바꾸지 않는다(사용자 기록 호환).
-const $ = (id) => document.getElementById(id);
+// 세트 편집기는 editor.js, 세트 저장·사진 인식 요청·백업·보호자 설정은 sets.js 에 있다. 저장 키는 바꾸지 않는다(사용자 기록 호환).
+const { $, setFeedback, modeLabels } = Shared; // shared.js
 const SPEECH = window.SpeechRecognition || window.webkitSpeechRecognition;
 const setsKey = "daily_vocab_sets_v2";
 const historyKey = "daily_vocab_history_v2";
 const SESSION_KEY = "daily_vocab_session_v1";
 const PREFS_KEY = "daily_vocab_prefs_v1";
-const modeLabels = { read_meaning: "읽기 + 뜻", en_ko: "영어 → 한글", ko_en: "한글 → 영어·스펠링" };
 // 기본 예제 세트 (DAY04, 121~160)
 let WORDS = [
  [121,'authority','권위 · 권한 · 당국','/əˈθɔːrəti/','어쏘러티','권위|권한|당국|권력|권위자|대가'],
@@ -734,7 +733,6 @@ function displayQuestion() {
   question.readSelf = false;
   if (!SPEECH) $("readFeedback").textContent = "이 브라우저에는 음성 인식이 없어요. 보호자 확인 또는 입력으로 채점해요.";
 }
-function setFeedback(el, type, text) { el.className = "feedback " + type; el.textContent = text; }
 function setRead(pass, spoken, skipped = false, self = false) {
   if (question.unknown) return;
   question.readChecked = true;

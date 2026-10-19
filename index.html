@@ -317,35 +317,8 @@ body.in-quiz main{padding-bottom:30px}
   </div>
 </section>
 
-<!-- 세트 편집 -->
-<section class="view" id="editor" tabindex="-1" aria-label="세트 편집">
-  <div class="card">
-    <h2 class="section-title" id="editorTitle">➕ 새 세트 만들기</h2>
-    <label for="setName">세트 이름</label>
-    <input id="setName" type="text" maxlength="120" placeholder="예: DAY 05 (161~200)">
-    <div class="photo-row" id="photoRow">
-      <button type="button" class="btn" id="pickPhotos">🖼️ 사진 고르기</button><input id="photos" type="file" accept="image/*" multiple hidden>
-      <button type="button" class="btn" id="takePhoto">📷 촬영 (여러 장 가능)</button><input id="camera" type="file" accept="image/*" capture="environment" hidden>
-      <button type="button" class="btn primary" id="extractWords">✨ 사진에서 단어 가져오기</button>
-      <button type="button" class="btn outline" id="cancelExtract" disabled>취소</button>
-    </div>
-    <p class="muted" id="photoHelp">최대 10장, 장당 10MB. AI가 번호·영어·뜻·발음·허용 답안을 정리해 줍니다. 영어 단어만 있는 사진이면 뜻과 발음은 AI 사전이 채워 줍니다(노란 칸). 책과 비교해 고친 뒤 저장하세요.</p>
-    <div id="extractStatus" role="status" class="feedback info"></div>
-    <div id="photoPreview" class="thumbs"></div>
-    <div class="row-between" style="margin-top:12px"><h3 style="margin:0;font-size:16px;color:var(--navy)">단어 <span id="wordCount" class="pill">단어 없음</span></h3><div class="actionbar" style="margin:0"><button type="button" class="btn small" id="addRow">＋ 단어 추가</button><button type="button" class="btn small" id="fillMeanings">✨ 빈 뜻 AI로 채우기</button><button type="button" class="btn outline small" id="toggleDraftText">텍스트로 편집</button></div></div>
-    <div id="wordTableWrap" class="table-wrap"><table id="wordTable"><colgroup><col class="c-num"><col class="c-en"><col class="c-ko"><col class="c-alias"><col class="c-ipa"><col class="c-del"></colgroup><thead><tr><th>번호</th><th>영어</th><th>뜻</th><th>다른 정답 (쉼표로 구분)</th><th>발음</th><th></th></tr></thead><tbody id="wordTableBody"></tbody></table></div>
-    <textarea id="wordDraft" class="hidden" rows="10" aria-label="단어 텍스트 (한 줄에 번호, 영어, 뜻, 허용 답안, 발음; 탭으로 구분)" placeholder="1&#9;apple&#9;사과&#9;사과|사과 열매"></textarea>
-    <p id="draftWarnings" role="status" class="feedback info"></p>
-    <label class="check" id="confirmedRow"><input id="confirmed" type="checkbox"> 책과 비교해서 확인했어요</label>
-    <div class="actionbar"><button type="button" class="btn primary" id="saveSet" style="min-width:140px;min-height:54px;font-size:17px">저장</button><button type="button" class="btn outline" id="closeEditor">닫기</button></div>
-    <div id="manageBox" class="manage hidden">
-      <h3 style="margin:0 0 8px;font-size:15px;color:var(--navy)">🔧 이 세트 관리 (보호자)</h3>
-      <div class="actionbar" style="margin-top:4px"><button type="button" class="btn" id="renameSet">✏️ 이름 바꾸기</button><button type="button" class="btn outline danger" id="deleteSet">🗑 세트 삭제</button></div>
-      <div id="renameBox" class="rename hidden"><input id="renameInput" type="text" maxlength="120" aria-label="새 세트 이름" placeholder="새 이름"><button type="button" class="btn primary" id="renameSave">저장</button><button type="button" class="btn outline" id="renameCancel">취소</button></div>
-      <div id="manageStatus" class="feedback info" role="status"></div>
-    </div>
-  </div>
-</section>
+<!-- 세트 편집: 안쪽 화면은 editor.js(SetEditor.mount)가 만든다 -->
+<section class="view" id="editor" tabindex="-1" aria-label="세트 편집"></section>
 
 <!-- 기록 -->
 <section class="view" id="history" tabindex="-1" aria-label="시험 기록">
@@ -547,7 +520,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-19 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-20 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -563,7 +536,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-19';
+  var release = '20261018-20';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -583,10 +556,11 @@ body.in-quiz main{padding-bottom:30px}
   });
   notice.addEventListener('click', function () { notice.classList.add('hidden'); });
   document.getElementById('checkApp').onclick = function () {
-    var button = document.getElementById('extractWords');
+    var button = document.getElementById('extractWords'); // 편집기 화면은 editor.js 가 만든다(못 불러왔으면 없음)
     var input = document.getElementById('photos');
     var camera = document.getElementById('camera');
-    report('버전 ' + release + ' · ' + (ready ? '앱 준비 완료' : '앱 초기화 실패') + ' · 사진 ' + ((input.files ? input.files.length : 0) + (camera.files ? camera.files.length : 0)) + '장 · 추출 버튼 ' + (typeof button.onclick === 'function' ? '연결됨' : '연결 안 됨') + (lastError ? ' · 오류: ' + lastError : ''));
+    var count = (input && input.files ? input.files.length : 0) + (camera && camera.files ? camera.files.length : 0);
+    report('버전 ' + release + ' · ' + (ready ? '앱 준비 완료' : '앱 초기화 실패') + ' · 사진 ' + count + '장 · 추출 버튼 ' + (button && typeof button.onclick === 'function' ? '연결됨' : '연결 안 됨') + (lastError ? ' · 오류: ' + lastError : ''));
   };
   document.getElementById('refreshApp').onclick = function () {
     if (!navigator.onLine) { report('인터넷에 연결한 뒤 새 버전을 불러오세요.'); return; }
@@ -599,8 +573,10 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./quiz.js?v=20261018-19" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-19" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-19" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./shared.js?v=20261018-20" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-20" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-20" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./editor.js?v=20261018-20" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-20" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>
