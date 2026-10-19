@@ -5,9 +5,9 @@
 const { AI_SERVER_DEFAULT, normalizeServer, WORD_PATTERN, parseDraft, preparePhoto, canvasToBase64Jpeg, readJson, writeJson } = Shared;
 const clean = tidy;
 const SETS_LOCKED_TEXT = "🔒 보호자가 세트 고치기를 잠갔어요. 세트는 보호자 폰에서 고칠 수 있어요.";
-// 연결된 아이 기기에서 보호자가 세트 고치기를 잠갔는지(family.js). 보호자가 아이 세트를 고쳐 보내는 중(editorForChild)에는 해당 없다.
+// 연결된 아이 기기에서 보호자가 세트 고치기를 잠갔는지(family.js).
 function setsLockedNow() {
-  return !window.editorForChild && typeof childSetsLocked === "function" && childSetsLocked();
+  return typeof childSetsLocked === "function" && childSetsLocked();
 }
 const status = (text) => {
   $("setStatus").textContent = text;
@@ -28,7 +28,7 @@ function persistSets(next) {
 }
 
 // ---- 세트 편집기 (editor.js): 화면·검증·사진 인식·AI 채우기는 모듈이, 저장·이름 바꾸기·삭제는 아래 콜백이 한다 ----
-// 보호자가 아이에게 보낼 세트를 만들거나 고칠 때(family.js 의 window.editorForChild)는 저장이 sendSetToChild, 닫기가 returnToChild 로 간다(B단계에서 보호자 앱으로 옮긴다).
+// 보호자가 아이에게 보낼 세트는 보호자 앱(parent.js)이 같은 편집기 모듈로 따로 만든다.
 // AI 브리지: 편집기가 쓸 때마다 그때의 AI 연결 설정으로 만든다. 설정이 없으면 null → onNeedAi 가 설정 화면으로 안내한다.
 function aiBridge() {
   const config = aiConfig();
@@ -44,11 +44,9 @@ SetEditor.mount($("editor"), {
   guard: (action) => (action !== "delete" && sessionRunning ? false : setsLockedNow() ? SETS_LOCKED_TEXT : true),
   onSave(set) {
     keepWordDetails(set);
-    if (window.editorForChild && typeof sendSetToChild === "function") return sendSetToChild(set); // family.js: 보호자 → 아이의 세트로 서버에 보낸다
     return saveSetLocally(set);
   },
   onClose() {
-    if (window.editorForChild && typeof returnToChild === "function") return returnToChild(); // family.js: 보호자는 아이 상세로 돌아간다
     showView("home");
   },
   onRename: renameSetLocally,
@@ -61,15 +59,14 @@ SetEditor.mount($("editor"), {
     $("aiSettings").scrollIntoView({ behavior: "smooth", block: "center" });
   },
 });
-// 홈의 ‘새 세트’·‘단어 보기·수정’, 보호자의 아이 세트 편집(family.js openChildSetEditor)이 부른다.
+// 홈의 ‘새 세트’·‘단어 보기·수정’이 부른다.
 function openEditor(set) {
   const locked = setsLockedNow(); // 보호자가 아이 기기에서 세트 고치기를 잠갔다: 새 세트는 열지 않고, 있는 세트는 읽기 전용 ‘단어 보기’
   if (locked && !set) {
     status(SETS_LOCKED_TEXT);
     return;
   }
-  const target = window.editorForChild || null; // family.js: 보호자가 아이에게 보낼 세트를 만들거나 고치는 중
-  if (!SetEditor.open(set || null, { readOnly: locked, readOnlyText: SETS_LOCKED_TEXT, targetName: target?.name })) return;
+  if (!SetEditor.open(set || null, { readOnly: locked, readOnlyText: SETS_LOCKED_TEXT })) return;
   showView("editor");
 }
 $("createSet").onclick = () => openEditor();
@@ -251,8 +248,7 @@ function savedAi() {
 function aiConfig() {
   const saved = savedAi();
   const server = normalizeServer(saved?.server || AI_SERVER_DEFAULT);
-  // 보호자 폰은 AI 연결에 코드를 따로 넣지 않아도 보호자 코드로 사진 인식·AI 사전을 쓴다(Worker가 보호자 코드를 가족 코드가 통하는 곳에 모두 허용).
-  const passcode = (typeof saved?.passcode === "string" ? saved.passcode.trim() : "") || (typeof family === "object" && family?.parentCode) || "";
+  const passcode = typeof saved?.passcode === "string" ? saved.passcode.trim() : "";
   return server && passcode ? { server, passcode } : null;
 }
 function storeAi(next) {
@@ -806,6 +802,6 @@ async function askTutor() {
 $("tutorAsk").onclick = askTutor;
 $("tutorCancel").onclick = () => tutorAbort?.();
 
-if (typeof initFamily === "function") initFamily(); // family.js: 가족 기록함(아이 이름·기록 보내기·아이들 탭)
+if (typeof initFamily === "function") initFamily(); // family.js: 가족 기록함(아이 코드 연결·기록 보내기·세트 동기화·오늘의 단어)
 
 if (window.markVocabAppReady) window.markVocabAppReady();
