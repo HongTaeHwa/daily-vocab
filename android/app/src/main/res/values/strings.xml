@@ -5,4 +5,7 @@
     <string name="choose_file">파일 선택</string>
     <string name="split_blocked_title">화면 분할은 쓸 수 없어요</string>
     <string name="split_blocked_body">매일 영단어는 전체 화면에서만 열려요.\n화면 분할이나 팝업 화면을 끝내면 다시 보여요.\n(분할한 동안은 ‘화면 이탈’로 기록돼요)</string>
+    <string name="download_saved">다운로드 폴더에 저장했어요: %1$s</string>
+    <string name="download_saved_as">파일을 저장했어요</string>
+    <string name="download_failed">파일을 저장하지 못했어요</string>
 </resources>

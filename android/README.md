@@ -1,11 +1,12 @@
 # 매일 영단어 갤럭시용 앱 (웹앱 래퍼)
 
-웹앱 https://hongtaehwa.github.io/daily-vocab/ 을 WebView로 여는 작은 안드로이드 앱입니다. 하는 일은 네 가지뿐이고 세트·기록·가족 기록함·오늘의 단어는 웹앱 그대로입니다.
+웹앱 https://hongtaehwa.github.io/daily-vocab/ 을 WebView로 여는 작은 안드로이드 앱입니다. 하는 일은 다섯 가지뿐이고 세트·기록·가족 기록함·오늘의 단어는 웹앱 그대로입니다.
 
 1. **화면 캡처 금지(FLAG_SECURE)**: 이 앱 화면에서는 스크린샷·화면 녹화·**서클 투 서치**가 동작하지 않습니다(은행 앱과 같은 방식). 다른 앱에는 영향이 없습니다.
 2. **화면 분할 차단**(v1.2): 앱을 화면 분할·팝업 화면으로 열어 옆에 브라우저나 AI 앱을 띄우지 못합니다. 매니페스트에 분할 비지원(`resizeableActivity="false"`)을 선언하고, Android 12 이상 태블릿처럼 OS가 분할을 강제하는 경우에는 분할이 감지되는 동안 웹앱을 가리고 **‘화면 분할은 쓸 수 없어요’** 안내만 보여 줍니다(그동안 웹앱은 ‘화면 이탈’로 기록하고 제한 시간은 계속 흐릅니다). 전체 화면으로 돌아오면 그대로 이어서 쓸 수 있습니다.
 3. **음성 인식·발음 듣기 연결**: WebView에는 브라우저 음성 인식이 없어서 안드로이드 기본 음성 인식기(삼성/구글)와 TTS를 웹앱에 연결합니다(`SpeechBridge.kt`, `assets/bridge.js`). 웹앱 코드는 바뀌지 않습니다.
 4. 사진 선택·촬영(세트 만들기)과 설정의 JSON 가져오기 파일 선택(v1.3: 입력의 accept를 따라 .json 파일을 고를 수 있음), 마이크 권한, 뒤로 가기(웹앱의 화면 되돌리기), 아이 전용 링크를 이 앱으로 열기.
+5. **파일 내려받기**(v1.4): 설정의 **전체 백업 JSON**과 기록 탭의 **CSV 내려받기**가 앱 안에서도 됩니다. Android 10 이상은 ‘다운로드’ 폴더(내 파일 → 다운로드)에 바로 저장하고 ‘다운로드 폴더에 저장했어요: 파일 이름’이 잠깐 보입니다. Android 8·9나 저장에 실패하면 ‘다른 이름으로 저장’ 창이 열립니다. 웹앱 코드는 바뀌지 않습니다(`DownloadBridge.kt`, `assets/bridge.js`).
 
 아이폰에는 같은 방법이 없습니다(iOS는 앱이 스크린샷·Siri 화면 읽기를 막을 수 없음). 아이폰은 스크린 타임 제한을 쓰세요.
 
@@ -20,7 +21,7 @@
 
 ## 업데이트
 
-새 릴리스의 APK를 같은 방법으로 설치하면 덮어쓰기 됩니다. 단, **같은 서명 키**로 만든 APK여야 합니다. 아래 ‘서명 키’를 등록하지 않은 상태의 빌드는 매번 다른 debug 키로 서명되어, 업데이트 전에 기존 앱을 지워야 합니다(앱 안의 설정·세트·기록도 지워지므로 백업 JSON을 먼저 받으세요).
+새 릴리스의 APK를 같은 방법으로 설치하면 덮어쓰기 됩니다. 단, **같은 서명 키**로 만든 APK여야 합니다. 아래 ‘서명 키’를 등록하지 않은 상태의 빌드는 매번 다른 debug 키로 서명되어, 업데이트 전에 기존 앱을 지워야 합니다(앱 안의 설정·세트·기록도 지워지므로 백업 JSON을 먼저 받으세요. v1.4부터 앱 안에서 설정 → 전체 백업 JSON으로 받을 수 있습니다).
 
 ## 서명 키 (한 번만)
 
@@ -44,13 +45,15 @@ bash android/scripts/setup-signing.sh
 
 | 파일 | 역할 |
 |---|---|
-| `app/src/main/java/kr/dailyvocab/app/MainActivity.kt` | WebView, FLAG_SECURE, 화면 분할 가림막(`onMultiWindowModeChanged`), 권한·사진 선택·뒤로 가기·링크 처리 |
+| `app/src/main/java/kr/dailyvocab/app/MainActivity.kt` | WebView, FLAG_SECURE, 화면 분할 가림막(`onMultiWindowModeChanged`), 권한·사진 선택·뒤로 가기·링크 처리, 내려받기 `DownloadListener`·‘다른 이름으로 저장’ 대화상자 |
 | `app/src/main/java/kr/dailyvocab/app/SpeechBridge.kt` | `@JavascriptInterface AndroidSpeech`: 음성 인식(SpeechRecognizer)·TTS(TextToSpeech) → `window.__androidSpeechEvent` |
-| `app/src/main/assets/bridge.js` | 페이지 스크립트보다 먼저 실행되어 `window.SpeechRecognition`·`speechSynthesis`를 브리지로 채움 |
+| `app/src/main/java/kr/dailyvocab/app/DownloadBridge.kt` | `@JavascriptInterface AndroidDownload`: base64 조각(begin/append/finish/abort)을 모아 MediaStore ‘다운로드’ 폴더에 저장(Android 10+), 실패·8·9는 저장 대화상자 |
+| `app/src/main/assets/bridge.js` | 페이지 스크립트보다 먼저 실행되어 `window.SpeechRecognition`·`speechSynthesis`를 브리지로 채우고, `<a download>`·blob: 내려받기를 가로채 `AndroidDownload`로 넘김 |
 | `app/src/main/AndroidManifest.xml` | 권한(INTERNET, RECORD_AUDIO), 패키지 가시성(음성 인식·카메라), 링크 인텐트 필터, FileProvider |
 | `scripts/setup-signing.sh` | 서명 키 생성 + Secrets 등록 |
 
 ## 버전
+- v1.4 (versionCode 5): 설정의 전체 백업 JSON·기록 탭의 CSV 내려받기가 앱 안에서 동작(Android 10 이상은 다운로드 폴더에 저장, Android 8·9와 실패 시 저장 창). 이전에는 눌러도 아무 일이 없었음.
 - v1.3 (versionCode 4): 파일 선택기가 입력의 accept를 따름 — 설정의 JSON 가져오기에서 .json 파일을 고를 수 있음(이전에는 늘 사진만 보여 가져오기가 불가능했음). 사진 선택·촬영은 그대로.
 - v1.2 (versionCode 3): 화면 분할·팝업 화면 차단(분할 비지원 선언 + 분할 중 가림막).
 - v1.1 (versionCode 2): 상태 표시줄·내비게이션 바·키보드 여백 처리(Android 15에서 상단 시계가 가려지던 문제).
@@ -61,4 +64,5 @@ bash android/scripts/setup-signing.sh
 - 음성 인식이 “서비스가 차단됐습니다”로 나오면 태블릿에 Google 앱(음성 서비스)이 꺼져 있는 것입니다. 설정 → 일반 → 키보드 목록 및 기본값 → 음성 입력에서 Google 음성 인식을 켜세요.
 - 사진 촬영 버튼이 반응하지 않으면 카메라 앱이 없는 기기입니다. ‘사진 선택’으로 갤러리에서 고르세요.
 - 설정 → JSON 가져오기에서 .json 파일이 회색으로 보이거나 사진만 고를 수 있으면 v1.2 이하입니다. v1.3 이상으로 업데이트하세요.
+- 설정 → 전체 백업 JSON이나 기록 탭 → CSV 내려받기를 눌러도 아무 일이 없으면 v1.3 이하입니다. v1.4 이상으로 업데이트하세요. 저장된 파일은 내 파일 → 다운로드에 있습니다.
 - 앱이 옛 화면을 보여 주면 앱을 완전히 닫았다 다시 열거나, 웹앱 설정 → 새 버전 불러오기를 누르세요.
