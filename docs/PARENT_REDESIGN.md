@@ -296,7 +296,7 @@ B단계에서 아이 앱(`index.html`·`quiz.js`·`family.js`·`sets.js`)에서 
 2. `editor.js` 신설: 5.3 인터페이스로 `sets.js`의 편집기(표·텍스트·사진·AI 채우기·검증·관리 상자)를 옮긴다. `#editor` 섹션 마크업은 `index.html`에서 빼고 `SetEditor.mount($("editorHost"))`가 만든다(`<section class="view" id="editor">` 껍데기는 남겨 `showView`의 `VIEWS`와 호환).
 3. `sets.js`는 `SetEditor.mount(...)` 호출 + 로컬 저장(`saveSetLocally`)·이름 바꾸기·삭제 콜백만 남긴다. 보호자 분기(`editorForChild`)는 이 단계에서는 콜백으로 감싸 그대로 동작하게 둔다(B에서 제거).
 4. `tests/lib/fake-family-worker.cjs` 신설 + `family.cjs`·`daily.cjs`가 쓰도록 변경.
-5. 버전 올리기(`index.html` 스크립트 5개, `sw.js` SHELL에 shared·editor 추가, `app-update.cjs`), `CLAUDE.md` 파일 구조·체크리스트, `DESIGN.md` 23절(이 문서 링크).
+5. 버전 올리기(`index.html` 스크립트 5개, `sw.js` SHELL에 shared·editor 추가, `app-update.cjs`), `CLAUDE.md` 파일 구조·체크리스트, `DESIGN.md` 24절(이 문서 링크).
 - **완료 기준**: 9개 테스트 PASS(ID·문구 변경 없음), `index.html`에 편집기 마크업 없음, `sets.js` 편집기 코드 0행, `grep -n "familyRequest(" family.js`가 `Shared.apiRequest`를 감싼 한 곳.
 
 ### B. 보호자 앱 새로 쓰기 — `feat/parent-app`
@@ -305,7 +305,7 @@ B단계에서 아이 앱(`index.html`·`quiz.js`·`family.js`·`sets.js`)에서 
 3. 아이 앱에서 보호자 모드 제거(5.8 목록). `family.js`는 아이 기기 동기화만 남긴다.
 4. `sw.js` SHELL·폴백, 버전 체크리스트 확장(5.9).
 5. 테스트: `tests/parent.cjs`, `tests/parent-sets.cjs` 신설, `family.cjs`·`daily.cjs`에서 보호자 부분 이동, `pwa.cjs`에 parent.html 반응형·오프라인 셸 추가.
-6. 문서: README ‘보호자 폰에서 아이들 기록 보기’·‘오늘의 단어’·‘백업·설치’ 절을 새 화면 기준으로 다시 쓰기, `CLAUDE.md` 화면 구조·ID·문구·파일 구조·테스트 표·버전 체크리스트, `DESIGN.md` 23절 갱신, 메모리.
+6. 문서: README ‘보호자 폰에서 아이들 기록 보기’·‘오늘의 단어’·‘백업·설치’ 절을 새 화면 기준으로 다시 쓰기, `CLAUDE.md` 화면 구조·ID·문구·파일 구조·테스트 표·버전 체크리스트, `DESIGN.md` 24절 갱신, 메모리.
 - **완료 기준**: 새 테스트 2개 + 기존 9개 PASS. `parent.html`을 열면 코드 입력 → 오늘 카드까지 네트워크 1회(`GET /family`). `index.html`에 `parent-mode`·`child-only`·`editorForChild` 문자열이 없다. 폰 폭(390px)에서 가로 스크롤 없음.
 
 ### C. Worker 보강과 보호자 기능 — `feat/parent-insights`

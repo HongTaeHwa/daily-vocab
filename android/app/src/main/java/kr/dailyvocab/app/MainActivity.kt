@@ -19,8 +19,10 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
+import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -42,14 +44,16 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import org.json.JSONObject
 
 /**
  * 매일 영단어 웹앱(https://hongtaehwa.github.io/daily-vocab/)을 WebView로 여는 갤럭시용 앱.
- * 하는 일은 넷뿐이다.
+ * 하는 일은 다섯뿐이다.
  *  1. FLAG_SECURE — 이 앱 화면에서는 스크린샷·화면 녹화·서클 투 서치가 동작하지 않는다(다른 앱에는 영향 없음).
  *  2. 화면 분할 차단 — 매니페스트 resizeableActivity=false + 멀티윈도우(분할·팝업 화면)가 감지되면 웹앱을 가리고 안내만 보여 준다.
  *  3. 음성 인식·TTS 브리지 — WebView에는 Web Speech API가 없어 안드로이드 기본 인식기/TTS를 연결한다(SpeechBridge + assets/bridge.js).
  *  4. 사진 선택·촬영과 JSON 가져오기의 파일 선택(입력의 accept 를 따름), 마이크 권한, 뒤로 가기, 아이 전용 링크 열기.
+ *  5. 파일 내려받기 — 웹앱의 ‘전체 백업 JSON’·‘CSV 내려받기’(blob: 주소)를 ‘다운로드’ 폴더에 저장한다(DownloadBridge + assets/bridge.js, v1.4).
  * 세트·기록·가족 기록함·오늘의 단어는 모두 웹앱 그대로다(앱은 웹앱 주소만 안다).
  */
 class MainActivity : AppCompatActivity() {
@@ -65,6 +69,7 @@ class MainActivity : AppCompatActivity() {
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var cameraUri: Uri? = null
     private var pendingWebPermission: PermissionRequest? = null
+    private var pendingSave: ByteArray? = null // ‘다른 이름으로 저장’ 대화상자가 돌아올 때까지 들고 있는 파일 내용
 
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         speech.onPermissionResult(granted)
@@ -87,6 +92,16 @@ class MainActivity : AppCompatActivity() {
         }
         cameraUri = null
         callback.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
+    }
+
+    // 내려받기 폴백: ‘다른 이름으로 저장’(ACTION_CREATE_DOCUMENT)에서 고른 위치에 pendingSave 를 쓴다.
+    private val saveDialog = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val bytes = pendingSave
+        pendingSave = null
+        val uri = result.data?.data
+        if (result.resultCode != RESULT_OK || uri == null || bytes == null) return@registerForActivityResult
+        val ok = writeTo(uri, bytes)
+        Toast.makeText(this, if (ok) R.string.download_saved_as else R.string.download_failed, Toast.LENGTH_LONG).show()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -136,6 +151,7 @@ class MainActivity : AppCompatActivity() {
 
         speech = SpeechBridge(this, webView) { micPermission.launch(Manifest.permission.RECORD_AUDIO) }
         webView.addJavascriptInterface(speech, "AndroidSpeech")
+        webView.addJavascriptInterface(DownloadBridge(this, ::saveWithDialog), "AndroidDownload")
 
         // 페이지 스크립트보다 먼저 실행되어 window.SpeechRecognition / speechSynthesis 를 안드로이드 브리지로 바꿔 둔다.
         val bridge = assets.open("bridge.js").bufferedReader().use { it.readText() }
@@ -209,6 +225,23 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // 내려받기: 웹앱의 blob: 내려받기는 bridge.js 가 click 단계에서 가로채므로 여기까지 오지 않는 것이 보통이다.
+        // 그래도 blob:/data: 주소가 오면(어댑터를 거치지 않은 경로) 어댑터의 저장 함수로 되돌리고, http(s) 주소는 바깥 링크처럼 브라우저로 넘긴다.
+        // (DownloadManager 는 Android 8·9에서 저장 권한이 필요하고 앱에 http 내려받기가 없어 쓰지 않는다.)
+        webView.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+            if (url.startsWith("blob:") || url.startsWith("data:")) {
+                val name = URLUtil.guessFileName(url, contentDisposition, mimeType)
+                val script = "window.__dailyVocabDownload && window.__dailyVocabDownload(" + JSONObject.quote(url) + ", " + JSONObject.quote(name) + ")"
+                webView.evaluateJavascript(script, null)
+            } else {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                } catch (e: Exception) {
+                    Toast.makeText(this, R.string.download_failed, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
         // 뒤로 가기: 웹앱의 화면 되돌리기(pushState)를 먼저, 더 갈 곳이 없으면 앱 종료
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -260,6 +293,36 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             null
         }
+    }
+
+    // DownloadBridge 가 MediaStore 로 저장하지 못할 때(Android 8·9, 저장 실패): 시스템 ‘다른 이름으로 저장’ 대화상자(기본 위치 다운로드)로 넘긴다.
+    private fun saveWithDialog(name: String, mime: String, bytes: ByteArray) {
+        pendingSave = bytes
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mime
+            putExtra(Intent.EXTRA_TITLE, name)
+        }
+        try {
+            saveDialog.launch(intent)
+        } catch (e: Exception) {
+            pendingSave = null
+            Toast.makeText(this, R.string.download_failed, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // 문서 제공자에 따라 "wt"(비우고 쓰기)를 지원하지 않는 곳이 있어 "w"로 한 번 더 시도한다.
+    private fun writeTo(uri: Uri, bytes: ByteArray): Boolean {
+        for (mode in arrayOf("wt", "w")) {
+            try {
+                val stream = contentResolver.openOutputStream(uri, mode) ?: continue
+                stream.use { it.write(bytes) }
+                return true
+            } catch (e: Exception) {
+                // 다음 모드로
+            }
+        }
+        return false
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
