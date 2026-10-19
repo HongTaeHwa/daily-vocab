@@ -395,3 +395,7 @@
 - **다듬기**: 세트 탭의 ‘보기·수정’·‘삭제’를 `.set-actions` 묶음으로 한 줄에.
 - **테스트**: `tests/worker.cjs`(상세 창·인자 검증·`recordCount`·`more`·5,000개 아이 첫 응답 200개 이하·‘더 보기’ 페이지로 5,000개 끝까지 겹침 없이·before 미포함·보호자 코드만·버킷·`GET /family?days`·옛 대략값 다시 세기), 가짜 Worker(`pagedDetail`·`detailPageSize`, 목록 14일 창), `tests/parent.cjs`(상세 인자, 복습 세트 본문·이름 (2)·세트 탭, 오늘의 단어 세트 본문, 규칙 11가지, 카드 적용·7일 숨김·8일 뒤 다음 단계·다음에, 기록 27개 아이의 ‘더 보기’ 페이지·404 조용히·끝나면 숨김, 뜻 없는 단어, 옛 Worker 203개 → 200개·버튼 없음). 11개 PASS.
 - 설계와 다르게 한 결정은 `docs/PARENT_REDESIGN.md` 5.4·5.7·5.10·5.11의 ‘결정 변경(2026-10-19, C단계 구현)’.
+
+## 25. 알림(2B) — 아이 기기 리마인더와 보호자 알림 (2026-10-19 설계)
+
+설계는 `docs/NOTIFICATIONS.md`. 요지: Worker가 Web Push(VAPID + aes128gcm, WebCrypto만)로 아이 기기에 📬 오늘의 단어 도착·✏️ 공부 리마인더(보호자가 정한 `plan.remindHour`)를, 보호자 폰에 🧒 시험 마침(`/sync` 직후)·🌙 저녁 요약(`summaryHour`)을 보내고 `sw.js`가 띄운다. 아이폰은 홈 화면에 설치한 앱에서만, 갤럭시 래퍼 앱은 Web Push가 없어 로컬 알림(N2, v1.5)으로 같은 두 가지를 띄운다. 구현은 N1(Worker 푸시 기반 + sw.js + 두 앱 UI) → N2(android/) 순서의 PR.
