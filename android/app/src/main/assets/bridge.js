@@ -165,3 +165,20 @@
     fetchAndSend(String(url || ""), String(name || "download"));
   };
 })();
+
+// ---- 알림(v1.5): 웹앱의 갤럭시 브리지 계약 window.DailyVocabNotify 를 안드로이드 로컬 알림(NotifyBridge.kt, window.AndroidNotify)으로 ----
+// 웹앱(shared.js Shared.notify)은 DailyVocabNotify.available 이면 Web Push 대신 이것을 쓴다(support() === "native").
+//   permission() → "granted"|"denied"(필요하면 Android 13+ 권한을 묻고 답을 기다린다), schedule({daily:{enabled, hour}|null, reminder:{hour}|null}),
+//   skipToday("reminder"|"daily"), cancel(). 시각은 보호자가 정한 한국 시각이고, 알림 문구는 앱이 가진다(strings.xml).
+(function () {
+  if (!window.AndroidNotify || window.DailyVocabNotify) return;
+  window.DailyVocabNotify = {
+    available: true,
+    permission: function () {
+      try { return String(window.AndroidNotify.permission()); } catch (e) { return "denied"; }
+    },
+    schedule: function (o) { window.AndroidNotify.schedule(JSON.stringify(o || {})); },
+    skipToday: function (kind) { window.AndroidNotify.skipToday(String(kind || "")); },
+    cancel: function () { window.AndroidNotify.cancel(); },
+  };
+})();

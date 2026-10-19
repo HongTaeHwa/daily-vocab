@@ -54,6 +54,7 @@ import org.json.JSONObject
  *  3. 음성 인식·TTS 브리지 — WebView에는 Web Speech API가 없어 안드로이드 기본 인식기/TTS를 연결한다(SpeechBridge + assets/bridge.js).
  *  4. 사진 선택·촬영과 JSON 가져오기의 파일 선택(입력의 accept 를 따름), 마이크 권한, 뒤로 가기, 아이 전용 링크 열기.
  *  5. 파일 내려받기 — 웹앱의 ‘전체 백업 JSON’·‘CSV 내려받기’(blob: 주소)를 ‘다운로드’ 폴더에 저장한다(DownloadBridge + assets/bridge.js, v1.4).
+ *  6. 로컬 알림 — WebView 에는 Web Push 가 없어 웹앱의 ‘알림 받기’를 안드로이드 알람·알림으로 띄운다(NotifyBridge·NotifyScheduler + assets/bridge.js, v1.5).
  * 세트·기록·가족 기록함·오늘의 단어는 모두 웹앱 그대로다(앱은 웹앱 주소만 안다).
  */
 class MainActivity : AppCompatActivity() {
@@ -66,6 +67,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var splitGuard: View
     private lateinit var speech: SpeechBridge
+    private lateinit var notify: NotifyBridge
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var cameraUri: Uri? = null
     private var pendingWebPermission: PermissionRequest? = null
@@ -92,6 +94,11 @@ class MainActivity : AppCompatActivity() {
         }
         cameraUri = null
         callback.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
+    }
+
+    // 알림 권한(Android 13+): 결과(허용·거부)를 기다리는 NotifyBridge.permission() 에 알린다.
+    private val notifyPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        notify.onPermissionResult()
     }
 
     // 내려받기 폴백: ‘다른 이름으로 저장’(ACTION_CREATE_DOCUMENT)에서 고른 위치에 pendingSave 를 쓴다.
@@ -152,6 +159,9 @@ class MainActivity : AppCompatActivity() {
         speech = SpeechBridge(this, webView) { micPermission.launch(Manifest.permission.RECORD_AUDIO) }
         webView.addJavascriptInterface(speech, "AndroidSpeech")
         webView.addJavascriptInterface(DownloadBridge(this, ::saveWithDialog), "AndroidDownload")
+        notify = NotifyBridge(this) { notifyPermission.launch(Manifest.permission.POST_NOTIFICATIONS) }
+        webView.addJavascriptInterface(notify, "AndroidNotify")
+        NotifyScheduler.ensureChannel(this)
 
         // 페이지 스크립트보다 먼저 실행되어 window.SpeechRecognition / speechSynthesis 를 안드로이드 브리지로 바꿔 둔다.
         val bridge = assets.open("bridge.js").bufferedReader().use { it.readText() }
@@ -387,6 +397,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        notify.onPermissionResult() // 권한 대화상자를 기다리던 중이면 풀어 준다
         speech.destroy()
         webView.destroy()
         super.onDestroy()

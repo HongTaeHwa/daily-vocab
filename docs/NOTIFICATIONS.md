@@ -139,7 +139,7 @@ Web Push 전송에는 VAPID 서명(ES256 JWT)과 본문 암호화(aes128gcm)가 
 5. 버전 체크리스트 전부(릴리스 `20261018-23`, 캐시 v32). 테스트(7절)·README(아이·보호자 사용법, 개인정보)·CLAUDE.md(파일 구조·ID·문구·키·테스트 표)·DESIGN.md 25절.
 - **완료 기준**: 테스트 전체 PASS. `node tests/worker.cjs`가 JWT 검증과 본문 복호화를 통과. 키 미설정 Worker에서 앱이 “알림 서버가 아직 준비되지 않았어요”를 보이고 다른 기능은 그대로. 머지 뒤 사용자 작업: `cd worker && npm run vapid` → `wrangler secret put VAPID_PRIVATE_KEY` → `wrangler.jsonc`에 공개 키 → `npm run deploy`.
 
-### N2. 갤럭시 앱 로컬 알림 — `feat/android-notify` (android/ 전용, v1.5)
+### N2. 갤럭시 앱 로컬 알림 — `feat/android-notify` (android/ 전용, v1.5) (구현 완료 2026-10-19, 결정 변경은 12절)
 1. `NotifyBridge.kt`·`NotifyReceiver`·채널·매니페스트·`strings.xml`, `bridge.js`의 `window.DailyVocabNotify` 어댑터(4.4 계약).
 2. `android/README.md`·CLAUDE.md 갤럭시 절·DESIGN.md 25절 보강. CI APK 빌드 통과.
 - **완료 기준**: 아이 앱에서 ‘알림 받기’를 켜면 브리지로 시각이 넘어가고, 정한 시각에 알림이 뜨며(실기기), 완료한 날은 리마인더가 안 뜬다(`skipToday`). 웹앱 변경 없음(N1의 브리지 호출 사용).
@@ -178,3 +178,14 @@ N1(Worker 푸시 기반 + `sw.js` + 두 앱 UI)을 구현하면서 설계와 다
 12. **아이 앱 상태(4.4·5)**: `family.push = {mode:"push"|"native", deviceId, childId, endpoint, enabledAt}`. `childId`를 두어 다른 아이로 다시 연결하면 옛 아이 구독을 지우고 새 아이로 다시 등록한다. 권한 요청은 터치 직후 맨 먼저 하고(아이폰), 그다음 `GET /push/key` → 구독 → 등록. 서버에서 지워진 아이(`childGone`)면 서버 구독은 이미 지워졌으므로 기기 쪽만 정리한다. 네이티브 `schedule`의 `daily`는 언제나 `{enabled, hour}`(꺼져 있으면 `enabled:false`), `reminder`는 시각이 없으면 `null`.
 13. **보호자 앱(4.5·5)**: 기기 id 는 `prefs.deviceId`에 따로 두어(`prefs.push` 밖) 알림을 껐다 켜도 같은 서버 항목을 덮어쓴다. 카드에 상태 칩 `#notifyState`와 켜졌을 때만 보이는 옵션 묶음 `#notifyOptions`를 더했고, 공부 알림 시각 결과는 `#remindStatus`에 보인다. 갤럭시 래퍼 앱 안에서 보호자 앱을 열면(브리지가 있음) 보호자 알림은 지원하지 않는다고 안내한다(보호자는 Chrome·Safari 설치 앱을 쓴다).
 14. **공통 코드**: 기기 이름 `deviceLabel`을 `family.js`에서 `Shared`로 옮겨 두 앱이 함께 쓴다. 공부 알림 선택지는 `Shared.REMIND_HOUR_CHOICES`(없음·15~22시), `planDefaults`에 `remindHour: null`.
+
+## 12. 결정 변경(2026-10-19, N2 구현)
+
+N2(갤럭시 앱 v1.5 로컬 알림)를 구현하면서 정하거나 바꾼 것. 구현 요약은 `docs/DESIGN.md` 25.2.
+
+1. **권한은 동기로(4.4 계약 유지)**: 웹앱(shared.js `request()`)은 브리지 `permission()`의 결과를 기다리지 않고 바로 읽는다. 웹앱을 바꾸지 않으려고, Android 13+ 에서 권한을 물어야 하면 `@JavascriptInterface`가 도는 JavaBridge 스레드에서 대화상자의 답을 기다렸다가(최대 60초) 돌려준다. 대화상자는 UI 스레드에서 뜨므로 막히지 않는다. 권한이 있어도 앱 알림이 꺼져 있으면 `"denied"`.
+2. **파일 나눔(4.7)**: 설계의 `NotifyBridge.kt` + `NotifyReceiver` 대신 `NotifyBridge.kt`(JS 인터페이스)와 `NotifyScheduler.kt`(예약·표시 로직 + `NotifyReceiver`·`BootReceiver`)로 나눴다. 수신기 둘(알람용 exported=false, 재부팅·업데이트용 exported=true)은 설계 그대로다.
+3. **시각**: 서버와 같은 한국 시각(Asia/Seoul)으로 계산한다(기기 시간대와 무관). 오늘의 단어는 서버 크론이 정각에 만들기 때문에 **5분 뒤**(:05)에 알리고, 리마인더는 정각.
+4. **늦은 알람**: 3시간 넘게 늦게 온 알람(기기가 꺼져 있었음 등)은 띄우지 않고 다음 날로 넘긴다. 같은 날 같은 알림은 한 번만(`shown_<kind>`).
+5. **문구**: 앱은 그날 단어 개수를 모르므로 ‘📬 오늘의 단어가 도착했어요 / 앱을 열어 풀어 보세요’, 리마인더는 서버와 같은 ‘✏️ 오늘 아직 단어 시험을 안 봤어요 / 짧게라도 한 번 풀어 볼까요?’. 아이가 그 시각 전에 앱을 열어 오늘의 단어를 이미 풀었어도 도착 알림은 뜬다(웹앱이 `skipToday("daily")`를 부르지 않음 — 받아들임).
+6. **`skipToday`**: 그날 건너뛰기에 더해 이미 떠 있는 같은 종류의 알림을 거둔다(시험을 끝내면 리마인더가 사라짐).

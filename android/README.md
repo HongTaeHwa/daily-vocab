@@ -1,12 +1,13 @@
 # 매일 영단어 갤럭시용 앱 (웹앱 래퍼)
 
-웹앱 https://hongtaehwa.github.io/daily-vocab/ 을 WebView로 여는 작은 안드로이드 앱입니다. 하는 일은 다섯 가지뿐이고 세트·기록·가족 기록함·오늘의 단어는 웹앱 그대로입니다.
+웹앱 https://hongtaehwa.github.io/daily-vocab/ 을 WebView로 여는 작은 안드로이드 앱입니다. 하는 일은 여섯 가지뿐이고 세트·기록·가족 기록함·오늘의 단어는 웹앱 그대로입니다.
 
 1. **화면 캡처 금지(FLAG_SECURE)**: 이 앱 화면에서는 스크린샷·화면 녹화·**서클 투 서치**가 동작하지 않습니다(은행 앱과 같은 방식). 다른 앱에는 영향이 없습니다.
 2. **화면 분할 차단**(v1.2): 앱을 화면 분할·팝업 화면으로 열어 옆에 브라우저나 AI 앱을 띄우지 못합니다. 매니페스트에 분할 비지원(`resizeableActivity="false"`)을 선언하고, Android 12 이상 태블릿처럼 OS가 분할을 강제하는 경우에는 분할이 감지되는 동안 웹앱을 가리고 **‘화면 분할은 쓸 수 없어요’** 안내만 보여 줍니다(그동안 웹앱은 ‘화면 이탈’로 기록하고 제한 시간은 계속 흐릅니다). 전체 화면으로 돌아오면 그대로 이어서 쓸 수 있습니다.
 3. **음성 인식·발음 듣기 연결**: WebView에는 브라우저 음성 인식이 없어서 안드로이드 기본 음성 인식기(삼성/구글)와 TTS를 웹앱에 연결합니다(`SpeechBridge.kt`, `assets/bridge.js`). 웹앱 코드는 바뀌지 않습니다.
 4. 사진 선택·촬영(세트 만들기)과 설정의 JSON 가져오기 파일 선택(v1.3: 입력의 accept를 따라 .json 파일을 고를 수 있음), 마이크 권한, 뒤로 가기(웹앱의 화면 되돌리기), 아이 전용 링크를 이 앱으로 열기.
 5. **파일 내려받기**(v1.4): 설정의 **전체 백업 JSON**과 기록 탭의 **CSV 내려받기**가 앱 안에서도 됩니다. Android 10 이상은 ‘다운로드’ 폴더(내 파일 → 다운로드)에 바로 저장하고 ‘다운로드 폴더에 저장했어요: 파일 이름’이 잠깐 보입니다. Android 8·9나 저장에 실패하면 ‘다른 이름으로 저장’ 창이 열립니다. 웹앱 코드는 바뀌지 않습니다(`DownloadBridge.kt`, `assets/bridge.js`).
+6. **알림**(v1.5): 앱 안의 화면(WebView)은 웹 알림(Web Push)을 받을 수 없어서, 웹앱 설정 → 가족 기록함의 **🔔 이 기기에서 알림 받기**를 누르면 앱이 스스로 알림을 띄웁니다. 보호자가 보호자 앱에서 정한 시각(한국 시각)에 **📬 오늘의 단어가 도착했어요**(오늘의 단어 시각 5분 뒤)와 **✏️ 오늘 아직 단어 시험을 안 봤어요**(공부 알림 시각, 그날 시험을 끝냈으면 울리지 않음)가 뜹니다. 처음 켤 때 Android 13 이상은 알림 권한을 묻습니다. 재부팅·앱 업데이트 뒤에도 다시 걸립니다. 웹앱 코드는 바뀌지 않습니다(`NotifyBridge.kt`, `NotifyScheduler.kt`, `assets/bridge.js`).
 
 아이폰에는 같은 방법이 없습니다(iOS는 앱이 스크린샷·Siri 화면 읽기를 막을 수 없음). 아이폰은 스크린 타임 제한을 쓰세요.
 
@@ -48,11 +49,14 @@ bash android/scripts/setup-signing.sh
 | `app/src/main/java/kr/dailyvocab/app/MainActivity.kt` | WebView, FLAG_SECURE, 화면 분할 가림막(`onMultiWindowModeChanged`), 권한·사진 선택·뒤로 가기·링크 처리, 내려받기 `DownloadListener`·‘다른 이름으로 저장’ 대화상자 |
 | `app/src/main/java/kr/dailyvocab/app/SpeechBridge.kt` | `@JavascriptInterface AndroidSpeech`: 음성 인식(SpeechRecognizer)·TTS(TextToSpeech) → `window.__androidSpeechEvent` |
 | `app/src/main/java/kr/dailyvocab/app/DownloadBridge.kt` | `@JavascriptInterface AndroidDownload`: base64 조각(begin/append/finish/abort)을 모아 MediaStore ‘다운로드’ 폴더에 저장(Android 10+), 실패·8·9는 저장 대화상자 |
-| `app/src/main/assets/bridge.js` | 페이지 스크립트보다 먼저 실행되어 `window.SpeechRecognition`·`speechSynthesis`를 브리지로 채우고, `<a download>`·blob: 내려받기를 가로채 `AndroidDownload`로 넘김 |
-| `app/src/main/AndroidManifest.xml` | 권한(INTERNET, RECORD_AUDIO), 패키지 가시성(음성 인식·카메라), 링크 인텐트 필터, FileProvider |
+| `app/src/main/java/kr/dailyvocab/app/NotifyBridge.kt` | `@JavascriptInterface AndroidNotify`: `permission()`(Android 13+ 알림 권한을 묻고 답을 기다려 `granted`/`denied`), `schedule(JSON)`, `skipToday(kind)`, `cancel()` |
+| `app/src/main/java/kr/dailyvocab/app/NotifyScheduler.kt` | 로컬 알림: 설정 저장(SharedPreferences `daily_vocab_notify`), `AlarmManager.setAndAllowWhileIdle`로 다음 한 번만 예약(한국 시각), 울리면 알림 채널 ‘공부 알림’에 표시·다음 날 예약, `NotifyReceiver`(알람)·`BootReceiver`(재부팅·업데이트 뒤 재예약) |
+| `app/src/main/assets/bridge.js` | 페이지 스크립트보다 먼저 실행되어 `window.SpeechRecognition`·`speechSynthesis`를 브리지로 채우고, `<a download>`·blob: 내려받기를 가로채 `AndroidDownload`로 넘기고, 웹앱의 알림 계약 `window.DailyVocabNotify`를 `AndroidNotify`로 만든다 |
+| `app/src/main/AndroidManifest.xml` | 권한(INTERNET, RECORD_AUDIO, POST_NOTIFICATIONS, RECEIVE_BOOT_COMPLETED), 패키지 가시성(음성 인식·카메라), 링크 인텐트 필터, 알림 수신기 2개, FileProvider |
 | `scripts/setup-signing.sh` | 서명 키 생성 + Secrets 등록 |
 
 ## 버전
+- v1.5 (versionCode 6): 알림 — 웹앱 설정 → 가족 기록함의 ‘🔔 이 기기에서 알림 받기’로 오늘의 단어 도착·공부 리마인더를 앱이 직접 띄움(보호자가 정한 시각, 시험을 끝낸 날은 리마인더 없음). 이전에는 ‘이 브라우저는 알림을 지원하지 않아요’로 켤 수 없었음.
 - v1.4 (versionCode 5): 설정의 전체 백업 JSON·기록 탭의 CSV 내려받기가 앱 안에서 동작(Android 10 이상은 다운로드 폴더에 저장, Android 8·9와 실패 시 저장 창). 이전에는 눌러도 아무 일이 없었음.
 - v1.3 (versionCode 4): 파일 선택기가 입력의 accept를 따름 — 설정의 JSON 가져오기에서 .json 파일을 고를 수 있음(이전에는 늘 사진만 보여 가져오기가 불가능했음). 사진 선택·촬영은 그대로.
 - v1.2 (versionCode 3): 화면 분할·팝업 화면 차단(분할 비지원 선언 + 분할 중 가림막).
@@ -65,4 +69,5 @@ bash android/scripts/setup-signing.sh
 - 사진 촬영 버튼이 반응하지 않으면 카메라 앱이 없는 기기입니다. ‘사진 선택’으로 갤러리에서 고르세요.
 - 설정 → JSON 가져오기에서 .json 파일이 회색으로 보이거나 사진만 고를 수 있으면 v1.2 이하입니다. v1.3 이상으로 업데이트하세요.
 - 설정 → 전체 백업 JSON이나 기록 탭 → CSV 내려받기를 눌러도 아무 일이 없으면 v1.3 이하입니다. v1.4 이상으로 업데이트하세요. 저장된 파일은 내 파일 → 다운로드에 있습니다.
+- 설정 → 가족 기록함에 ‘이 브라우저는 알림을 지원하지 않아요’가 보이면 v1.4 이하입니다. v1.5 이상으로 업데이트하세요. ‘알림 권한이 꺼져 있어요’면 태블릿 설정 → 애플리케이션 → 매일 영단어 → 알림을 켜세요. 알림이 늦게 오면(몇 분) 절전 때문이며 정상입니다. 시각은 보호자 앱 → 아이 화면 → 설정의 ‘⏰ 공부 알림 시각’과 오늘의 단어 시각을 따릅니다.
 - 앱이 옛 화면을 보여 주면 앱을 완전히 닫았다 다시 열거나, 웹앱 설정 → 새 버전 불러오기를 누르세요.

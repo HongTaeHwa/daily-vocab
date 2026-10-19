@@ -8,4 +8,10 @@
     <string name="download_saved">다운로드 폴더에 저장했어요: %1$s</string>
     <string name="download_saved_as">파일을 저장했어요</string>
     <string name="download_failed">파일을 저장하지 못했어요</string>
+    <string name="notify_channel_name">공부 알림</string>
+    <string name="notify_channel_desc">오늘의 단어 도착과 공부 리마인더</string>
+    <string name="notify_daily_title">📬 오늘의 단어가 도착했어요</string>
+    <string name="notify_daily_body">앱을 열어 풀어 보세요</string>
+    <string name="notify_reminder_title">✏️ 오늘 아직 단어 시험을 안 봤어요</string>
+    <string name="notify_reminder_body">짧게라도 한 번 풀어 볼까요?</string>
 </resources>
