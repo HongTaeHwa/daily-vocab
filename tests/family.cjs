@@ -516,6 +516,25 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await np.click("#notifyEnable");
   await waitFor(() => nf.paths("/push/subscribe").length === 3 && nf.pushSubs.size === 1, "on again");
   await waitFor(() => nHas("#notifyText", "🔔 알림 켜짐"), "status on again");
+  // 마지막 등록이 하루(24시간) 전이면 구독이 같아도 앱을 열 때 서버에 다시 보낸다(Worker 가 실패가 쌓인 구독을 지웠을 수 있다). 같은 날 다시 열면 보내지 않는다.
+  assert(Date.now() - Date.parse((await nFamily()).push.registeredAt) < 60000, "registeredAt stored when turned on");
+  await np.evaluate(() => {
+    const f = JSON.parse(localStorage.getItem("daily_vocab_family_v1"));
+    f.push.registeredAt = new Date(Date.now() - 25 * 3600000).toISOString();
+    localStorage.setItem("daily_vocab_family_v1", JSON.stringify(f));
+  });
+  nf.pushSubs.clear(); // 서버가 실패가 쌓인 구독을 지운 상태(브라우저 구독은 그대로)
+  await np.reload();
+  await waitFor(() => nf.paths("/push/subscribe").length === 4 && nf.pushSubs.size === 1, "same subscription re-sent after a day");
+  const resent = nf.paths("/push/subscribe")[3].body;
+  assert(resent.role === "child" && resent.childId === YONG && resent.device.id === nDevice && resent.subscription.endpoint === (await nPush()).sub.endpoint, "re-sent body: " + JSON.stringify(resent).slice(0, 200));
+  await waitFor(async () => Date.now() - Date.parse((await nFamily()).push.registeredAt) < 60000, "registeredAt refreshed");
+  const settingsBeforeDay = nf.paths("/settings/" + YONG).length;
+  await np.reload();
+  await waitFor(() => nf.paths("/settings/" + YONG).length > settingsBeforeDay, "settings fetched on the next launch");
+  await new Promise((r) => setTimeout(r, 300));
+  assert(nf.paths("/push/subscribe").length === 4, "not again on the same day");
+  await openNotify();
   np.once("dialog", (d) => d.accept());
   await np.click("#unlinkChild");
   await waitFor(() => nf.paths("/push/unsubscribe", "POST").length === 2 && nf.pushSubs.size === 0, "unlinking removes the server subscription");
@@ -570,7 +589,7 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await gctx.close();
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: child app without a parent mode + child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, floor after clearing) + other-device merge (screen return 10 min, history tab 1 min, launch, since = last check − 14 days, late uploads, deleted record stays out, only records after a clear) + set sync (pull on join, parent's set received, device delete, empty state) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin + notifications (push on/off, re-register, denied, unlink, 503/install/unsupported, Galaxy bridge schedule/skipToday/cancel)");
+  console.log("PASS: child app without a parent mode + child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, floor after clearing) + other-device merge (screen return 10 min, history tab 1 min, launch, since = last check − 14 days, late uploads, deleted record stays out, only records after a clear) + set sync (pull on join, parent's set received, device delete, empty state) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin + notifications (push on/off, re-register, daily re-send, denied, unlink, 503/install/unsupported, Galaxy bridge schedule/skipToday/cancel)");
   await browser.close();
 })().catch((e) => {
   console.error(e);

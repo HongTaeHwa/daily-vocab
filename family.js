@@ -11,7 +11,7 @@
 //        restoreFloor(‘기록 전체 삭제’ 시각: 그 전에 끝난 기록은 자동으로 가져오지 않음), restoreSkip:[이 기기에서 하나씩 지운 기록 id](자동으로 가져오지 않음),
 //        childGone(보호자가 서버에서 지운 아이: 연결 해제 → 새 코드로 다시 연결할 때까지 서버 요청 중단),
 //        settings:{timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour, fetchedAt}(보호자 설정),
-//        push:{mode:"push"|"native", deviceId, childId, endpoint, enabledAt} | null(이 기기에서 켠 알림)}
+//        push:{mode:"push"|"native", deviceId, childId, endpoint, enabledAt, registeredAt(마지막으로 서버에 구독을 보낸 시각)} | null(이 기기에서 켠 알림)}
 //        daily_vocab_daily_v1  = {childId, date, words, level, note, fetchedAt, result?, disabled?, lastCheckedAt, lastError?}
 // 아이 코드·아이 이름·알림 구독은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다. 옛 보호자 모드가 이 키에 두던 parentCode·parentModeOff 는 보호자 앱으로 옮겨 갔고, 남아 있으면 지운다(initFamily).
 const FAMILY_KEY = "daily_vocab_family_v1";
@@ -23,6 +23,7 @@ const FAMILY_MISSED_LIMIT = 200; // 기록 하나에 담는 틀린 단어 수 (W
 const ANCHOR_LIMIT = 60; // 교재 앵커: 최근 세트에서 보내는 영어 단어 수 (Worker 상한과 같음)
 const DAILY_CHECK_MS = 10 * 60 * 1000; // 오늘 것이 없거나 꺼져 있을 때, 또는 다른 기기의 완료를 확인할 때 다시 물어보는 간격
 const JOIN_CODE_PATTERN = /^\d{6}$/;
+const NOTIFY_REFRESH_MS = 24 * 60 * 60 * 1000; // 알림: 마지막 등록 뒤 이만큼 지나면 구독이 같아도 앱을 열 때 서버에 다시 보낸다(Worker 가 실패가 쌓인 구독을 지웠을 수 있다)
 const RESTORE_SKIP_LIMIT = 500; // 하나씩 지운 기록 id 를 기억하는 수(오래된 것부터 잊음)
 // shared.js 의 서식. $·setFeedback·modeLabels 는 quiz.js, AI_SERVER_DEFAULT·normalizeServer·WORD_PATTERN 은 sets.js 머리에서 꺼낸다(sets.js 의 clean 도 tidy 를 쓴다).
 const { tidy, formatCode, hourLabel, deviceLabel } = Shared;
@@ -79,7 +80,14 @@ function readFamily() {
     // 이 기기에서 켠 알림(Web Push 구독 또는 갤럭시 앱 로컬 알림). 없으면 null
     push:
       f.push && typeof f.push === "object" && ["push", "native"].includes(f.push.mode) && typeof f.push.childId === "string"
-        ? { mode: f.push.mode, deviceId: idLike(f.push.deviceId), childId: idLike(f.push.childId), endpoint: typeof f.push.endpoint === "string" ? f.push.endpoint : "", enabledAt: typeof f.push.enabledAt === "string" ? f.push.enabledAt : "" }
+        ? {
+            mode: f.push.mode,
+            deviceId: idLike(f.push.deviceId),
+            childId: idLike(f.push.childId),
+            endpoint: typeof f.push.endpoint === "string" ? f.push.endpoint : "",
+            enabledAt: typeof f.push.enabledAt === "string" ? f.push.enabledAt : "",
+            registeredAt: typeof f.push.registeredAt === "string" ? f.push.registeredAt : "",
+          }
         : null,
   };
 }
@@ -783,6 +791,8 @@ $("startDaily").onclick = () => {
 // Web Push(아이폰 홈 화면 앱·Android Chrome): 권한(사용자 터치 안) → GET /push/key → 구독 → POST /push/subscribe(가족 코드) → family.push.
 // 갤럭시 래퍼 앱(window.DailyVocabNotify, N2): 권한 → schedule({daily, reminder}) 로 앱이 스스로 띄운다(서버 구독 없음). 시험을 끝내면 skipToday("reminder").
 // 앱 시작·설정을 받을 때(applySettings) 구독이 사라졌거나 endpoint 가 바뀌었으면(브라우저 갱신·키 교체·다른 아이로 연결) 다시 등록한다(권한이 granted 일 때만).
+// 구독이 그대로여도 마지막 등록이 하루(NOTIFY_REFRESH_MS) 전이면 같은 구독을 다시 보낸다: Worker 는 전송이 연달아 5번 실패한 구독을 지우는데
+// 브라우저 쪽은 모르므로 ‘🔔 알림 켜짐’인데 알림이 영영 오지 않는 일을 막는다(서버 등록은 같은 기기면 덮어써서 몇 번 보내도 같다).
 // 연결 해제·알림 끄기는 브라우저 구독과 서버 구독을 함께 지우고, 서버에서 지워진 아이(childGone)면 이 기기 것만 정리한다.
 let notifyBusy = false, notifyRefreshing = false;
 let notifyNote = null; // #notifyHelp 에 보일 {kind, text}
@@ -801,7 +811,8 @@ async function registerPush() {
   const { publicKey } = await familyRequest("/push/key", { method: "GET", passcode: syncPasscode() });
   const subscription = await Shared.notify.subscribe(publicKey);
   await familyRequest("/push/subscribe", { body: { role: "child", childId: family.childId, device: pushDeviceInfo(), subscription }, passcode: syncPasscode() });
-  family.push = { mode: "push", deviceId: family.deviceId, childId: family.childId, endpoint: subscription.endpoint, enabledAt: family.push?.enabledAt || new Date().toISOString() };
+  const now = new Date().toISOString();
+  family.push = { mode: "push", deviceId: family.deviceId, childId: family.childId, endpoint: subscription.endpoint, enabledAt: family.push?.enabledAt || now, registeredAt: now };
   writeFamily();
 }
 async function enableNotify() {
@@ -864,7 +875,7 @@ async function disableNotify() {
     renderNotify();
   }
 }
-// 앱 시작·설정 수신 때: 켜 둔 알림이 그대로인지 확인하고, 구독이 없어졌거나 바뀌었으면(또는 다른 아이로 연결했으면) 다시 등록한다.
+// 앱 시작·설정 수신 때: 켜 둔 알림이 그대로인지 확인하고, 구독이 없어졌거나 바뀌었으면(또는 다른 아이로 연결했으면, 마지막 등록이 하루 전이면) 다시 등록한다.
 async function refreshNotify() {
   const prev = family.push;
   if (!prev || prev.mode !== "push" || notifyBusy || notifyRefreshing || !isLinked() || family.childGone || !syncPasscode()) return; // 갤럭시 앱은 applySettings 의 nativeSchedule 이 맡는다
@@ -872,7 +883,8 @@ async function refreshNotify() {
   notifyRefreshing = true;
   try {
     const current = await Shared.notify.current();
-    if (current && current.endpoint === prev.endpoint && prev.childId === family.childId) return;
+    const recent = Date.now() - Date.parse(prev.registeredAt || "") < NOTIFY_REFRESH_MS; // 기록이 없으면(이 규칙 전에 켠 알림) 한 번 다시 보낸다
+    if (current && current.endpoint === prev.endpoint && prev.childId === family.childId && recent) return;
     if (prev.childId && prev.childId !== family.childId)
       // 다른 아이로 바꿔 연결했다: 옛 아이에게 등록한 이 기기의 구독은 지운다
       await familyRequest("/push/unsubscribe", { body: { role: "child", childId: prev.childId, device: { id: prev.deviceId || ensureDeviceId() } }, passcode: syncPasscode() }).catch(() => {});
