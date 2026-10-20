@@ -146,7 +146,7 @@
     $("photoPreview").textContent = "";
   }
   function open(set = null, o = {}) {
-    if (editorOpen && (current?.id || null) !== (set?.id || null) && !confirmDiscard()) return false;
+    if (!confirmDiscard()) return false; // 저장하지 않은 초안이 있으면 같은 세트·새 세트를 다시 열 때도 묻는다(사진 10장 인식 결과가 말없이 사라지지 않게)
     if ($("extractWords").disabled) cancelExtract();
     current = set ? { id: set.id, name: set.name } : null;
     selectedFiles = [];

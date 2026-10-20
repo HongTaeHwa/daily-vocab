@@ -106,7 +106,8 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert((await page.textContent("#restoreText")).includes("기록 2개 복원"), "restore status line: " + (await page.textContent("#restoreText")));
   // 기록 탭: 세트 필터는 이름이 같은 세트에 연결된 기록만, 항목에 점수·‘서버에서 복원’·틀린 단어(세트의 번호·뜻)·다시 풀기
   await page.click("#tabHistory");
-  assert((await page.evaluate(() => document.getElementById("historyFilter").value)) === "haneul-day04", "history filter on the synced set");
+  assert((await page.evaluate(() => document.getElementById("historyFilter").value)) === "all" && (await page.locator("#historyList .history-entry").count()) === 2, "history tab starts with every restored record");
+  await page.selectOption("#historyFilter", "haneul-day04");
   let historyText = await page.textContent("#historyList");
   assert((await page.locator("#historyList .history-entry").count()) === 1 && historyText.includes("7 / 10 · 70점") && historyText.includes("서버에서 복원") && historyText.includes("틀린 단어 3개 보기") && historyText.includes("모름 1개 포함"), "restored entry rendered: " + historyText);
   assert((await page.textContent("#historyStatus")).includes("기록 2개를 서버에서 가져왔어요"), "history status explains the restore: " + (await page.textContent("#historyStatus")));
@@ -146,8 +147,13 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await page.click("#tabSettings");
   await openFamilySettings();
   assert((await page.textContent("#restoreText")).includes("서버 기록 다시 가져오기"), "status line points to the button after clearing: " + (await page.textContent("#restoreText")));
-  await page.click("#restoreRecords");
-  await waitFor(() => page.evaluate(() => historyRecords.length === 3 && historyRecords.every((r) => r.restored)), "manual restore after clearing brings the records back");
+  // 기록 탭의 빈 화면: 연결된 기기에는 ‘서버 기록 가져오기’ 버튼이 있고, 누르면 설정의 버튼과 같이 가져온다
+  await page.click("#tabHistory");
+  assert((await page.textContent("#historyList")).includes("다른 기기에서 본 시험은 서버에서 가져올 수 있어요") && (await page.isVisible("#historyRestore")), "empty history offers the server restore on a linked device: " + (await page.textContent("#historyList")));
+  await page.click("#historyRestore");
+  await waitFor(() => page.evaluate(() => historyRecords.length === 3 && historyRecords.every((r) => r.restored)), "restore from the empty history tab brings the records back");
+  await waitFor(() => statusHas("historyStatus", "기록 3개를 서버에서 가져왔어요"), "history status after the restore");
+  assert((await page.locator("#historyList .history-entry").count()) === 3, "history tab lists the restored records");
   assert(syncs().length === 1 && JSON.parse(await page.evaluate(() => localStorage.getItem("daily_vocab_family_v1"))).pending.length === 0, "still nothing sent back");
 
   // 시험 완료 → 압축 기록 전송(점수·틀린 단어만, 단어별 전체 결과 없음)

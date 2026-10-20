@@ -155,6 +155,12 @@ code{background:#eef4ff;padding:1px 6px;border-radius:6px;font-size:13px}
 .tab.active{color:var(--blue)}
 body.no-code .tabbar,body.no-code #refreshFamily{display:none}
 body.no-code main{padding-bottom:30px}
+/* 화면 키보드가 떠 있거나 확대된 동안(shared.js watchViewport) 하단 탭은 스크롤하면 화면 가운데로 떠오르므로 숨긴다 */
+body.viewport-busy .tabbar{display:none}
+body.viewport-busy .toast{bottom:14px}
+body.viewport-busy .global-notice{bottom:10px}
+/* iPhone 은 16px 보다 작은 입력칸을 누르면 화면을 확대한 채로 둔다: 터치 기기에서는 입력칸을 16px 로 */
+@media(pointer:coarse){textarea,#wordTable .cell{font-size:16px}}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--tab-h) + 14px);z-index:45;width:min(560px,calc(100% - 24px));background:#1d2a3d;color:#fff;padding:12px 16px;border-radius:14px;font-weight:700;font-size:14px;box-shadow:0 8px 24px #0004;overflow-wrap:anywhere}
 .toast.good{background:#14613f}.toast.bad{background:#9b2f3b}
 body.no-code .toast{bottom:14px}

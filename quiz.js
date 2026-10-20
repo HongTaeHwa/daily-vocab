@@ -149,16 +149,22 @@ function showView(name, options = {}) {
   try { $(name).focus({ preventScroll: true }); } catch {}
 }
 // Android 뒤로 가기: 앱을 닫지 않고 화면만 되돌린다. 시험 중이면 쉬기로 처리한다.
+// 끝난(또는 쉬는) 시험 화면과 닫힌 편집기로는 돌아가지 않고 홈으로 간다(시험 화면은 하단 탭이 없고 버튼이 동작하지 않아 갇힌 것처럼 보였다).
 window.addEventListener("popstate", (e) => {
   if (sessionRunning) { pauseQuiz(); return; }
-  showView(e.state?.view || "home", { fromHistory: true });
+  let view = e.state?.view || "home";
+  if (view === "quiz" || (view === "editor" && !window.editorOpen)) view = "home";
+  showView(view, { fromHistory: true });
 });
 $("tabHome").addEventListener("click", () => showView("home"));
 $("tabLookup").addEventListener("click", () => showView("lookup"));
 $("tabHistory").addEventListener("click", () => showView("history"));
 $("tabSettings").addEventListener("click", () => showView("settings"));
 $("openSettings").addEventListener("click", () => showView("settings"));
-$("seeHistory").addEventListener("click", () => showView("history"));
+$("seeHistory").addEventListener("click", () => {
+  $("historyFilter").value = "all"; // 홈 ‘최근 결과’의 전체 보기: 모든 세트·오늘의 단어·종합 시험
+  showView("history");
+});
 
 // ---- 세트·범위 ----
 function wordNumberLabel(words) {
@@ -181,20 +187,7 @@ function populateSets() {
     select.append(o);
   }
   select.value = activeSetId ?? "";
-  const filter = $("historyFilter");
-  const keep = filter.value || activeSetId;
-  filter.textContent = "";
-  const all = document.createElement("option");
-  all.value = "all";
-  all.textContent = "전체 세트";
-  filter.append(all);
-  for (const set of sets) {
-    const o = document.createElement("option");
-    o.value = set.id;
-    o.textContent = set.name;
-    filter.append(o);
-  }
-  filter.value = [...filter.options].some((o) => o.value === keep) ? keep : activeSetId || "all";
+  renderHistoryFilter();
   const range = $("range");
   const previous = range.value;
   range.textContent = "";
@@ -222,7 +215,6 @@ function selectSet(id) {
   cacheKey = "daily_vocab_missed_" + id;
   loadMissed();
   savePrefs({ setId: id });
-  $("historyFilter").value = id || "all";
   populateSets();
   renderHistory();
   renderHome();
@@ -363,7 +355,8 @@ function renderHome() {
   if (typeof renderDailyCard === "function") renderDailyCard(); // family.js: 오늘의 단어 카드
   renderSetSummary();
   $("resumeEditor").classList.toggle("hidden", !window.editorOpen || currentView === "editor");
-  const recent = historyRecords.filter((r) => r.setId === activeSetId).slice(0, 3);
+  // 최근 결과는 세트와 상관없이 최근 3개(오늘의 단어·종합 시험 포함). 지금 세트의 요약은 위 #setSummary 에 있다.
+  const recent = historyRecords.slice(0, 3);
   const list = $("recentResults");
   list.textContent = "";
   if (!recent.length) { list.textContent = "최근 결과가 여기에 표시됩니다."; return; }
@@ -374,7 +367,7 @@ function renderHome() {
     const score = document.createElement("strong");
     score.textContent = s.pct + "점";
     const meta = document.createElement("span");
-    meta.textContent = `${s.correct}/${s.total} · ${modeLabels[r.mode]} · ${new Date(r.completedAt).toLocaleDateString("ko-KR")}${r.partial ? " · 중단" : ""}`;
+    meta.textContent = `${r.setName} · ${s.correct}/${s.total} · ${modeLabels[r.mode]} · ${new Date(r.completedAt).toLocaleDateString("ko-KR")}${r.partial ? " · 중단" : ""}`;
     row.append(score, meta);
     list.append(row);
   }
@@ -471,8 +464,7 @@ function abandonSavedSession() {
   const saved = loadSessionState();
   if (!saved) return;
   if (saved.results.length) {
-    sessionMeta = saved.meta;
-    mode = saved.mode;
+    sessionMeta = saved.meta; // 기록의 방식은 sessionMeta.mode 를 쓴다. 전역 mode 는 바꾸지 않는다(새로 시작할 시험이 쉬던 시험의 방식으로 바뀌지 않게)
     queue = saved.queue;
     results = saved.results;
     sessionMeta.saved = false;
@@ -481,11 +473,11 @@ function abandonSavedSession() {
   clearSessionState();
 }
 function stopQuiz() {
-  stopQuestionTimer();
-  if (!sessionRunning) return;
+  if (!sessionRunning) { stopQuestionTimer(); return; }
   const graded = Boolean(question.w && question.answerChecked && (mode !== "read_meaning" || question.readChecked));
   const answered = results.length + (graded ? 1 : 0);
-  if (!confirm(answered ? `시험을 그만할까요? 지금까지 푼 ${answered}문제는 ‘중단’ 기록으로 남아요.` : "시험을 그만할까요?")) return;
+  if (!confirm(answered ? `시험을 그만할까요? 지금까지 푼 ${answered}문제는 ‘중단’ 기록으로 남아요.` : "시험을 그만할까요?")) return; // 취소하면 제한 시간은 그대로 흐른다
+  stopQuestionTimer();
   stopRec();
   if (graded) recordCurrentResult();
   accumulateActive();
@@ -553,7 +545,14 @@ function correctKo(spoken, w) {
   return [...w.aliases, ...w.ko.split(/[·,;|]/)].map(normKo).filter(Boolean)
     .some((x) => x === ans || (x.length >= 2 && ans.length > x.length && ans.length - x.length <= 2 && ans.endsWith(x)));
 }
-function correctEn(spoken, w) { const raw = String(spoken || "").toLowerCase(); return raw.split(/[^a-z]+/).includes(w.en) || normEn(spoken) === w.en; }
+// 영어 읽기 채점: 인식된 말에 그 단어(구면 단어들이 차례로)가 있거나, 글자만 남겨 같으면 통과. 대문자(Christmas)·구(give up)·하이픈(e-mail)도.
+function correctEn(spoken, w) {
+  const target = String(w.en || "").toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  if (!target.length) return false;
+  const said = String(spoken || "").toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  for (let i = 0; i + target.length <= said.length; i++) if (target.every((t, j) => said[i + j] === t)) return true;
+  return normEn(spoken) === normEn(w.en);
+}
 
 // ---- 음성 인식 ----
 const permissionHelp = "Chrome → 설정 → 사이트 설정 → 마이크에서 이 사이트를 허용하고, Android 설정 → 애플리케이션 → Chrome → 권한 → 마이크 및 기기의 마이크 접근 스위치를 확인하세요.";
@@ -901,16 +900,14 @@ function finishRecords(partial) {
       if (sid === activeSetId) lastMissed = merged;
     }
   }
-  // 틀린 단어는 시험을 본 세트에 저장한다(지금 선택된 세트와 다를 수 있다).
+  // 틀린 단어는 시험을 본 세트에 저장한다(지금 선택된 세트와 다를 수 있다). 이번에 푼 단어만 결과로 바꾸고 풀지 않은 단어의 오답은 남긴다
+  // (범위 시험·기록에서 다시 풀기를 끝내도 다른 범위의 틀린 단어가 지워지지 않게. 전체를 푼 시험은 결과와 같다).
   else if (sets.some((s) => s.id === sessionMeta.setId)) {
     const setKey = "daily_vocab_missed_" + sessionMeta.setId;
-    let merged = missed;
-    if (partial) {
-      let previous = [];
-      try { previous = JSON.parse(localStorage.getItem(setKey) || "[]"); } catch {}
-      if (!Array.isArray(previous)) previous = [];
-      merged = [...new Set([...previous.filter((id) => !results.some((x) => x.id === id)), ...missed])];
-    }
+    let previous = [];
+    try { previous = JSON.parse(localStorage.getItem(setKey) || "[]"); } catch {}
+    if (!Array.isArray(previous)) previous = [];
+    const merged = [...new Set([...previous.filter((id) => !results.some((x) => x.id === id)), ...missed])];
     try { localStorage.setItem(setKey, JSON.stringify(merged)); } catch (_) { setFeedback($("historyStatus"), "bad", "오답 저장 실패. JSON 백업을 이용하세요."); }
     if (sessionMeta.setId === activeSetId) lastMissed = merged;
   }
@@ -987,18 +984,75 @@ function saveSession(partial = false) {
   if (!persistHistory(next)) { historyRecords = next; renderHistory(); }
   if (typeof queueFamilySync === "function") queueFamilySync(record); // family.js: 보호자에게 기록 보내기(켜져 있을 때만)
 }
+// 기록 탭의 세트 필터: 처음에는 ‘전체 세트’(오늘의 단어·종합 시험·지운 세트 기록까지 모두). 세트마다, 그리고 기록이 있을 때만 ‘오늘의 단어’·‘종합 시험’.
+// 홈에서 세트를 바꿔도 필터는 따라가지 않는다(지금 세트로 본 시험이 없으면 기록 탭이 비어 보여 기록이 사라진 것처럼 보였다).
+const HISTORY_DAILY = "@daily", HISTORY_COMBO = "@combo"; // 세트 id 와 겹치지 않는 필터 값
+const isDailyRecord = (r) => typeof r.setId === "string" && r.setId.startsWith("daily:");
+function renderHistoryFilter() {
+  const filter = $("historyFilter");
+  const options = [["all", "전체 세트"], ...sets.map((s) => [s.id, s.name])];
+  if (historyRecords.some(isDailyRecord)) options.push([HISTORY_DAILY, "📬 오늘의 단어"]);
+  if (historyRecords.some((r) => r.setId === COMBO_SET_ID)) options.push([HISTORY_COMBO, "📝 종합 시험"]);
+  const keep = filter.value || "all";
+  const key = JSON.stringify(options);
+  if (filter.dataset.key !== key) {
+    filter.dataset.key = key;
+    filter.textContent = "";
+    for (const [value, label] of options) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      filter.append(o);
+    }
+  }
+  filter.value = options.some(([value]) => value === keep) ? keep : "all";
+}
 function historyFilterValue() {
-  const v = $("historyFilter").value;
-  return v || activeSetId;
+  return $("historyFilter").value || "all";
 }
 function filteredHistory() {
   const filter = historyFilterValue();
   if (filter === "all") return historyRecords;
+  if (filter === HISTORY_DAILY) return historyRecords.filter(isDailyRecord);
+  if (filter === HISTORY_COMBO) return historyRecords.filter((r) => r.setId === COMBO_SET_ID);
   return historyRecords.filter((r) => r.setId === filter);
+}
+// 보이는 기록이 없을 때: 다른 세트에는 있으면 ‘전체 세트 보기’, 기기에 하나도 없고 가족 기록함에 연결돼 있으면 서버에서 가져오기(다른 기기에서 본 시험).
+function renderEmptyHistory(list) {
+  const text = document.createElement("p");
+  const actions = document.createElement("div");
+  actions.className = "actionbar";
+  if (historyRecords.length) {
+    text.textContent = `이 세트로 본 시험은 아직 없어요. 전체 세트에는 시험 ${historyRecords.length}회가 있어요.`;
+    const all = document.createElement("button");
+    all.type = "button"; all.className = "btn soft"; all.id = "showAllHistory"; all.textContent = "전체 세트 보기";
+    all.addEventListener("click", () => { $("historyFilter").value = "all"; renderHistory(); });
+    actions.append(all);
+  } else {
+    text.textContent = "아직 이 기기에서 본 시험이 없어요.";
+    if (typeof restoreReady === "function" && restoreReady()) { // family.js: 가족 기록함에 연결된 기기
+      text.textContent += " 다른 기기에서 본 시험은 서버에서 가져올 수 있어요.";
+      const fetchBtn = document.createElement("button");
+      fetchBtn.type = "button"; fetchBtn.className = "btn soft"; fetchBtn.id = "historyRestore"; fetchBtn.textContent = "☁️ 서버 기록 가져오기";
+      fetchBtn.disabled = sessionRunning;
+      fetchBtn.addEventListener("click", async () => {
+        fetchBtn.disabled = true;
+        setFeedback($("historyStatus"), "info", "서버에 보낸 기록을 가져오는 중…");
+        const added = await restoreRecords({ force: true, manual: true });
+        if (added === 0) setFeedback($("historyStatus"), "info", "서버에도 가져올 기록이 없어요.");
+        else if (added === null) setFeedback($("historyStatus"), "bad", "기록을 가져오지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요.");
+        if (document.body.contains(fetchBtn)) fetchBtn.disabled = false;
+      });
+      actions.append(fetchBtn);
+    }
+  }
+  list.append(text);
+  if (actions.childElementCount) list.append(actions);
 }
 function renderHistory() {
   const list = $("historyList");
   list.textContent = "";
+  renderHistoryFilter();
   $("exportHistory").disabled = !historyRecords.length;
   $("clearHistory").disabled = !historyRecords.length;
   const records = filteredHistory();
@@ -1006,7 +1060,7 @@ function renderHistory() {
     const avg = Math.round(records.reduce((sum, r) => sum + recordScore(r).pct, 0) / records.length);
     $("historySummary").textContent = `시험 ${records.length}회 · 평균 ${avg}점 · 최근 ${recordScore(records[0]).pct}점`;
   } else $("historySummary").textContent = "";
-  if (!records.length) { list.textContent = "아직 본 시험이 없어요."; return; }
+  if (!records.length) { renderEmptyHistory(list); return; }
   for (const record of records) {
     const { correct, total, pct } = recordScore(record);
     const unknown = record.results.filter((x) => x.unknown).length;
@@ -1099,6 +1153,7 @@ $("next").addEventListener("click", advance);
 $("answerInput").addEventListener("keydown", (e) => { if (e.isComposing || e.keyCode === 229) return; if (e.key === "Enter") { if (!$("check").disabled) grade($("answerInput").value); else if (!$("next").disabled) advance(); } });
 
 // ---- 초기 화면 ----
+Shared.watchViewport(); // 화면 키보드가 떠 있거나 확대된 동안 하단 탭을 숨긴다(화면 가운데로 떠오르지 않게)
 changeMode(mode);
 $("shuffle").checked = prefs.shuffle !== false;
 populateSets();
