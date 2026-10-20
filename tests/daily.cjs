@@ -120,6 +120,10 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert(!(await page.isDisabled("#next")), "next enabled after timeout");
   await page.click("#next");
   assert(/⏱ (10|9)초/.test(await page.textContent("#timeLeft")), "timer restarts on the next question");
+  page.once("dialog", (d) => d.dismiss()); // 그만하기를 눌렀다가 취소해도 제한 시간은 계속 흐른다
+  await page.click("#backSettings");
+  await new Promise((r) => setTimeout(r, 400));
+  assert((await page.isVisible("#timeLeft")) && (await page.evaluate(() => sessionRunning && Boolean(question.deadline))), "cancelled stop keeps the timer running");
   await page.click("#unknown");
   assert(await page.isHidden("#timeLeft"), "timer hidden once the question is answered");
   await page.click("#next");
@@ -132,6 +136,12 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert((await page.textContent("#historyList")) !== null, "history exists");
   await page.click("#tabHistory");
   assert((await page.textContent("#historyList")).includes("⏱ 시간 초과 1개"), "child history shows the timeout");
+  // 오늘의 단어 기록은 어느 세트에도 속하지 않으므로 필터의 ‘📬 오늘의 단어’로 따로 본다(처음 필터는 전체 세트)
+  assert((await page.evaluate(() => document.getElementById("historyFilter").value)) === "all", "history starts with all sets");
+  assert(await page.evaluate(() => [...document.getElementById("historyFilter").options].some((o) => o.value === "@daily" && o.textContent.includes("오늘의 단어"))), "daily filter option");
+  await page.selectOption("#historyFilter", "@daily");
+  assert((await page.locator("#historyList .history-entry").count()) === 1 && (await page.textContent("#historyList .history-meta")).includes("오늘의 단어"), "daily filter lists only the daily record: " + (await page.textContent("#historyList")));
+  await page.selectOption("#historyFilter", "all");
   // 세트 수정 잠금: 보호자가 잠그면 아이 기기는 앱을 열 때 /settings 로 받아 새 세트·수정·삭제·가져오기를 막고 단어는 보기만 한다
   children.get(childId).plan.setsLocked = true; // 보호자가 보호자 앱 📚 세트 탭에서 잠갔다
   await page.reload();

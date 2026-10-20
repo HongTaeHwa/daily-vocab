@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
 <meta name="color-scheme" content="light" />
 <title>매일 영단어</title>
 <link rel="manifest" href="./manifest.webmanifest"><meta name="theme-color" content="#133263"><link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
@@ -190,6 +190,11 @@ button.chip{cursor:pointer;font:inherit;font-size:14px}button.chip:disabled{opac
 .tab .ico{font-size:22px;line-height:1}
 .tab.active{color:var(--blue)}
 body.in-quiz .tabbar{display:none}
+/* 화면 키보드가 떠 있거나 확대된 동안(shared.js watchViewport) 하단 탭은 보이는 영역이 아니라 페이지 아래에 붙어 스크롤하면 가운데로 떠오르므로 숨긴다 */
+body.viewport-busy .tabbar{display:none}
+body.viewport-busy .global-notice{bottom:10px}
+/* iPhone 은 16px 보다 작은 입력칸을 누르면 화면을 확대한 채로 둔다: 터치 기기에서는 입력칸을 16px 로 */
+@media(pointer:coarse){textarea,#wordTable .cell{font-size:16px}}
 body.in-quiz #openSettings{display:none}
 .view:focus{outline:none}
 body.in-quiz main{padding-bottom:30px}
@@ -440,7 +445,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-25 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-26 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -455,7 +460,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-25';
+  var release = '20261018-26';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -492,10 +497,10 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./shared.js?v=20261018-25" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./quiz.js?v=20261018-25" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-25" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./editor.js?v=20261018-25" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-25" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./shared.js?v=20261018-26" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-26" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-26" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./editor.js?v=20261018-26" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-26" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 "use strict";
 // shared.js — 아이 앱(index.html)과 보호자 앱(B단계 parent.html)이 함께 쓰는 도우미. 가장 먼저 불러온다.
-// 상태를 갖지 않는다(순수 함수와 상수만). window.Shared 하나만 노출하고, 각 파일은 머리에서 필요한 이름을 별칭으로 꺼내 쓴다
+// 상태를 갖지 않는다(순수 함수와 상수만; watchViewport 는 앱이 시작할 때 한 번 부르는 화면 감시). window.Shared 하나만 노출하고, 각 파일은 머리에서 필요한 이름을 별칭으로 꺼내 쓴다
 // (예: quiz.js `const { $, setFeedback, modeLabels } = Shared;`). 같은 이름을 두 파일에서 const 로 선언하면 안 된다(전역 어휘 범위를 함께 쓴다).
 (function () {
   // ---- DOM ----
@@ -322,8 +322,44 @@
     },
   });
 
+  // ---- 화면 키보드·확대 감지 (하단 탭) ----
+  // 고정된 하단 탭(position:fixed; bottom:0)은 화면 키보드가 떠 있거나 화면이 확대된 동안 ‘보이는 영역’이 아니라 페이지 틀의 아래에 붙어 있어서,
+  // 스크롤하면 화면 가운데로 떠오른다(특히 iPhone: 16px보다 작은 입력칸을 누르면 확대된 채로 남는다). 그동안 body.viewport-busy 를 붙여 두면
+  // 각 앱 CSS 가 하단 탭을 숨긴다. 조건: 터치 기기에서 글자 입력칸에 초점이 있을 때, 보이는 영역이 페이지 틀보다 150px 넘게 작을 때(키보드),
+  // 확대 배율이 1.05를 넘을 때. 아이 앱(quiz.js)과 보호자 앱(parent.js)이 시작할 때 한 번 부른다.
+  function watchViewport() {
+    const vv = window.visualViewport;
+    const touch = Boolean(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+    const NOT_TEXT = /^(checkbox|radio|button|submit|reset|file|range|color|image|hidden)$/;
+    const typing = () => {
+      const el = document.activeElement;
+      if (!el || el.readOnly || el.disabled) return false;
+      if (el.isContentEditable || el.tagName === "TEXTAREA") return true;
+      return el.tagName === "INPUT" && !NOT_TEXT.test(el.type);
+    };
+    let timer = 0;
+    const update = () => {
+      timer = 0;
+      const layoutHeight = document.documentElement.clientHeight;
+      const zoomed = Boolean(vv && vv.scale > 1.05);
+      const keyboard = Boolean(vv && layoutHeight - vv.height * vv.scale > 150);
+      document.body.classList.toggle("viewport-busy", zoomed || keyboard || (touch && typing()));
+    };
+    const later = () => {
+      if (!timer) timer = setTimeout(update, 0); // 스크롤·크기 변경이 몰려도 한 번만
+    };
+    if (vv) {
+      vv.addEventListener("resize", later);
+      vv.addEventListener("scroll", later);
+    }
+    window.addEventListener("resize", later);
+    document.addEventListener("focusin", later);
+    document.addEventListener("focusout", later); // 초점이 옮겨 간 뒤(다음 차례)에 activeElement 를 본다
+    update();
+  }
+
   window.Shared = Object.freeze({
-    $, h, setFeedback,
+    $, h, setFeedback, watchViewport,
     tidy, formatCode, hourLabel, relativeTime, durationText, dayKey, pctOf, WEEKDAYS, modeLabels,
     AI_SERVER_DEFAULT, normalizeServer, WORD_PATTERN, PLAN_LEVELS, TIME_LIMIT_CHOICES, REMIND_HOUR_CHOICES, planDefaults,
     deviceLabel,

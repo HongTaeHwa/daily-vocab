@@ -374,6 +374,7 @@ function applySetsResponse(data, sentDeleted) {
   for (const s of incoming) {
     const normalized = { id: s.id, name: tidy(s.name).slice(0, 120), words: s.words, updatedAt: s.updatedAt };
     const i = next.findIndex((x) => x.id === s.id);
+    if (i >= 0 && Date.parse(next[i].updatedAt) > Date.parse(s.updatedAt)) continue; // 요청 중에 이 기기에서 더 나중에 고친 세트(찾아본 단어·학습한 답)는 지키고 다음 동기화로 올린다
     if (i >= 0) next[i] = normalized;
     else next.push(normalized);
   }
@@ -556,7 +557,8 @@ function expandRecord(r) {
     results,
   };
 }
-// force: 연결 직후·‘서버 기록 다시 가져오기’. 자동(앱 시작)은 기록이 비어 있고 이 연결에서 아직 확인한 적이 없을 때만.
+// force: 연결 직후·‘서버 기록 다시 가져오기’(설정, 기록 탭의 빈 화면). 자동(앱 시작)은 기록이 비어 있고 이 연결에서 아직 확인한 적이 없을 때만.
+// 돌려주는 값: 가져온 기록 수, 실패하면 null, 이번에 하지 않았으면 undefined.
 async function restoreRecords(options = {}) {
   if (restoreInFlight || !restoreReady() || sessionRunning) return;
   if (!options.force && (historyRecords.length || family.restoreCheckedAt)) return;
@@ -596,6 +598,7 @@ async function restoreRecords(options = {}) {
     restoreInFlight = false;
     renderFamilySettings(options.manual && !family.restoreError ? (added ? `서버에서 기록 ${added}개를 가져왔어요.` : "서버에 더 가져올 기록이 없어요. 이 기기에 모두 있어요.") : undefined);
   }
+  return family.restoreError ? null : added;
 }
 // quiz.js 가 ‘시험 기록 전체 삭제’를 마친 뒤 부른다: 일부러 지운 기록을 다음 실행 때 자동으로 되살리지 않는다(버튼으로는 가져올 수 있다).
 function noteHistoryCleared() {
