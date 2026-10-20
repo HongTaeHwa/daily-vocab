@@ -142,7 +142,10 @@ function showView(name, options = {}) {
     $(tab).classList.toggle("active", active);
     $(tab).setAttribute("aria-current", active ? "page" : "false");
   }
-  if (name === "history") renderHistory();
+  if (name === "history") {
+    renderHistory();
+    if (typeof onHistoryShown === "function") onHistoryShown(); // family.js: 다른 기기에서 본 시험을 가져온다(연결된 기기, 1분 간격)
+  }
   if (name === "home") renderHome();
   if (name === "lookup" && typeof renderLookup === "function") renderLookup(); // sets.js (단어 찾기)
   window.scrollTo({ top: 0, behavior: "auto" });
@@ -1038,7 +1041,7 @@ function renderEmptyHistory(list) {
       fetchBtn.addEventListener("click", async () => {
         fetchBtn.disabled = true;
         setFeedback($("historyStatus"), "info", "서버에 보낸 기록을 가져오는 중…");
-        const added = await restoreRecords({ force: true, manual: true });
+        const added = await restoreRecords({ manual: true }); // 처음부터 모두(지운 기록 포함)
         if (added === 0) setFeedback($("historyStatus"), "info", "서버에도 가져올 기록이 없어요.");
         else if (added === null) setFeedback($("historyStatus"), "bad", "기록을 가져오지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요.");
         if (document.body.contains(fetchBtn)) fetchBtn.disabled = false;
@@ -1058,7 +1061,8 @@ function renderHistory() {
   const records = filteredHistory();
   if (records.length) {
     const avg = Math.round(records.reduce((sum, r) => sum + recordScore(r).pct, 0) / records.length);
-    $("historySummary").textContent = `시험 ${records.length}회 · 평균 ${avg}점 · 최근 ${recordScore(records[0]).pct}점`;
+    const others = records.filter((r) => r.restored).length; // 서버에서 가져온 다른 기기(또는 다시 설치하기 전)의 시험
+    $("historySummary").textContent = `시험 ${records.length}회 · 평균 ${avg}점 · 최근 ${recordScore(records[0]).pct}점` + (others ? ` · ☁️ 다른 기기 ${others}회 포함` : "");
   } else $("historySummary").textContent = "";
   if (!records.length) { renderEmptyHistory(list); return; }
   for (const record of records) {
@@ -1074,11 +1078,16 @@ function renderHistory() {
     const remove = document.createElement("button");
     remove.type = "button"; remove.className = "btn outline small"; remove.textContent = "삭제";
     remove.setAttribute("aria-label", new Date(record.completedAt).toLocaleString("ko-KR") + " 시험 기록 삭제");
-    remove.addEventListener("click", () => { if (confirm("이 시험 기록을 삭제할까요?")) persistHistory(historyRecords.filter((x) => x.id !== record.id)); });
+    remove.addEventListener("click", () => {
+      if (!confirm("이 시험 기록을 삭제할까요?")) return;
+      // family.js: 보호자에게 보낸 서버 사본은 남으므로, 다른 기기 기록 가져오기가 이 기록을 되살리지 않게 기억한다
+      if (persistHistory(historyRecords.filter((x) => x.id !== record.id)) && typeof noteRecordDeleted === "function") noteRecordDeleted(record.id);
+    });
     head.append(score, remove);
     const meta = document.createElement("p");
     meta.className = "history-meta";
-    meta.textContent = new Date(record.completedAt).toLocaleString("ko-KR") + " · " + record.setName + " · " + modeLabels[record.mode] + " · " + record.range + (record.restored ? " · ☁️ 서버에서 복원" : "");
+    // 서버에서 가져온 요약 기록: 같은 아이의 다른 기기(또는 다시 설치하기 전 이 기기)에서 본 시험
+    meta.textContent = new Date(record.completedAt).toLocaleString("ko-KR") + " · " + record.setName + " · " + modeLabels[record.mode] + " · " + record.range + (record.restored ? " · ☁️ 다른 기기" : "");
     const counts = document.createElement("p");
     counts.textContent = "정답 " + correct + " · 오답 " + (total - correct) + " (모름 " + unknown + "개 포함)" + (record.awayCount ? " · ⚠️ 화면 이탈 " + record.awayCount + "회" : "") + (record.timeouts ? " · ⏱ 시간 초과 " + record.timeouts + "개" : "") + (record.aiPass ? " · 🤖 AI 인정 " + record.aiPass + "개" : "");
     entry.append(head, meta, counts);
@@ -1113,7 +1122,7 @@ function exportHistory() {
   if (!historyRecords.length) return;
   const rows = [["완료 날짜", "세트", "시험 방식", "범위", "정답", "전체", "점수", "모름 개수", "오답 번호", "모름 번호", "중단", "비고"], ...historyRecords.map((r) => {
     const s = recordScore(r);
-    return [new Date(r.completedAt).toLocaleString("ko-KR"), r.setName, modeLabels[r.mode], r.range, s.correct, s.total, s.pct, r.results.filter((x) => x.unknown).length, r.results.filter((x) => !x.pass).map((x) => x.id).join(" "), r.results.filter((x) => x.unknown).map((x) => x.id).join(" "), r.partial ? "중단" : "", r.restored ? "서버에서 복원" : ""];
+    return [new Date(r.completedAt).toLocaleString("ko-KR"), r.setName, modeLabels[r.mode], r.range, s.correct, s.total, s.pct, r.results.filter((x) => x.unknown).length, r.results.filter((x) => !x.pass).map((x) => x.id).join(" "), r.results.filter((x) => x.unknown).map((x) => x.id).join(" "), r.partial ? "중단" : "", r.restored ? "다른 기기(서버 사본)" : ""];
   })];
   const csv = "﻿" + rows.map((row) => row.map((value) => '"' + String(value).replace(/"/g, '""') + '"').join(",")).join("\r\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -1124,8 +1133,8 @@ function exportHistory() {
 $("exportHistory").addEventListener("click", exportHistory);
 $("clearHistory").addEventListener("click", () => {
   const linked = typeof isLinked === "function" && isLinked(); // family.js: 가족 기록함에 연결된 기기
-  if (!confirm("전체 시험 기록을 삭제할까요? 삭제 전에 CSV로 내려받을 수 있습니다." + (linked ? " 보호자에게 보낸 서버 사본은 남고, 설정 → 가족 기록함의 ‘서버 기록 다시 가져오기’로 되살릴 수 있어요." : ""))) return;
-  if (persistHistory([]) && typeof noteHistoryCleared === "function") noteHistoryCleared(); // 일부러 지운 기록을 다음 실행 때 자동으로 되살리지 않는다
+  if (!confirm("전체 시험 기록을 삭제할까요? 삭제 전에 CSV로 내려받을 수 있습니다." + (linked ? " 보호자에게 보낸 서버 사본은 남고, 설정 → 가족 기록함의 ‘서버 기록 다시 가져오기’로 되살릴 수 있어요. 지운 기록은 자동으로 다시 가져오지 않고, 앞으로 다른 기기에서 보는 시험만 들어와요." : ""))) return;
+  if (persistHistory([]) && typeof noteHistoryCleared === "function") noteHistoryCleared(); // 지금 시각을 바닥으로: 그 전에 끝난 기록은 자동으로 되살리지 않는다
 });
 
 // ---- 버튼 연결 ----

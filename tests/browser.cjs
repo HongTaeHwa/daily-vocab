@@ -185,7 +185,7 @@ const { chromium } = require("playwright");
   await page.reload();
   assert((await page.evaluate(() => [historyRecords.length, historyRecords.filter((r) => r.restored).length, recordScore(historyRecords.find((r) => r.restored)).pct])).join() === "2,1,90", "restored summary record survives a reload with its own score");
   await page.click("#tabHistory");
-  assert((await page.textContent("#historyList")).includes("9 / 10 · 90점") && (await page.textContent("#historyList")).includes("서버에서 복원"), "restored record rendered from total/correct");
+  assert((await page.textContent("#historyList")).includes("9 / 10 · 90점") && (await page.textContent("#historyList")).includes("☁️ 다른 기기"), "restored record rendered from total/correct");
   // 범위 시험을 끝내면 이번에 푼 단어만 오답이 바뀌고 다른 범위의 틀린 단어(150)는 남는다(전에는 이번 시험의 오답으로 통째로 바뀌었다)
   await page.evaluate(() => { localStorage.setItem("daily_vocab_missed_day04", "[150,125]"); selectSet("day04"); });
   await page.click("#tabHome");
