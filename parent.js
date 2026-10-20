@@ -98,6 +98,7 @@
           endpoint: push.endpoint,
           kinds: { finish: push.kinds?.finish !== false, summary: push.kinds?.summary !== false },
           summaryHour: Number.isInteger(push.summaryHour) && push.summaryHour >= 0 && push.summaryHour <= 23 ? push.summaryHour : 21,
+          registeredAt: typeof push.registeredAt === "string" ? push.registeredAt : "",
         };
     }
     return s;
@@ -230,7 +231,7 @@
 
   // ---- 통계 (순수 함수): 이 폰의 현지 날짜 기준 ----
   // records: 압축 기록 [{completedAt, total, correct, setName, missed, awayCount, timeouts, …}]. days: 날짜 띠·창 크기(0 = 전체).
-  // → { today, week(최근 7일), prevWeek(그 앞 7일), window(days 창), streak(오늘 또는 어제까지 연속 학습일), days:[{key, weekday, label, count, avg, today}],
+  // → { today, week(최근 7일), prevWeek(그 앞 7일), window(days 창), streak(받은 기록으로 센 오늘 또는 어제까지 연속 학습일 — 화면은 streakFor), days:[{key, weekday, label, count, avg, today}],
   //     bySet:[{name, count, avg, last}](창 안), missedTop:[{en, ko, n}](최근 2주 상위 10) }  각 요약 = {count, avg, away, timeouts}
   function computeStats(records, { days = 30, now = new Date() } = {}) {
     const list = (Array.isArray(records) ? records : []).filter((r) => r && Number.isFinite(Date.parse(r.completedAt))).sort(byNewest);
@@ -288,6 +289,20 @@
       bySet: [...sets.values()].map((x) => ({ name: x.name, count: x.records.length, avg: avgOf(x.records), last: x.records[0] })),
       missedTop: [...counts.values()].sort((a, b) => b.n - a.n || a.en.localeCompare(b.en)).slice(0, 10),
     };
+  }
+
+  // 연속 학습(🔥, 순수 함수): Worker 가 전체 기록으로 센 streakDays(streakLastDay 까지 이어진 날 수)가 있으면 그것을 쓴다 — 받은 기록(목록 14일·상세 30일)만으로
+  // 세면 그보다 긴 연속이 14·30일로 잘린다. streakLastDay 가 이 폰의 오늘이면 그대로, 어제면 오늘 기록이 있을 때 +1(없어도 어제까지 이어진 것),
+  // 그보다 전이면 끊긴 것. 옛 Worker(값 없음)는 받은 기록으로 센 stats.streak. 둘 중 큰 값.
+  function streakFor(c, stats, now = new Date()) {
+    const n = c?.streakDays;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(c?.streakLastDay || ""));
+    if (!Number.isInteger(n) || n < 1 || !m) return stats.streak;
+    const noon = new Date(now);
+    noon.setHours(12, 0, 0, 0);
+    const gap = Math.round((noon - new Date(+m[1], +m[2] - 1, +m[3], 12)) / 86400000); // 마지막 날부터 이 폰의 오늘까지 며칠
+    const server = gap <= 0 ? n : gap === 1 ? n + (stats.today.count ? 1 : 0) : 0;
+    return Math.max(stats.streak, server);
   }
 
   // ---- 수준 제안 (순수 함수, 2C): 제안만 하고 바꾸지는 않는다(보호자가 ‘적용’을 눌러야 저장) ----
@@ -714,12 +729,13 @@
     const records = recordsOf(c.id);
     const stats = computeStats(records, { days: 7 });
     const t = stats.today;
+    const streak = streakFor(c, stats);
     head.append(
       h(
         "span",
         { class: "badges" },
         h("span", { class: "pill " + (t.count ? "ok" : "warn") }, t.count ? `오늘 시험 ✅ ${t.count}회 · 평균 ${t.avg}점` : "오늘 시험 아직"),
-        stats.streak ? h("span", { class: "streak" }, `🔥 ${stats.streak}일`) : null,
+        streak ? h("span", { class: "streak" }, `🔥 ${streak}일`) : null,
       ),
     );
     const latest = records[0];
@@ -872,7 +888,8 @@
     const s = store.get();
     const records = recordsOf(c.id);
     const stats = computeStats(records, { days: 30 });
-    const { week, prevWeek, window: month, streak } = stats;
+    const { week, prevWeek, window: month } = stats;
+    const streak = streakFor(c, stats);
     const tiles = $("recordsSummary");
     tiles.textContent = "";
     tiles.append(
@@ -1592,12 +1609,15 @@
 
   // ===== [notify] 알림(2B): 이 폰에서 받기 · 🧒 시험 마침 · 🌙 저녁 요약 · 테스트 알림 =====
   // 켜기: 권한(터치 직후 맨 먼저) → GET /push/key → 브라우저 구독 → POST /push/subscribe {role:"parent", device, subscription, kinds, summaryHour}(보호자 코드) → prefs.push.
-  // 체크·시각을 바꾸면 같은 구독으로 바로 다시 보낸다. 앱 시작 때 구독이 없어졌거나 endpoint 가 바뀌었으면 다시 등록한다(권한이 granted 일 때만).
+  // 체크·시각을 바꾸면 같은 구독으로 바로 다시 보낸다. 앱 시작·화면 복귀 때 구독이 없어졌거나 endpoint 가 바뀌었으면, 또는 마지막 등록이 하루 전이면
+  // 다시 등록한다(권한이 granted 일 때만): Worker 는 전송이 연달아 5번 실패한 구독을 지우는데 폰은 모르므로, 하루에 한 번은 같은 구독을 다시 보낸다.
   // 끄기·보호자 코드 삭제는 브라우저 구독과 서버 구독(POST /push/unsubscribe)을 함께 지운다. 문구는 Worker 가 만든다.
   const SUMMARY_HOURS = [18, 19, 20, 21, 22, 23];
   $("notifySummaryHour").append(...SUMMARY_HOURS.map((hr) => h("option", { value: String(hr) }, hourLabel(hr))));
   $("notifySummaryHour").value = "21";
+  const PUSH_REFRESH_MS = 24 * 3600000;
   let pushBusy = false;
+  let pushRefreshing = false;
   let pushNote = null; // #notifyStatus 에 보일 {kind, text}(없으면 지원 여부 안내)
   function pushDeviceId() {
     const s = store.get();
@@ -1613,7 +1633,7 @@
     const subscription = await Shared.notify.subscribe(publicKey);
     const deviceId = pushDeviceId();
     await api.request("/push/subscribe", { method: "POST", body: { role: "parent", device: { id: deviceId, label: deviceLabel() }, subscription, ...choices } });
-    store.patch((s) => ({ prefs: { ...s.prefs, push: { deviceId, endpoint: subscription.endpoint, kinds: choices.kinds, summaryHour: choices.summaryHour } } }));
+    store.patch((s) => ({ prefs: { ...s.prefs, push: { deviceId, endpoint: subscription.endpoint, kinds: choices.kinds, summaryHour: choices.summaryHour, registeredAt: nowIso() } } }));
   }
   function renderNotifyCard() {
     const push = store.get().prefs.push;
@@ -1692,7 +1712,7 @@
       const current = await Shared.notify.current();
       if (current && current.endpoint === prev.endpoint) {
         await api.request("/push/subscribe", { method: "POST", body: { role: "parent", device: { id: prev.deviceId, label: deviceLabel() }, subscription: current, ...choices } });
-        store.patch((s) => ({ prefs: { ...s.prefs, push: { ...prev, ...choices } } }));
+        store.patch((s) => ({ prefs: { ...s.prefs, push: { ...prev, ...choices, registeredAt: nowIso() } } }));
       } else await registerParentPush(choices);
       return { kind: "good", text: `저장했어요. ${choicesText(choices)}` };
     });
@@ -1711,16 +1731,22 @@
       return { kind: "good", text: "테스트 알림을 보냈어요. 몇 초 안에 이 폰에 알림이 와요. 안 오면 폰의 알림 설정을 확인해 주세요." };
     });
   };
-  // 앱 시작 때: 켜 둔 알림의 구독이 사라졌거나 바뀌었으면(브라우저 갱신·키 교체) 조용히 다시 등록한다.
+  // 앱 시작·화면 복귀 때: 켜 둔 알림의 구독이 사라졌거나 바뀌었으면(브라우저 갱신·키 교체), 또는 마지막 등록이 하루 전이면 조용히 다시 등록한다.
   async function refreshParentPush() {
     const s = store.get();
     const prev = s.prefs.push;
-    if (!prev || !s.parentCode || pushBusy || Shared.notify.support() !== "push" || Shared.notify.permission() !== "granted") return;
+    if (!prev || !s.parentCode || pushBusy || pushRefreshing || Shared.notify.support() !== "push" || Shared.notify.permission() !== "granted") return;
+    pushRefreshing = true;
     try {
       const current = await Shared.notify.current();
-      if (current && current.endpoint === prev.endpoint) return;
+      const recent = Date.now() - Date.parse(prev.registeredAt || "") < PUSH_REFRESH_MS; // 기록이 없으면(이 규칙 전에 켠 알림) 한 번 다시 보낸다
+      if (current && current.endpoint === prev.endpoint && recent) return;
       await registerParentPush({ kinds: prev.kinds, summaryHour: prev.summaryHour });
-    } catch {} // 오프라인·옛 Worker: 다음에 앱을 열 때 다시
+    } catch {
+      // 오프라인·옛 Worker: 다음에 앱을 열 때 다시
+    } finally {
+      pushRefreshing = false;
+    }
   }
 
   // ===== [questions] 질문 탭: 아이가 AI 선생님에게 물어본 문제(요약만, 사진 없음) =====
@@ -1775,7 +1801,9 @@
     onRoute();
   });
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) autoRefresh();
+    if (document.hidden) return;
+    autoRefresh();
+    refreshParentPush(); // 폰에 오래 떠 있는 앱도 하루에 한 번은 알림 구독을 다시 보낸다
   });
   window.addEventListener("online", () => {
     offlineToastShown = false;
@@ -1796,6 +1824,6 @@
     });
   }
   refreshParentPush();
-  window.ParentApp = Object.freeze({ store, router, computeStats, suggestLevel, api });
+  window.ParentApp = Object.freeze({ store, router, computeStats, suggestLevel, streakFor, api });
   if (window.markVocabAppReady) window.markVocabAppReady();
 })();

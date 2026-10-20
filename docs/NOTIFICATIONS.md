@@ -87,7 +87,7 @@ Web Push 전송에는 VAPID 서명(ES256 JWT)과 본문 암호화(aes128gcm)가 
 - `#notifyBox`(연결된 기기에서만): 상태 줄 `#notifyText`, 버튼 `#notifyEnable`(🔔 이 기기에서 알림 받기 / 🔕 알림 끄기), 안내 `#notifyHelp`.
 - 켜기 흐름(사용자 터치 안): `Shared.notify.support()`가 `"native"`(갤럭시 앱 `window.DailyVocabNotify`)·`"push"`·`"install"`(iOS Safari 탭: standalone 아님)·`"none"` 중 하나를 돌려준다. `native` → 브리지 `permission()` 뒤 `schedule({daily:{enabled, hour}, reminder:{hour}})`; `push` → `Notification.requestPermission()` → `GET /push/key` → `registration.pushManager.subscribe({userVisibleOnly:true, applicationServerKey})` → `POST /push/subscribe` → `family.push = {deviceId, endpoint, enabledAt}`; `install` → “홈 화면에 설치한 앱에서만 알림을 켤 수 있어요(공유 → 홈 화면에 추가)”; 거부되면 “알림 권한이 꺼져 있어요. 기기 설정에서 켜 주세요”.
 - 끄기: `unsubscribe()` + `POST /push/unsubscribe`(네이티브는 `cancel()`), `family.push = null`.
-- 앱 시작·설정 수신 때: `family.push`가 있는데 실제 구독이 없거나 endpoint가 다르면 다시 등록(권한이 granted일 때만). 네이티브면 `applySettings` 때마다 `schedule(...)`을 다시 보내고, 시험을 **완료**해 `queueFamilySync`가 호출될 때 `skipToday("reminder")`.
+- 앱 시작·설정 수신 때: `family.push`가 있는데 실제 구독이 없거나 endpoint가 다르면, 또는 마지막 등록(`registeredAt`)이 24시간 전이면 다시 등록(권한이 granted일 때만; 2026-10-20 — Worker 가 전송이 5번 연달아 실패한 구독을 지워도 하루 안에 되살아나게, 보호자 앱도 시작·화면 복귀 때 같은 규칙). 네이티브면 `applySettings` 때마다 `schedule(...)`을 다시 보내고, 시험을 **완료**해 `queueFamilySync`가 호출될 때 `skipToday("reminder")`.
 - 상태 문구: “🔔 알림 켜짐 · 오늘의 단어 도착 · 공부 알림 오후 8시”(remindHour 없으면 ‘공부 알림 없음(보호자 설정)’), “알림 꺼짐”, “이 브라우저는 알림을 지원하지 않아요”.
 - 갤럭시 앱 브리지 계약(`bridge.js`가 `window.DailyVocabNotify`로 노출, N2에서 구현; N1에서는 없으면 Web Push로): `available: true`, `permission() → "granted"|"denied"|"prompt"`(요청 포함), `schedule({daily:{enabled, hour}|null, reminder:{hour}|null})`, `skipToday(kind)`, `cancel()`. 모두 동기, 인자는 JSON 문자열로 넘긴다(`AndroidNotify.*`).
 
@@ -175,7 +175,7 @@ N1(Worker 푸시 기반 + `sw.js` + 두 앱 UI)을 구현하면서 설계와 다
 9. **`finish` 조건(4.1)**: ‘이번 요청 기록 수 ≤ 3’에 더해 **이번 요청에서 처음 저장된 기록만** 본다(응답을 못 받아 다시 보낸 기록에 두 번 알리지 않게). 기기 시계가 10분까지 빠른 것은 ‘방금’으로 본다.
 10. **전송 대기**: `sync`·`buildDaily`·크론은 푸시 전송(순차, 건당 10초 제한)을 기다린 뒤 응답한다(테스트 가능·단순함). 구독은 아이당 몇 대뿐이라 보통 1초 안이다.
 11. **`Shared.notify`(4.6)**: `permission()`은 묻지 않고 지금 상태만(`"granted"|"denied"|"prompt"`), 묻는 것은 `request()`(네이티브는 브리지의 `permission()`)로 나눴다. `native()`로 갤럭시 브리지를 꺼낸다. `subscribe()`는 같은 서버 키의 기존 구독을 다시 쓰고 키가 바뀌었으면 새로 만든다. 서비스워커 준비는 10초까지 기다린다.
-12. **아이 앱 상태(4.4·5)**: `family.push = {mode:"push"|"native", deviceId, childId, endpoint, enabledAt}`. `childId`를 두어 다른 아이로 다시 연결하면 옛 아이 구독을 지우고 새 아이로 다시 등록한다. 권한 요청은 터치 직후 맨 먼저 하고(아이폰), 그다음 `GET /push/key` → 구독 → 등록. 서버에서 지워진 아이(`childGone`)면 서버 구독은 이미 지워졌으므로 기기 쪽만 정리한다. 네이티브 `schedule`의 `daily`는 언제나 `{enabled, hour}`(꺼져 있으면 `enabled:false`), `reminder`는 시각이 없으면 `null`.
+12. **아이 앱 상태(4.4·5)**: `family.push = {mode:"push"|"native", deviceId, childId, endpoint, enabledAt, registeredAt}`. `childId`를 두어 다른 아이로 다시 연결하면 옛 아이 구독을 지우고 새 아이로 다시 등록한다. 권한 요청은 터치 직후 맨 먼저 하고(아이폰), 그다음 `GET /push/key` → 구독 → 등록. 서버에서 지워진 아이(`childGone`)면 서버 구독은 이미 지워졌으므로 기기 쪽만 정리한다. 네이티브 `schedule`의 `daily`는 언제나 `{enabled, hour}`(꺼져 있으면 `enabled:false`), `reminder`는 시각이 없으면 `null`.
 13. **보호자 앱(4.5·5)**: 기기 id 는 `prefs.deviceId`에 따로 두어(`prefs.push` 밖) 알림을 껐다 켜도 같은 서버 항목을 덮어쓴다. 카드에 상태 칩 `#notifyState`와 켜졌을 때만 보이는 옵션 묶음 `#notifyOptions`를 더했고, 공부 알림 시각 결과는 `#remindStatus`에 보인다. 갤럭시 래퍼 앱 안에서 보호자 앱을 열면(브리지가 있음) 보호자 알림은 지원하지 않는다고 안내한다(보호자는 Chrome·Safari 설치 앱을 쓴다).
 14. **공통 코드**: 기기 이름 `deviceLabel`을 `family.js`에서 `Shared`로 옮겨 두 앱이 함께 쓴다. 공부 알림 선택지는 `Shared.REMIND_HOUR_CHOICES`(없음·15~22시), `planDefaults`에 `remindHour: null`.
 
