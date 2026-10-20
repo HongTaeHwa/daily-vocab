@@ -1083,7 +1083,12 @@ export class FamilyStore {
         if (!done.length && !Object.keys(c.devices || {}).length) continue;
         const avg = done.length ? Math.round(done.reduce((s, r) => s + (r.correct / r.total) * 100, 0) / done.length) : 0;
         const daily = done.length ? await this.storage.get(this.dailyKey(c.id, date)) : null;
-        lines.push(done.length ? `${c.name} ✅ ${done.length}회 · 평균 ${avg}점` + (daily?.completed ? " · 오늘의 단어 ✅" : "") : `${c.name} ⬜ 아직`);
+        // 문구는 영어(사용자 요청 2026-10-20), 아이 이름만 한글 그대로
+        lines.push(
+          done.length
+            ? `${c.name} ✅ ${done.length} ${done.length === 1 ? "test" : "tests"} · avg ${avg}` + (daily?.completed ? " · Daily Words ✓" : "")
+            : `${c.name} ⏳ Today's practice still awaits`,
+        );
       }
       if (lines.length)
         for (const [key, sub] of parents) {
@@ -1518,7 +1523,7 @@ const PUSH_TEXT = {
       tag: "finish-" + childId,
     };
   },
-  summary: (lines) => ({ title: "🌙 오늘 공부", body: lines.join("\n"), url: "./parent.html#/", tag: "summary" }),
+  summary: (lines) => ({ title: "🌙 Evening Study Report", body: lines.join("\n"), url: "./parent.html#/", tag: "summary" }), // 저녁 요약만 영어(사용자 요청)
   test: (role) => ({ title: "🔔 알림이 잘 와요", body: "매일 영단어 알림 설정이 끝났어요", url: role === "parent" ? "./parent.html#/settings" : "./", tag: "test" }),
 };
 // 구독 요청(/push/subscribe·unsubscribe·test) 검사. 하나라도 틀리면 거절한다. 코드 역할(보호자 구독은 보호자 코드만)은 family() 가 본다.
