@@ -321,7 +321,7 @@
 - **다시 보내지 않기**: `localRecordIds()`(`restored` 제외)를 `joinChild`·`saveFamily`의 pending 에 쓰고 `flushFamilySync`가 pending 을 `!r.restored`로 걸러 복원 기록이 `/sync`로 돌아가지 않는다.
 - **기록 전체 삭제와의 관계**: 기존 원칙(기기 기록만 지우고 서버 사본은 남음) 유지. 삭제 뒤 `noteHistoryCleared`가 `restoreCheckedAt`을 찍어 다음 실행 때 자동 복원으로 되살리지 않는다(확인 문구에 ‘서버 기록 다시 가져오기로 되살릴 수 있어요’ 안내). 연결 해제·아이 바꾸기 때 `restoreCheckedAt`·`restoreError` 초기화.
 - **백업 JSON**: 내보내기에 복원 기록도 들어간다. 가져오기(sets.js)는 보통 기록에 새 id를 주지만 복원 기록은 id를 그대로 두고 이미 있으면 건너뛰어, 가져온 뒤 다시 복원해도 같은 시험이 두 번 생기지 않는다.
-- **화면**: 기록 항목 메타 줄에 ‘☁️ 서버에서 복원’, 설정 → 가족 기록함 `#restoreText`(‘기록 N개 복원 (서버 사본: 점수·틀린 단어) · 마지막 확인 HH:MM’ / 가져오는 중 / 오류 / 삭제 뒤 안내)와 `#restoreRecords` 버튼. 기록 탭 안내문에 복원 설명 추가.
+- **화면**: 기록 항목 메타 줄에 ‘☁️ 서버에서 복원’(2026-10-20부터 ‘☁️ 다른 기기’, 26절), 설정 → 가족 기록함 `#restoreText`(‘기록 N개 복원 (서버 사본: 점수·틀린 단어) · 마지막 확인 HH:MM’ / 가져오는 중 / 오류 / 삭제 뒤 안내)와 `#restoreRecords` 버튼. 기록 탭 안내문에 복원 설명 추가.
 - 테스트: `tests/worker.cjs` 기록 복원 절, `tests/family.cjs`(연결 직후 복원·기록 탭·다시 풀기·수동 복원 페이지 넘김·전체 삭제 뒤 자동 복원 없음), `tests/browser.cjs`(복원 기록 형식 유지·백업 왕복), `tests/daily.cjs` 가짜 Worker에 `/records`. 버전 `20261018-13`, 캐시 v22(단어 찾기 PR #27의 12/v21 다음). Worker 재배포 필요(`/records`).
 
 ## 21. 종합 시험 — 여러 세트 묶어 보기 (2026-10-18)
@@ -420,3 +420,17 @@
 - **`NotifyScheduler.kt`**: SharedPreferences 에 시각, `AlarmManager.setAndAllowWhileIdle`로 다음 한 번(Asia/Seoul; 오늘의 단어 :05, 리마인더 :00), 울리면 조건 확인(그날 건너뛰기·이미 띄움·3시간 넘게 늦음) 뒤 채널 ‘공부 알림’에 표시하고 다음 날 예약. `NotifyReceiver`(exported=false), `BootReceiver`(BOOT_COMPLETED·MY_PACKAGE_REPLACED). 매니페스트 `POST_NOTIFICATIONS`·`RECEIVE_BOOT_COMPLETED`.
 - **검증**: Kotlin 은 PR 의 Android APK 워크플로 빌드. JS 어댑터는 로컬 Playwright 로 가짜 `AndroidNotify` + 실제 `bridge.js` + 실제 아이 앱을 묶어 확인(허용: permission → schedule `{daily:{enabled:true,hour:17}, reminder:{hour:20}}` 문자열·상태 문구·Web Push 요청 없음 → skipToday → 끄기 cancel / 거부: 안내 문구). 실제 알림 표시·권한 대화상자·재부팅 뒤 재예약은 실기기 확인 항목.
 - 설계와 다르게 한 결정은 `docs/NOTIFICATIONS.md` 12절.
+
+## 26. 다른 기기 기록 자동 가져오기 — 기록 탭에 같은 아이의 모든 시험 (2026-10-20)
+
+배경: 아이 한 명이 아이폰·태블릿을 같은 아이 코드로 연결해 쓰는데, 세트는 기기끼리 맞춰지지만(15절) 기록은 기기마다 따로라 ‘아이폰에서 본 시험이 태블릿 기록 탭에 없다’는 혼란이 있었다. 20절의 기록 복원은 연결 직후와 ‘기록이 비어 있을 때 한 번’만 서버 사본을 가져왔다. 2026-10-20 PR #42(기록 탭 기본 ‘전체 세트’·빈 기록 탭의 ‘☁️ 서버 기록 가져오기’) 위에 자동 증분 병합을 더했다. **Worker 변경 없음**(20절의 `GET /records/<childId>?since=&limit=`를 그대로 쓴다).
+
+- **언제**(family.js `restoreRecords`, 연결된 기기·시험 중이 아닐 때): 연결 직후(기록 올리기·세트 받기 뒤), 앱 시작(`syncSets` 뒤, 간격 없음), 화면 복귀·온라인 복귀(`RESTORE_CHECK_MS` 10분), 기록 탭을 열 때(quiz.js `showView` → `onHistoryShown`, `RESTORE_TAB_MS` 1분). 간격은 마지막 성공 확인(`restoreCheckedAt`, 요청을 시작한 시각)과 마지막 실패(메모리 `restoreFailedAt`) 중 늦은 것 기준.
+- **어디서부터**(`autoRestoreSince`): `restoreCheckedAt` − 14일(`RESTORE_OVERLAP_MS`). 서버의 `since`는 `completedAt` 기준이라, 오프라인이던 기기가 며칠 뒤에 올린 기록(끝난 시각이 마지막 확인보다 앞)을 놓치지 않으려고 넉넉히 겹친다. 기기에 있는 id는 건너뛰므로 겹쳐도 중복이 없다. 처음(연결 직후·연결 해제 뒤)이면 epoch 부터. 14일 넘게 늦은 기록은 버튼으로. (가) Worker 에 `receivedAt` 기준 조회를 더하는 방법은 재배포가 필요하고 겹침으로 충분해 두지 않았다.
+- **지운 기록은 되살리지 않는다**: 서버 사본은 남는다는 원칙(20절)과 자동 병합이 부딪히는 곳. 기록 하나 삭제 → quiz.js 가 `noteRecordDeleted(id)` → `family.restoreSkip`(최근 500개, 연결 전·연결 해제 뒤에도 기억). 기록 전체 삭제 → `noteHistoryCleared`가 `family.restoreFloor` = 그 시각(연결된 기기만), `restoreSkip`은 모두 바닥 앞이라 비운다. 자동 병합은 `restoreSkip` id 와 `completedAt` < 바닥인 기록을 건너뛰고 `since`도 바닥보다 앞으로 가지 않는다. 그래서 전체 삭제 뒤에는 그 뒤에 끝난 시험(다른 기기 것 포함)만 들어온다.
+- **버튼은 모두**: 설정의 ‘☁️ 서버 기록 다시 가져오기’와 빈 기록 탭의 ‘☁️ 서버 기록 가져오기’(`{manual: true}`)는 epoch 부터 바닥·지운 id 를 무시하고 가져온 뒤 `restoreFloor`·`restoreSkip`을 비운다(모두 기기에 있으니 표시가 더 필요 없고, 다시 지우면 다시 기억한다).
+- **옛 판에서 올라올 때**: 2026-10-20 전 판은 전체 삭제 때 `restoreCheckedAt`만 찍었다(이미 있으면 그대로). 저장된 상태에 `restoreFloor`가 없고 `restoreCheckedAt`이 있는데 기록이 비어 있으면 지운 뒤일 수 있으니 처음 읽을 때(`readFamily`) 지금을 바닥으로 둔다 — 빈 기록 탭에 버튼이 있어 잃는 것이 적다. 그 밖의 옛 기기는 바닥 없이 시작하므로, 이 판 전에 하나씩 지운 기록(서버에 보낸 것)은 한 번 다시 들어올 수 있다(지운 id 를 기억하지 않았으므로 알 수 없음).
+- **다시 보내지 않기**: 가져온 기록은 `restored: true`라 `localRecordIds`·`flushFamilySync`의 pending 에서 빠진다(20절 그대로). 이 기기에서 본 기록은 id 가 같아 건너뛴다.
+- **표시**: 기록 항목 메타 줄 ‘☁️ 다른 기기’(20절의 ‘☁️ 서버에서 복원’ 대신; 다시 설치하기 전 이 기기에서 본 시험도 같은 표시 — 압축 기록에 기기 정보가 없고 넣으려면 Worker `parseSync`를 고쳐야 한다), 요약 줄 ‘· ☁️ 다른 기기 N회 포함’, 기록 탭 상태 ‘다른 기기에서 본 시험 기록 N개를 서버에서 가져왔어요(점수·틀린 단어).’(버튼이면 ‘보호자에게 보냈던 기록 N개를 …’), CSV 비고 ‘다른 기기(서버 사본)’, 설정 `#restoreText` ‘☁️ 다른 기기에서 가져온 기록 N개 (점수·틀린 단어) · 지운 기록은 다시 가져오지 않아요(…) · 마지막 확인 HH:MM’. 전체 삭제 확인 문구에 ‘지운 기록은 자동으로 다시 가져오지 않고, 앞으로 다른 기기에서 보는 시험만 들어와요’.
+- 세트별 오답(`daily_vocab_missed_*`, 홈의 ‘틀린 단어 복습’)은 여전히 기기마다 따로다(가져온 기록은 건드리지 않음).
+- 테스트: `tests/family.cjs`(10분 안 화면 복귀는 묻지 않음 → 10분 뒤 `since` = 마지막 확인 − 14일로 방금 본 시험·3일 늦게 올라온 시험 → 기록 하나 삭제 → 기록 탭 1분 간격·지운 기록 안 돌아옴 → 새로고침 → 전체 삭제 뒤 바닥부터만), `tests/browser.cjs`(‘☁️ 다른 기기’ 표시). 버전 `20261018-25`, 캐시 v34.
