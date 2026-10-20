@@ -5,7 +5,9 @@
 // 시험 중 AI가 인정한 답을 허용 답안에 학습하면 시험 중에는 /sets 를 보내지 않고 시험이 끝난 직후 한 번 올린다.
 // 수준 기준(앵커): 손대지 않은 예제 세트뿐이면 빈 앵커를 보내고, 동기화된 세트가 있으면 그 단어를 앵커로 보낸다.
 // 보호자가 서버에서 아이를 지우면(404 unknown_child) 기기는 안내·연결 해제 강조 뒤 요청을 멈추고, 연결 해제 → 새 코드로 다시 연결한다.
-// 기록 복원: 연결하면 서버에 있던 이 아이의 기록이 요약 기록으로 기록 탭에 들어오고(다시 보내지 않음, 틀린 단어 다시 풀기), ‘서버 기록 다시 가져오기’는 겹치지 않게 여러 페이지를 받으며, 기록 전체 삭제 뒤에는 자동 복원하지 않는다.
+// 기록 복원: 연결하면 서버에 있던 이 아이의 기록이 요약 기록으로 기록 탭에 들어오고(다시 보내지 않음, 틀린 단어 다시 풀기), ‘서버 기록 다시 가져오기’는 겹치지 않게 여러 페이지를 받으며, 기록 전체 삭제 뒤에는 그 전 기록을 자동으로 되살리지 않는다.
+// 다른 기기 기록 가져오기: 같은 아이의 다른 기기에서 본 시험이 서버에 생기면 화면 복귀(10분 간격)·기록 탭(1분 간격)·새로고침 때 들어오고(since = 마지막 확인 − 14일, 늦게 올라온 기록 포함),
+//   기록 하나를 지우면 다시 들어오지 않으며, 기록 전체 삭제 뒤에는 그 뒤에 끝난 기록만 들어온다.
 // 알림(2B): 가짜 구독(tests/lib/fake-push.cjs)으로 켜기·끄기·다시 등록·권한 거부·연결 해제·미설정 Worker·설치 안내, 갤럭시 앱 브리지의 schedule·skipToday·cancel.
 // Worker는 라우트로 가짜 응답을 준다(tests/lib/fake-family-worker.cjs).
 const { chromium } = require("playwright");
@@ -103,17 +105,18 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert(restored[0].id === "srv-a" && restored[0].setId === "haneul-day04" && restored[0].total === 10 && restored[0].correct === 7 && restored[0].results === 3 && restored[0].wordId === 121 && restored[0].aliases > 0 && restored[0].unknown === true, "restored record linked to the synced set with enriched words: " + JSON.stringify(restored[0]));
   assert(restored[1].id === "srv-b" && restored[1].setId === "restored:옛 세트" && restored[1].results === 0 && restored[1].correct === 5 && restored[1].mode === "read_meaning", "perfect-score record without missed words: " + JSON.stringify(restored[1]));
   assert(JSON.parse(await page.evaluate(() => localStorage.getItem("daily_vocab_family_v1"))).pending.length === 0 && syncs().length === 1, "restored records are neither queued nor sent back");
-  assert((await page.textContent("#restoreText")).includes("기록 2개 복원"), "restore status line: " + (await page.textContent("#restoreText")));
-  // 기록 탭: 세트 필터는 이름이 같은 세트에 연결된 기록만, 항목에 점수·‘서버에서 복원’·틀린 단어(세트의 번호·뜻)·다시 풀기
+  assert((await page.textContent("#restoreText")).includes("다른 기기에서 가져온 기록 2개"), "restore status line: " + (await page.textContent("#restoreText")));
+  // 기록 탭: 세트 필터는 이름이 같은 세트에 연결된 기록만, 항목에 점수·‘☁️ 다른 기기’·틀린 단어(세트의 번호·뜻)·다시 풀기. 방금 확인했으니 탭을 열어도 다시 묻지 않는다(1분 간격).
   await page.click("#tabHistory");
   assert((await page.evaluate(() => document.getElementById("historyFilter").value)) === "all" && (await page.locator("#historyList .history-entry").count()) === 2, "history tab starts with every restored record");
+  assert(restoreReqs().length === 1, "opening the history tab right after the restore does not ask again");
   await page.selectOption("#historyFilter", "haneul-day04");
   let historyText = await page.textContent("#historyList");
-  assert((await page.locator("#historyList .history-entry").count()) === 1 && historyText.includes("7 / 10 · 70점") && historyText.includes("서버에서 복원") && historyText.includes("틀린 단어 3개 보기") && historyText.includes("모름 1개 포함"), "restored entry rendered: " + historyText);
-  assert((await page.textContent("#historyStatus")).includes("기록 2개를 서버에서 가져왔어요"), "history status explains the restore: " + (await page.textContent("#historyStatus")));
+  assert((await page.locator("#historyList .history-entry").count()) === 1 && historyText.includes("7 / 10 · 70점") && historyText.includes("☁️ 다른 기기") && historyText.includes("틀린 단어 3개 보기") && historyText.includes("모름 1개 포함"), "restored entry rendered: " + historyText);
+  assert((await page.textContent("#historyStatus")).includes("다른 기기에서 본 시험 기록 2개를 서버에서 가져왔어요"), "history status explains the restore: " + (await page.textContent("#historyStatus")));
   await page.selectOption("#historyFilter", "all");
   historyText = await page.textContent("#historyList");
-  assert((await page.locator("#historyList .history-entry").count()) === 2 && historyText.includes("5 / 5 · 100점") && (await page.textContent("#historySummary")).includes("시험 2회"), "all sets lists both restored records: " + historyText);
+  assert((await page.locator("#historyList .history-entry").count()) === 2 && historyText.includes("5 / 5 · 100점") && (await page.textContent("#historySummary")).includes("시험 2회") && (await page.textContent("#historySummary")).includes("☁️ 다른 기기 2회 포함"), "all sets lists both restored records: " + historyText);
   await page.selectOption("#historyFilter", "haneul-day04");
   await page.click("#historyList details summary");
   assert((await page.textContent("#historyList")).includes("121. authority — 권위"), "missed words shown with the set's numbers");
@@ -131,30 +134,98 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   const fetchedBefore = restoreReqs().length;
   await page.click("#restoreRecords");
   await waitFor(() => page.evaluate(() => historyRecords.length === 3), "manual restore adds the new server record");
-  await waitFor(() => statusHas("restoreText", "기록 3개 복원"), "status line counts three restored records");
-  assert(restoreReqs().length === fetchedBefore + 2 && decodeURIComponent(restoreReqs()[fetchedBefore + 1].search).startsWith("?since=" + srvA.completedAt), "second page starts at the last completedAt of the first: " + JSON.stringify(restoreReqs().slice(fetchedBefore).map((r) => r.search)));
+  await waitFor(() => statusHas("restoreText", "다른 기기에서 가져온 기록 3개"), "status line counts three restored records");
+  assert(restoreReqs().length === fetchedBefore + 2 && decodeURIComponent(restoreReqs()[fetchedBefore].search).startsWith("?since=1970-01-01T00:00:00.000Z") && decodeURIComponent(restoreReqs()[fetchedBefore + 1].search).startsWith("?since=" + srvA.completedAt), "manual restore starts from the beginning and the second page starts at the last completedAt of the first: " + JSON.stringify(restoreReqs().slice(fetchedBefore).map((r) => r.search)));
   assert((await page.evaluate(() => new Set(historyRecords.map((r) => r.id)).size)) === 3 && (await page.evaluate(() => historyRecords[0].id)) === "srv-c", "no duplicates after paging, newest first");
   assert((await page.textContent("#familyStatus")).includes("기록 1개를 가져왔어요"), "manual restore reports how many were new: " + (await page.textContent("#familyStatus")));
+  // 기록 전체 삭제: 지운 시각이 바닥이 된다. 지우기 전에 다른 기기에서 끝난(아직 이 기기에 없는) 기록도 자동으로는 가져오지 않는다.
+  const famState = () => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")));
+  const minutesAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
+  children.get(HANEUL).records.set("srv-recent", serverRecord("srv-recent", minutesAgo(60), { total: 5, correct: 4, missed: [{ en: "indicate", ko: "나타내다" }] }));
   page.once("dialog", (d) => d.accept());
   await page.click("#clearHistory");
   await waitFor(() => page.evaluate(() => historyRecords.length === 0), "history cleared on the device");
-  assert(children.get(HANEUL).records.size === 3, "server copies stay after clearing the device");
+  assert(children.get(HANEUL).records.size === 4, "server copies stay after clearing the device");
+  const clearedFloor = (await famState()).restoreFloor;
+  assert(Number.isFinite(Date.parse(clearedFloor)) && Date.now() - Date.parse(clearedFloor) < 5000, "clearing stores the floor: " + clearedFloor);
   await page.reload();
   await waitFor(() => page.evaluate(() => typeof sets !== "undefined" && document.getElementById("appStatus").textContent.includes("준비")), "app ready after the reload");
   await waitFor(() => requests.filter((r) => r.path === "/sets/" + HANEUL).length >= 2, "set sync ran on launch");
-  await new Promise((r) => setTimeout(r, 400));
-  assert((await page.evaluate(() => historyRecords.length)) === 0 && restoreReqs().length === fetchedBefore + 2, "cleared history is not restored automatically on launch");
+  await waitFor(() => restoreReqs().length === fetchedBefore + 3, "launch asks the server for new records");
+  await new Promise((r) => setTimeout(r, 300));
+  assert(decodeURIComponent(restoreReqs()[fetchedBefore + 2].search) === "?since=" + clearedFloor + "&limit=500", "launch asks only from the floor: " + restoreReqs()[fetchedBefore + 2].search);
+  assert((await page.evaluate(() => historyRecords.length)) === 0, "cleared history is not restored automatically on launch");
   await page.click("#tabSettings");
   await openFamilySettings();
   assert((await page.textContent("#restoreText")).includes("서버 기록 다시 가져오기"), "status line points to the button after clearing: " + (await page.textContent("#restoreText")));
-  // 기록 탭의 빈 화면: 연결된 기기에는 ‘서버 기록 가져오기’ 버튼이 있고, 누르면 설정의 버튼과 같이 가져온다
+  // 기록 탭의 빈 화면: 연결된 기기에는 ‘서버 기록 가져오기’ 버튼이 있고, 누르면 설정의 버튼과 같이 처음부터 모두 가져온다(바닥은 비운다)
   await page.click("#tabHistory");
   assert((await page.textContent("#historyList")).includes("다른 기기에서 본 시험은 서버에서 가져올 수 있어요") && (await page.isVisible("#historyRestore")), "empty history offers the server restore on a linked device: " + (await page.textContent("#historyList")));
   await page.click("#historyRestore");
-  await waitFor(() => page.evaluate(() => historyRecords.length === 3 && historyRecords.every((r) => r.restored)), "restore from the empty history tab brings the records back");
-  await waitFor(() => statusHas("historyStatus", "기록 3개를 서버에서 가져왔어요"), "history status after the restore");
-  assert((await page.locator("#historyList .history-entry").count()) === 3, "history tab lists the restored records");
-  assert(syncs().length === 1 && JSON.parse(await page.evaluate(() => localStorage.getItem("daily_vocab_family_v1"))).pending.length === 0, "still nothing sent back");
+  await waitFor(() => page.evaluate(() => historyRecords.length === 4 && historyRecords.every((r) => r.restored)), "restore from the empty history tab brings the records back");
+  await waitFor(() => statusHas("historyStatus", "기록 4개를 서버에서 가져왔어요"), "history status after the restore");
+  assert((await page.locator("#historyList .history-entry").count()) === 4, "history tab lists the restored records");
+  assert((await famState()).restoreFloor === "", "manual restore clears the floor");
+  assert(syncs().length === 1 && (await famState()).pending.length === 0, "still nothing sent back");
+
+  // 다른 기기 기록 가져오기: 같은 아이의 다른 기기에서 본 시험이 서버에 생겼다(방금 본 시험 + 3일 동안 오프라인이던 기기가 이제야 보낸 시험)
+  children.get(HANEUL).records.set("srv-d", serverRecord("srv-d", minutesAgo(5), { total: 6, correct: 6, missed: [] }));
+  children.get(HANEUL).records.set("srv-late", serverRecord("srv-late", daysAgo(3), { correct: 9, missed: [{ en: "devote", ko: "바치다" }] }));
+  const screenReturn = () => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  const hasIds = (ids) => page.evaluate((list) => list.every((id) => historyRecords.some((r) => r.id === id)), ids);
+  let askedBefore = restoreReqs().length;
+  await screenReturn();
+  await new Promise((r) => setTimeout(r, 300));
+  assert(restoreReqs().length === askedBefore && !(await hasIds(["srv-d"])), "screen return within 10 minutes of the last check does not ask again");
+  // 10분이 지난 뒤 화면으로 돌아오면 마지막 확인 − 14일부터 묻고, 기기에 없는 것만 들어온다
+  const checkedBack = await page.evaluate(() => (family.restoreCheckedAt = new Date(Date.now() - 11 * 60000).toISOString()));
+  await screenReturn();
+  await waitFor(() => hasIds(["srv-d", "srv-late"]), "other device's records arrive on screen return (including the late upload)");
+  assert(decodeURIComponent(restoreReqs()[askedBefore].search) === "?since=" + new Date(Date.parse(checkedBack) - 14 * 86400000).toISOString() + "&limit=500", "incremental since = last check − 14 days: " + restoreReqs()[askedBefore].search);
+  assert((await page.evaluate(() => [historyRecords.length, new Set(historyRecords.map((r) => r.id)).size].join())) === "6,6", "merged without duplicates");
+  await waitFor(() => statusHas("historyStatus", "다른 기기에서 본 시험 기록 2개를 서버에서 가져왔어요"), "history status names the other device");
+  historyText = await page.textContent("#historyList");
+  assert(historyText.includes("6 / 6 · 100점") && (await page.textContent("#historySummary")).includes("시험 6회") && (await page.textContent("#historySummary")).includes("☁️ 다른 기기 6회 포함"), "merged records listed: " + (await page.textContent("#historySummary")));
+  assert(syncs().length === 1 && (await famState()).pending.length === 0, "merged records are not sent back");
+  // 기록 하나를 지우면 id 를 기억해 다시 가져오지 않는다
+  page.once("dialog", (d) => d.accept());
+  await page.locator("#historyList .history-entry", { hasText: "6 / 6 · 100점" }).locator("button", { hasText: "삭제" }).click();
+  await waitFor(() => page.evaluate(() => !historyRecords.some((r) => r.id === "srv-d")), "one record deleted on the device");
+  assert(JSON.stringify((await famState()).restoreSkip) === '["srv-d"]', "deleted record id remembered: " + JSON.stringify((await famState()).restoreSkip));
+  // 기록 탭을 열 때: 1분 안이면 묻지 않고, 1분이 지나면 묻는다 → 새 기록은 들어오고 지운 기록은 돌아오지 않는다
+  children.get(HANEUL).records.set("srv-e", serverRecord("srv-e", minutesAgo(1), { total: 4, correct: 3, missed: [{ en: "strike", ko: "치다" }] }));
+  askedBefore = restoreReqs().length;
+  await page.click("#tabHome");
+  await page.click("#tabHistory");
+  await new Promise((r) => setTimeout(r, 300));
+  assert(restoreReqs().length === askedBefore, "history tab within a minute of the last check does not ask");
+  await page.evaluate(() => (family.restoreCheckedAt = new Date(Date.now() - 2 * 60000).toISOString()));
+  await page.click("#tabHome");
+  await page.click("#tabHistory");
+  await waitFor(() => hasIds(["srv-e"]), "opening the history tab brings the newest record");
+  assert(restoreReqs().length > askedBefore && !(await hasIds(["srv-d"])) && (await page.locator("#historyList .history-entry").count()) === 6, "deleted record does not come back");
+  // 새로고침(앱 시작) 때도 묻지만 지운 기록은 그대로 빠져 있다
+  askedBefore = restoreReqs().length;
+  await page.reload();
+  await waitFor(() => page.evaluate(() => typeof sets !== "undefined" && document.getElementById("appStatus").textContent.includes("준비")), "app ready after the merge reload");
+  await waitFor(() => restoreReqs().length > askedBefore && page.evaluate(() => !restoreInFlight), "launch asks again");
+  assert((await page.evaluate(() => [historyRecords.length, new Set(historyRecords.map((r) => r.id)).size, historyRecords.some((r) => r.id === "srv-d")].join())) === "6,6,false", "launch keeps the deleted record out and adds no duplicates");
+  // 기록 전체 삭제 뒤에는 그 뒤에 끝난 기록만 들어온다(지우기 직전에 다른 기기에서 끝난 기록은 들어오지 않음)
+  children.get(HANEUL).records.set("srv-f", serverRecord("srv-f", minutesAgo(0.5), { total: 3, correct: 1, missed: [{ en: "devote", ko: "바치다" }, { en: "strike", ko: "치다" }] }));
+  await page.click("#tabSettings");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#clearHistory");
+  await waitFor(() => page.evaluate(() => historyRecords.length === 0), "history cleared again");
+  const floor2 = (await famState()).restoreFloor;
+  assert(floor2 && JSON.stringify((await famState()).restoreSkip) === "[]", "clearing sets a new floor and forgets single deletions (covered by the floor)");
+  children.get(HANEUL).records.set("srv-g", serverRecord("srv-g", new Date(Date.parse(floor2) + 1000).toISOString(), { total: 2, correct: 2, missed: [] }));
+  askedBefore = restoreReqs().length;
+  await page.reload();
+  await waitFor(() => page.evaluate(() => typeof sets !== "undefined" && document.getElementById("appStatus").textContent.includes("준비")), "app ready after the second clear");
+  await waitFor(() => hasIds(["srv-g"]), "a record finished after the clear arrives");
+  assert(decodeURIComponent(restoreReqs()[askedBefore].search) === "?since=" + floor2 + "&limit=500", "asks from the new floor: " + restoreReqs()[askedBefore].search);
+  assert(JSON.stringify(await page.evaluate(() => historyRecords.map((r) => r.id))) === '["srv-g"]', "only the record after the clear: " + JSON.stringify(await page.evaluate(() => historyRecords.map((r) => r.id))));
+  assert(syncs().length === 1 && (await famState()).pending.length === 0, "nothing from the merge is sent back");
 
   // 시험 완료 → 압축 기록 전송(점수·틀린 단어만, 단어별 전체 결과 없음)
   await page.click("#tabHome");
@@ -552,7 +623,7 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await gctx.close();
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: child app without a parent mode + child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, no auto-restore after clearing) + set sync (pull on join, parent's set received, device delete, empty state) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin + record owners (deleted child's tests follow the re-created child, another child gets only unowned tests, switching back resends only the child's own) + notifications (push on/off, re-register, denied, unlink, 503/install/unsupported, Galaxy bridge schedule/skipToday/cancel)");
+  console.log("PASS: child app without a parent mode + child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, floor after clearing) + other-device merge (screen return 10 min, history tab 1 min, launch, since = last check − 14 days, late uploads, deleted record stays out, only records after a clear) + set sync (pull on join, parent's set received, device delete, empty state) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin + record owners (deleted child's tests follow the re-created child, another child gets only unowned tests, switching back resends only the child's own) + notifications (push on/off, re-register, denied, unlink, 503/install/unsupported, Galaxy bridge schedule/skipToday/cancel)");
   await browser.close();
 })().catch((e) => {
   console.error(e);
