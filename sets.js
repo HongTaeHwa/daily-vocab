@@ -588,6 +588,12 @@ async function lookupWord(raw) {
   }
 }
 $("lookupGo").onclick = () => lookupWord($("lookupInput").value);
+// ✕: 입력칸을 비우고 바로 다시 쓸 수 있게 초점을 둔다(누를 때 입력칸이 초점을 잃지 않아 화면 키보드가 내려가지 않는다)
+$("lookupClear").addEventListener("mousedown", (e) => e.preventDefault());
+$("lookupClear").onclick = () => {
+  $("lookupInput").value = "";
+  $("lookupInput").focus();
+};
 $("lookupInput").addEventListener("keydown", (e) => {
   if (e.isComposing || e.keyCode === 229) return;
   if (e.key === "Enter") lookupWord($("lookupInput").value);
