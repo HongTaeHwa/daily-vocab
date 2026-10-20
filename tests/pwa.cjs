@@ -131,9 +131,49 @@ const { chromium } = require("playwright");
   await p.click("#cancelExtract");
   await p.waitForTimeout(2000);
   if (await p.inputValue("#wordDraft")) throw Error("cancel stale write");
+  // 휴대폰(터치): 글자 입력칸에 초점이 있거나(화면 키보드) 화면이 확대된 동안에는 하단 탭을 숨겨, 스크롤할 때 화면 가운데로 떠오르지 않게 한다.
+  // 입력칸은 16px 이상이라 iPhone 이 누를 때 확대한 채로 두지 않는다. 아이 앱·보호자 앱 둘 다(shared.js watchViewport).
+  const phone = await b.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const t = await phone.newPage();
+  t.on("pageerror", (e) => errors.push(e.message));
+  const base = process.env.APP_URL || "http://127.0.0.1:8000/daily-vocab/";
+  await t.goto(base);
+  await t.waitForFunction(() => document.getElementById("appStatus").textContent.includes("준비"));
+  if (!(await t.isVisible(".tabbar"))) throw Error("tab bar visible on a phone");
+  await t.tap("#tabLookup");
+  await t.tap("#lookupInput");
+  await t.waitForFunction(() => document.activeElement.id === "lookupInput" && document.body.classList.contains("viewport-busy"));
+  if (await t.isVisible(".tabbar")) throw Error("tab bar hidden while typing on a phone");
+  await t.evaluate(() => document.activeElement.blur());
+  await t.waitForFunction(() => !document.body.classList.contains("viewport-busy"));
+  if (!(await t.isVisible(".tabbar"))) throw Error("tab bar back after typing");
+  const cdp = await phone.newCDPSession(t);
+  await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 });
+  await t.waitForFunction(() => visualViewport.scale > 1.5 && document.body.classList.contains("viewport-busy"));
+  if (await t.isVisible(".tabbar")) throw Error("tab bar hidden while zoomed in");
+  await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
+  await t.waitForFunction(() => !document.body.classList.contains("viewport-busy"));
+  const fieldFonts = () =>
+    t.evaluate(() => {
+      const cell = document.createElement("textarea");
+      cell.className = "cell";
+      document.getElementById("wordTableBody").append(cell);
+      const sizes = [getComputedStyle(document.getElementById("wordDraft")).fontSize, getComputedStyle(cell).fontSize, getComputedStyle(document.querySelector("input[type=text]")).fontSize];
+      cell.remove();
+      return sizes;
+    });
+  const childFonts = await fieldFonts();
+  if (!childFonts.every((s) => parseFloat(s) >= 16)) throw Error("child app fields at least 16px on touch: " + childFonts);
+  await t.goto(base + "parent.html");
+  await t.waitForFunction(() => document.getElementById("appStatus").textContent.includes("준비"));
+  await t.tap("#parentCodeStart");
+  await t.waitForFunction(() => document.body.classList.contains("viewport-busy"));
+  const parentFonts = await fieldFonts();
+  if (!parentFonts.every((s) => parseFloat(s) >= 16)) throw Error("parent app fields at least 16px on touch: " + parentFonts);
+  await phone.close();
   if (errors.length) throw Error(errors.join(","));
   console.log(
-    "PASS: tablet portrait/landscape/mobile layout, manifest/icons, offline shell, parent app offline shell/layout/manifest, AI error/cancellation",
+    "PASS: tablet portrait/landscape/mobile layout, manifest/icons, offline shell, parent app offline shell/layout/manifest, AI error/cancellation, phone tab bar hidden while typing/zoomed + 16px fields (both apps)",
   );
   await b.close();
 })().catch((e) => {

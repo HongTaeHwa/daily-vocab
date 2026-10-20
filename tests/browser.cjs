@@ -22,6 +22,10 @@ const { chromium } = require("playwright");
     "default set",
   );
   assert((await page.evaluate(() => WORDS.length)) === 40, "40 default words");
+  // 기록이 하나도 없는 기기: 빈 화면 문구, 연결되지 않은 기기라 서버 가져오기 버튼은 없다
+  await page.click("#tabHistory");
+  assert((await page.textContent("#historyList")).includes("아직 이 기기에서 본 시험이 없어요") && (await page.locator("#historyRestore").count()) === 0, "empty history without a restore button on an unlinked device");
+  await page.click("#tabHome");
   for (const mode of ["read_meaning", "en_ko", "ko_en"]) {
     await page.click(`[data-mode="${mode}"]`);
     await page.click("#start");
@@ -39,9 +43,26 @@ const { chromium } = require("playwright");
   await page.fill("#setName", "2026-10-11 테스트");
   await page.click("#toggleDraftText");
   await page.fill("#wordDraft", "1\tapple\t사과\t사과 열매\n2\tbook\t책\t도서");
+  // 저장하지 않은 초안: 홈에서 ‘새 세트’를 다시 눌러도 묻고, 취소하면 초안이 그대로 남는다(전에는 말없이 지워졌다)
+  await page.click("#tabHome");
+  let draftPrompt = "";
+  page.once("dialog", (d) => { draftPrompt = d.message(); d.dismiss(); });
+  await page.click("#createSet");
+  assert(draftPrompt.includes("저장하지 않은 단어 2개") && (await page.isVisible("#home")), "reopening a new set asks before dropping the draft: " + draftPrompt);
+  await page.click("#resumeEditor");
+  assert((await page.inputValue("#wordDraft")).includes("apple") && (await page.inputValue("#setName")) === "2026-10-11 테스트", "cancelled reopen keeps the unsaved draft");
   await page.check("#confirmed");
   await page.click("#saveSet");
   assert((await page.evaluate(() => WORDS.length)) === 2, "save new set");
+  // 기록 탭은 처음에 ‘전체 세트’: 새 세트(기록 없음)를 골라 둬도 다른 세트의 기록이 보인다
+  await page.click("#tabHistory");
+  assert((await page.evaluate(() => document.getElementById("historyFilter").value)) === "all" && (await page.locator("#historyList .history-entry").count()) === 3, "history defaults to all sets even when the selected set has no records");
+  await page.selectOption("#historyFilter", await page.evaluate(() => activeSetId));
+  const emptyText = await page.textContent("#historyList");
+  assert(emptyText.includes("이 세트로 본 시험은 아직 없어요") && emptyText.includes("전체 세트에는 시험 3회"), "empty set filter points to the other records: " + emptyText);
+  await page.click("#showAllHistory");
+  assert((await page.evaluate(() => document.getElementById("historyFilter").value)) === "all" && (await page.locator("#historyList .history-entry").count()) === 3, "show all sets button");
+  await page.click("#tabHome");
   await page.click('[data-mode="en_ko"]');
   await page.uncheck("#shuffle");
   await page.click("#start");
@@ -65,6 +86,20 @@ const { chromium } = require("playwright");
     ),
     "particle/compound leniency without losing strictness",
   );
+  // 영어 읽기 채점: 구·대문자·하이픈 단어도 인식되면 통과, 구의 일부만 말하면 아님
+  assert(
+    await page.evaluate(
+      () =>
+        correctEn("give up", { en: "give up" }) &&
+        correctEn("I will give up now", { en: "give up" }) &&
+        correctEn("christmas", { en: "Christmas" }) &&
+        correctEn("email", { en: "e-mail" }) &&
+        correctEn("the word is apple", { en: "apple" }) &&
+        !correctEn("give", { en: "give up" }) &&
+        !correctEn("apples", { en: "apple" }),
+    ),
+    "reading check handles phrases, capitals and hyphens",
+  );
   await page.click("#next");
   await page.click("#unknown");
   await page.click("#next");
@@ -75,6 +110,13 @@ const { chromium } = require("playwright");
   );
   await page.click("#newTest");
   await page.selectOption("#setSelect", "day04");
+  // 홈에서 세트를 바꿔도 기록 탭 필터는 그대로(전체), 홈의 최근 결과는 세트와 상관없이 최근 3개
+  assert((await page.evaluate(() => document.getElementById("historyFilter").value)) === "all" && (await page.locator("#historyList .history-entry").count()) === 4, "history filter does not follow the selected set");
+  const recentText = await page.textContent("#recentResults");
+  assert((await page.locator("#recentResults .recent-row").count()) === 3 && recentText.includes("2026-10-11 테스트") && recentText.includes("기본 예제 DAY04"), "home recent results span every set: " + recentText);
+  await page.click("#tabHistory");
+  await page.selectOption("#historyFilter", "day04");
+  await page.click("#tabHome");
   assert(
     (await page.locator("#historyList .history-entry").count()) === 3,
     "set isolation (only the three partial day04 records)",
@@ -144,6 +186,38 @@ const { chromium } = require("playwright");
   assert((await page.evaluate(() => [historyRecords.length, historyRecords.filter((r) => r.restored).length, recordScore(historyRecords.find((r) => r.restored)).pct])).join() === "2,1,90", "restored summary record survives a reload with its own score");
   await page.click("#tabHistory");
   assert((await page.textContent("#historyList")).includes("9 / 10 · 90점") && (await page.textContent("#historyList")).includes("서버에서 복원"), "restored record rendered from total/correct");
+  // 범위 시험을 끝내면 이번에 푼 단어만 오답이 바뀌고 다른 범위의 틀린 단어(150)는 남는다(전에는 이번 시험의 오답으로 통째로 바뀌었다)
+  await page.evaluate(() => { localStorage.setItem("daily_vocab_missed_day04", "[150,125]"); selectSet("day04"); });
+  await page.click("#tabHome");
+  await page.click('[data-mode="en_ko"]');
+  await page.uncheck("#shuffle");
+  await page.selectOption("#range", "0");
+  await page.click("#start");
+  for (let i = 0; i < 10; i++) {
+    if ((await page.evaluate(() => question.w.id)) === 125) {
+      await page.fill("#answerInput", "방해하다");
+      await page.click("#check");
+    } else await page.click("#unknown");
+    await page.click("#next");
+  }
+  assert(await page.isVisible("#finish"), "range test finished");
+  const missedAfter = await page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_missed_day04")).sort((a, b) => a - b).join());
+  assert(missedAfter === "121,122,123,124,126,127,128,129,130,150", "missed list keeps other ranges: " + missedAfter);
+  // Android 뒤로 가기: 끝난 시험 화면(버튼이 동작하지 않고 하단 탭이 없음)으로 돌아가지 않고 홈으로
+  await page.goBack();
+  assert((await page.isVisible("#home")) && (await page.isHidden("#quiz")) && (await page.isVisible(".tabbar")), "back after finishing lands on home, not the dead quiz screen");
+  // 쉬던 시험을 버리고 새로 시작해도 지금 고른 방식(한글 → 영어)으로 시작한다
+  await page.click("#start");
+  await page.click("#unknown");
+  await page.click("#next");
+  await page.click("#pauseQuiz");
+  await page.click('[data-mode="ko_en"]');
+  page.once("dialog", (d) => d.accept());
+  await page.click("#start");
+  assert((await page.evaluate(() => [mode, sessionMeta.mode, historyRecords[0].mode, historyRecords[0].partial].join())) === "ko_en,ko_en,en_ko,true", "abandoned paused test keeps its own mode and the new test uses the chosen one");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#backSettings");
+  await page.click("#tabHistory");
   await page.click("#tabSettings");
   const downloadPromise = page.waitForEvent("download");
   await page.click("#exportSets");
@@ -152,7 +226,7 @@ const { chromium } = require("playwright");
   await page.setInputFiles("#importSets", path);
   await page.waitForTimeout(200);
   assert((await page.evaluate(() => sets.length)) === 2, "JSON import");
-  assert((await page.evaluate(() => [historyRecords.length, historyRecords.filter((r) => r.restored).length])).join() === "3,1", "import copies normal records and keeps a single copy of the restored record");
+  assert((await page.evaluate(() => [historyRecords.length, historyRecords.filter((r) => r.restored).length])).join() === "7,1", "import copies normal records and keeps a single copy of the restored record (4 on the device: restored, legacy, range test, abandoned pause)");
   await page.evaluate(() => {
     Storage.prototype.setItem = function () {
       throw Error("quota");

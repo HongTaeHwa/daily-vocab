@@ -1197,8 +1197,8 @@
     try {
       const data = await api.getSet(r.id, r.setId);
       if (!validSet(data?.set)) throw Error("세트 내용이 올바르지 않아요.");
+      note(c.id, "setsStatus", "info", ""); // 그사이 다른 화면으로 갔어도 ‘불러오는 중…’이 남지 않게
       if (editorKeyOf(router.current) !== key) return;
-      note(c.id, "setsStatus", "info", "");
       editingSet = data.set;
       if (SetEditor.open({ id: data.set.id, name: data.set.name, words: data.set.words }, { targetName: c.name })) {
         editorKey = key;
@@ -1241,8 +1241,10 @@
     if (day && Date.now() - Date.parse(day + "T00:00:00") < SUGGEST_HIDE_MS) return null;
     return suggestLevel(computeStats(recordsOf(c.id), { days: DETAIL_DAYS }), c.plan);
   }
+  // 숨긴 날은 0을 채운 ‘YYYY-MM-DD’로 둔다(dayKey 는 ‘2026-11-5’처럼 채우지 않아 Date.parse 가 NaN 이 되고 sanitize 가 버려, 11월부터 숨김이 동작하지 않았다).
+  const paddedDay = (d) => [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
   function hideLevelSuggestion(id) {
-    store.patch((s) => ({ prefs: { ...s.prefs, levelSuggestDismissed: { ...(s.prefs.levelSuggestDismissed || {}), [id]: dayKey(new Date()) } } }));
+    store.patch((s) => ({ prefs: { ...s.prefs, levelSuggestDismissed: { ...(s.prefs.levelSuggestDismissed || {}), [id]: paddedDay(new Date()) } } }));
   }
   function renderLevelSuggestion(c) {
     const sug = levelSuggestionFor(c);
@@ -1782,6 +1784,7 @@
     autoRefresh();
   });
   setInterval(renderLoadStatus, 60000);
+  Shared.watchViewport(); // 화면 키보드가 떠 있거나 확대된 동안 하단 탭을 숨긴다(화면 가운데로 떠오르지 않게)
   store.subscribe(scheduleRender);
   onRoute();
   if ("serviceWorker" in navigator) {
