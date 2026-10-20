@@ -836,6 +836,40 @@ const { pathToFileURL } = require("url");
     new Response(JSON.stringify({ model: "m", stop_reason: "refusal", usage: {}, content: [] }), { status: 200, headers: { "content-type": "application/json" } });
   await familyCase("/daily/" + kid.id, { body: { date: day3 } }, 422, "거부");
   await familyCase("/daily/" + kid.id + "?date=" + day3, { method: "GET" }, 404, "no_daily");
+  // 모자란 새 단어를 다시 요청(2회차)하다 실패(시간 초과·거부)해도 1회차에서 얻은 새 단어가 있으면 그것으로 저장한다
+  // (아이 기기는 504 대신 오늘의 단어를 받고, 크론은 다음 시간에 AI를 또 부르지 않는다). 1회차부터 실패하면 저장하지 않는다.
+  // 먼 날짜라 복습 단어(최근 14일 틀린 단어)는 없다 → 하루 5개가 모두 새 단어.
+  const partialDay = kstDate(40), partialDay2 = kstDate(41), failDay = kstDate(42);
+  const failSecond = (failure) => {
+    let calls = 0;
+    return async (url, init) => {
+      if (++calls === 1) return dailyMock(url, init);
+      anthropicCalls.push(JSON.parse(init.body));
+      return failure();
+    };
+  };
+  const timeoutError = () => {
+    throw Object.assign(new Error("timeout"), { name: "TimeoutError" });
+  };
+  anthropicCalls.length = 0;
+  candidateQueue.push(["zephyr", "verdict", "lantern"]); // verdict 는 이미 낸 단어 → 쓸 수 있는 새 단어 2개, 하루 5개에 모자라 2회차
+  globalThis.fetch = failSecond(timeoutError);
+  data = await familyCase("/daily/" + kid.id, { body: { date: partialDay } }, 200);
+  assert.equal(anthropicCalls.length, 2, "the second call was made and timed out");
+  assert(anthropicCalls[1].messages[0].content.includes("새 단어 6개") && anthropicCalls[1].messages[0].content.includes("zephyr"), "retry asked for the rest");
+  assert.deepEqual(data.words.map((w) => [w.id, w.en, w.kind]), [[1, "zephyr", "new"], [2, "lantern", "new"]], "saved with the words from the first call");
+  data = await familyCase("/daily/" + kid.id + "?date=" + partialDay, { method: "GET" }, 200);
+  assert.deepEqual([data.words.length, data.date], [2, partialDay], "partial daily stored for the day");
+  candidateQueue.push(["quiver"]);
+  globalThis.fetch = failSecond(() => new Response(JSON.stringify({ model: "m", stop_reason: "refusal", usage: {}, content: [] }), { status: 200, headers: { "content-type": "application/json" } }));
+  data = await familyCase("/daily/" + kid.id, { body: { date: partialDay2 } }, 200);
+  assert.deepEqual(data.words.map((w) => w.en), ["quiver"], "a refused retry keeps the first call's word");
+  globalThis.fetch = async () => timeoutError();
+  await familyCase("/daily/" + kid.id, { body: { date: failDay } }, 504, "upstream_timeout");
+  await familyCase("/daily/" + kid.id + "?date=" + failDay, { method: "GET" }, 404, "no_daily");
+  globalThis.fetch = dailyMock;
+  data = await familyCase("/daily/" + kid.id, { body: { date: failDay } }, 200);
+  assert.equal(data.words.length, 5, "made in full on the next try");
   // 크론: 계획 시각(16시 KST)이 지나면 1회 생성, 다시 돌려도 중복 없음, 시각 전이면 생성 안 함, 계획 꺼진 아이는 건너뜀
   globalThis.fetch = dailyMock;
   anthropicCalls.length = 0;
@@ -1068,6 +1102,48 @@ const { pathToFileURL } = require("url");
   await familyCase("/records/" + rid, { method: "GET" }, 404, "unknown_child");
   await familyCase("/family/" + rid + "/records", { method: "GET", ...PARENT }, 404, "unknown_child");
 
+  // ---- 연속 학습(streakDays·streakLastDay): 아이 항목의 ‘시험 본 날’(한국 날짜)로 목록 14일·상세 30일 창보다 긴 연속도 센다 ----
+  // 중단 기록만 있는 날도 이어진 것으로 본다(보호자 앱 computeStats 와 같다). 하루라도 빈 날이 있으면 거기서 끊긴다.
+  const kstMinute = (offsetDays, minute = 1) => new Date(Date.parse(kstDate(offsetDays) + "T00:00:00+09:00") + minute * 60000).toISOString(); // 그 한국 날짜의 0시 N분
+  const streakKid = { id: "33333333-4444-4555-8666-777777777777", name: "연속" };
+  const streakRecs = [
+    ...Array.from({ length: 45 }, (_, i) => rec("st" + i, kstMinute(-i), { missed: [] })), // 오늘부터 45일
+    rec("st0b", kstMinute(0, 2), { missed: [] }), // 같은 날 두 번
+    rec("stp", kstMinute(-45), { partial: true, missed: [] }), // 중단 기록뿐인 날 → 46일째
+    rec("stold", kstMinute(-47), { missed: [] }), // 하루(-46) 빈 날 앞은 세지 않는다
+  ];
+  await familyCase("/sync", { body: { child: streakKid, records: streakRecs } }, 200);
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  let sk = data.children.find((c) => c.id === streakKid.id);
+  assert.deepEqual([sk.streakDays, sk.streakLastDay, "studyDays" in sk, sk.records.length], [46, kstDate(0), false, 20], "streak counted past the 14-day list window, no day list in the response");
+  data = await familyCase("/family/" + streakKid.id, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([data.child.streakDays, data.child.streakLastDay, "studyDays" in data.child, data.records.length], [46, kstDate(0), false, 31], "detail: same streak past its 30-day window");
+  await familyCase("/sync", { body: { child: streakKid, records: streakRecs.slice(0, 3) } }, 200); // 다시 보낸 기록
+  data = await familyCase("/family/" + streakKid.id + "/plan", { ...PARENT, body: { timeLimitSec: 0 } }, 200);
+  assert.deepEqual([data.child.streakDays, "studyDays" in data.child], [46, false], "plan response carries the streak, resends change nothing");
+  assert.equal((await familyObject.storage.get("child:" + streakKid.id)).studyDays.length, 47, "study days kept on the child entry");
+  // 어제까지 이어진 아이: streakLastDay 가 어제(오늘 안 봐도 끊기지 않았는지는 앱이 판단한다)
+  const yKid = { id: "55555555-6666-4777-8888-999999999999", name: "어제" };
+  await familyCase("/sync", { body: { child: yKid, records: [rec("y1", kstMinute(-1)), rec("y2", kstMinute(-2)), rec("y4", kstMinute(-4))] } }, 200);
+  data = await familyCase("/family/" + yKid.id, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([data.child.streakDays, data.child.streakLastDay], [2, kstDate(-1)], "streak up to yesterday");
+  // 이 규칙 전에 만든 아이(studyDays 없음): 처음 볼 때 저장된 기록으로 한 번 채우고, 그 뒤로는 /sync 가 더한다
+  const oldKid = "44444444-5555-4666-8777-888888888888";
+  await familyObject.storage.put("child:" + oldKid, { id: oldKid, name: "옛아이", createdAt: hoursAgo(24 * 40), updatedAt: hoursAgo(24 * 20), sets: [], recordCount: 3, recordCountExact: true, devices: {} });
+  for (const i of [0, 1, 2]) await familyObject.storage.put("rec:" + oldKid + ":" + kstMinute(-20 - i) + ":o" + i, rec("o" + i, kstMinute(-20 - i)));
+  await familyCase("/sync", { body: { child: { id: oldKid, name: "옛아이" } } }, 200); // 기록 없는 /sync 는 날짜 목록을 만들지 않는다
+  assert.equal((await familyObject.storage.get("child:" + oldKid)).studyDays, undefined, "no partial day list before the backfill");
+  data = await familyCase("/family", { method: "GET", ...PARENT }, 200);
+  sk = data.children.find((c) => c.id === oldKid);
+  assert.deepEqual([sk.streakDays, sk.streakLastDay], [3, kstDate(-20)], "old child backfilled from its records");
+  assert.equal((await familyObject.storage.get("child:" + oldKid)).studyDays.length, 3, "backfill stored once");
+  await familyCase("/sync", { body: { child: { id: oldKid, name: "옛아이" }, records: [rec("o-today", kstMinute(0))] } }, 200);
+  data = await familyCase("/family/" + oldKid, { method: "GET", ...PARENT }, 200);
+  assert.deepEqual([data.child.streakDays, data.child.streakLastDay], [1, kstDate(0)], "a new day after a gap starts again");
+  data = await familyCase("/family/children", { ...PARENT, body: { name: "새아이" } }, 200);
+  assert.deepEqual([data.child.streakDays, data.child.streakLastDay, "studyDays" in data.child], [0, null, false], "a new child starts at 0");
+  for (const id of [streakKid.id, yKid.id, oldKid, data.child.id]) await familyCase("/family/" + id, { method: "DELETE", ...PARENT }, 200);
+
   // ---- 알림(2B, Web Push): 키·구독 검증·코드 역할·VAPID 서명·aes128gcm 암호화·트리거 4종(daily·reminder·finish·summary)·만료 정리 ----
   // 암호화와 서명은 이 테스트가 받는 기기 쪽에서 Node WebCrypto 로 직접 복호화·검증한다(Worker 구현을 확인하는 유일한 자동 검증).
   const nodeCrypto = require("crypto");
@@ -1122,25 +1198,37 @@ const { pathToFileURL } = require("url");
     assert(claims.aud === new URL(endpoint).origin && claims.sub === VAPID_SUBJECT && claims.exp > now + 11.9 * 3600 && claims.exp <= now + 12 * 3600 + 5, "JWT claims: " + JSON.stringify(claims));
   };
   // 푸시 서비스 모의: PUSH_HOST 로 가는 요청을 기록하고 상태를 돌려준다(기본 201, "throw" 면 네트워크 오류). 나머지는 오늘의 단어 Anthropic 모의.
+  // "hold" 이면 응답을 멈춰 두었다가 heldPushes 의 함수를 부를 때 201 로 돌려준다(느린 푸시 서비스).
   const pushLog = [];
   const pushStatus = new Map();
+  const heldPushes = [];
   globalThis.fetch = async (url, init) => {
     if (!String(url).startsWith(PUSH_HOST)) return dailyMock(url, init);
     pushLog.push({ endpoint: String(url), headers: init.headers, body: new Uint8Array(init.body) });
     const status = pushStatus.get(String(url)) ?? 201;
     if (status === "throw") throw new TypeError("fetch failed");
+    if (status === "hold") return new Promise((resolve) => heldPushes.push(() => resolve(new Response(null, { status: 201 }))));
     return new Response(null, { status });
+  };
+  // FamilyStore 가 응답 뒤로 미룬 알림(시험 마침·오늘의 단어 도착, state.waitUntil 로 알려 줌)이 끝날 때까지 기다린 뒤 보낸 수를 센다.
+  const pushBg = [];
+  const settlePush = async () => {
+    while (pushBg.length) await Promise.allSettled(pushBg.splice(0));
+  };
+  const pushed = async () => {
+    await settlePush();
+    return pushLog.length;
   };
   // 보낸 푸시를 열어 본다: {endpoint, headers, msg}. 매번 서명·암호화를 검증한다.
   const sentSince = async (n) =>
-    Promise.all(
+    settlePush().then(() => Promise.all(
       pushLog.slice(n).map(async (e) => {
         checkVapid(e.headers.authorization, e.endpoint);
         assert(e.headers["content-encoding"] === "aes128gcm" && e.headers["content-type"] === "application/octet-stream" && e.headers.urgency === "normal", "push headers: " + JSON.stringify({ ...e.headers, authorization: "…" }));
         assert(!Buffer.from(e.body).toString("utf8").includes("매일") && !Buffer.from(e.body).toString("utf8").includes("title"), "body is encrypted");
         return { endpoint: e.endpoint, headers: e.headers, msg: await decryptPush(browsers.get(e.endpoint), e.body) };
       }),
-    );
+    ));
   // 로그에 endpoint·키가 남지 않는지 본다(상태 코드만)
   const errorLines = [];
   const realError = console.error;
@@ -1148,7 +1236,7 @@ const { pathToFileURL } = require("url");
     errorLines.push(args.map(String).join(" "));
     realError(...args);
   };
-  const pushStore = new FamilyStore({ storage: familyStorage() }, { ...env, PARENT_PASSCODE: "parent-9999", VAPID_PUBLIC_KEY: VAPID_PUBLIC, VAPID_PRIVATE_KEY: VAPID_PRIVATE, VAPID_SUBJECT });
+  const pushStore = new FamilyStore({ storage: familyStorage(), waitUntil: (p) => pushBg.push(p) }, { ...env, PARENT_PASSCODE: "parent-9999", VAPID_PUBLIC_KEY: VAPID_PUBLIC, VAPID_PRIVATE_KEY: VAPID_PRIVATE, VAPID_SUBJECT });
   const penv = {
     ...fenv,
     VAPID_PUBLIC_KEY: VAPID_PUBLIC,
@@ -1197,7 +1285,7 @@ const { pathToFileURL } = require("url");
   assert.deepEqual([stored.endpoint, stored.kinds, stored.summaryHour, stored.failures, stored.label], [bP.subscription.endpoint, { finish: true, summary: true }, 21, 0, "iPhone"], "parent subscription stored");
   const D0 = kstDate(9), D1 = kstDate(10), D2 = kstDate(11), D3 = kstDate(12), D4 = kstDate(13);
   await runPushCron(D0, 21);
-  assert.equal(pushLog.length, 0, "no summary without children");
+  assert.equal((await pushed()), 0, "no summary without children");
   // 테스트 알림(보호자): VAPID 서명·암호화·헤더를 실제로 풀어 확인
   await pcase("/push/test", { body: { role: "parent", device: devP } }, 401, "보호자 코드");
   data = await pcase("/push/test", { ...PARENT, body: { role: "parent", device: devP } }, 200);
@@ -1232,7 +1320,7 @@ const { pathToFileURL } = require("url");
   await pcase("/push/subscribe", { body: childSub(bA), passcode: "nope" }, 401);
   await pcase("/push/subscribe", { body: { ...childSub(bA), subscription: { ...bA.subscription, keys: { p256dh: bA.subscription.keys.p256dh + "=", auth: bA.subscription.keys.auth + "==" } } } }, 200); // 패딩 있는 base64url 도 받는다
   await pcase("/push/subscribe", { body: childSub(bA) }, 200);
-  let n = pushLog.length;
+  let n = (await pushed());
   data = await pcase("/push/test", { body: { role: "child", childId: pkid.id, device: devA } }, 200);
   got = await sentSince(n);
   assert.deepEqual([got.length, got[0].endpoint, got[0].msg.url, got[0].msg.title], [1, bA.subscription.endpoint, "./", "🔔 알림이 잘 와요"], "child test push decrypted");
@@ -1259,7 +1347,7 @@ const { pathToFileURL } = require("url");
 
   // 🧒 시험 마침(보호자 폰): /sync 로 처음 들어온 방금 끝낸 완료 기록 1건 → 문구·Topic·TTL. 아이 기기로는 가지 않는다.
   const finishTopic = "f" + pkid.id.replace(/-/g, "").slice(0, 31);
-  n = pushLog.length;
+  n = (await pushed());
   const fin = rec("fin1", hoursAgo(0.02), { correct: 9, awayCount: 1, awayMs: 2000, timeouts: 1 });
   await pcase("/sync", { body: { child: { id: pkid.id, name: "다른이름" }, records: [fin] } }, 200);
   got = await sentSince(n);
@@ -1272,20 +1360,46 @@ const { pathToFileURL } = require("url");
   }, "finish message (server name, score, warnings)");
   assert.deepEqual([got[0].endpoint, got[0].headers.ttl, got[0].headers.topic], [bP.subscription.endpoint, "3600", finishTopic], "finish TTL and per-child topic");
   assert(finishTopic.length <= 32 && /^[A-Za-z0-9]+$/.test(finishTopic), "topic fits RFC 8030 (≤32 base64url chars)");
-  n = pushLog.length;
+  n = (await pushed());
   await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [fin] } }, 200); // 다시 보낸 기록
   await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("fin2", hoursAgo(0.02), { partial: true })] } }, 200); // 중단
   await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("fin3", hoursAgo(7))] } }, 200); // 7시간 전
   await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [1, 2, 3, 4].map((i) => rec("bulkf" + i, hoursAgo(0.05 * i))) } }, 200); // 밀린 기록 4개
-  assert.equal(pushLog.length, n, "no finish push for a resend, a partial, an old record or a backlog of 4");
+  assert.equal((await pushed()), n, "no finish push for a resend, a partial, an old record or a backlog of 4");
   await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("fin4", hoursAgo(0.03), { correct: 5 }), rec("fin5", hoursAgo(0.01), { partial: true })] } }, 200);
   got = await sentSince(n);
   assert.deepEqual([got.length, got[0].msg.title, got[0].msg.body], [1, "🧒 용한 · DAY04 5/10 (50점)", "영어 → 한글 · 121~130번"], "the completed one of a small batch, no warnings");
   await pcase("/push/subscribe", { ...PARENT, body: parentSub(bP, devP, { kinds: { finish: false, summary: true } }) }, 200);
-  n = pushLog.length;
+  n = (await pushed());
   await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("fin6", hoursAgo(0.01))] } }, 200);
-  assert.equal(pushLog.length, n, "finish switched off on the parent phone");
+  assert.equal((await pushed()), n, "finish switched off on the parent phone");
   await pcase("/push/subscribe", { ...PARENT, body: parentSub(bP, devP) }, 200);
+  // 푸시 서비스가 느려도 /sync 는 시험 마침 알림을 기다리지 않고 바로 응답하고(아이 기기 20초 제한 안에 ‘보냈어요’),
+  // 보호자 기기 여러 대에는 차례로가 아니라 한꺼번에 보낸다. 전송 결과(lastOkAt)는 응답 뒤에 반영된다.
+  const devR = { id: "parent-phone-slow", label: "Galaxy" };
+  const bR = await newBrowser("/sub/parent-slow");
+  await pcase("/push/subscribe", { ...PARENT, body: parentSub(bR, devR) }, 200);
+  pushStatus.set(bP.subscription.endpoint, "hold");
+  pushStatus.set(bR.subscription.endpoint, "hold");
+  n = (await pushed());
+  let slowDone = false;
+  const slowSync = pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("slow1", hoursAgo(0.01), { correct: 8 })] } }, 200).finally(() => (slowDone = true));
+  const firstDone = await Promise.race([slowSync.then(() => "sync"), new Promise((r) => setTimeout(() => r("push"), 2000))]);
+  for (let i = 0; i < 400 && heldPushes.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+  const inFlight = heldPushes.length;
+  pushStatus.clear();
+  while (!slowDone || heldPushes.length) {
+    heldPushes.splice(0).forEach((release) => release());
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  await slowSync;
+  assert.equal(firstDone, "sync", "/sync answers while the finish pushes are still on their way");
+  assert.equal(inFlight, 2, "both parent devices are pushed at the same time, not one after another");
+  got = await sentSince(n);
+  assert.deepEqual(got.map((g) => g.endpoint).sort(), [bP.subscription.endpoint, bR.subscription.endpoint].sort(), "finish push reaches both parent devices");
+  assert(got.every((g) => g.msg.title === "🧒 용한 · DAY04 8/10 (80점)"), "same finish message on both");
+  assert((await pushStore.storage.get("push:parent:" + devR.id)).lastOkAt, "delivery recorded after the response");
+  await pcase("/push/unsubscribe", { ...PARENT, body: { role: "parent", device: { id: devR.id } } }, 200);
 
   // 공부 알림 시각(plan.remindHour): null 또는 0~23, 다른 계획 항목 유지. 아이 기기 설정(/settings·/join)에 오늘의 단어·알림 시각이 함께 간다.
   await pcase("/family/" + pkid.id + "/plan", { ...PARENT, body: { remindHour: 24 } }, 400, "remindHour");
@@ -1302,9 +1416,9 @@ const { pathToFileURL } = require("url");
   assert.deepEqual([data.dailyEnabled, data.dailyHour, data.remindHour], [false, 16, null], "join carries the alarm times");
 
   // 📬 오늘의 단어 도착: 아이 기기가 스스로 만들면 없음, 보호자의 ‘지금 만들기’·크론이 만들면 아이의 모든 기기에
-  n = pushLog.length;
+  n = (await pushed());
   data = await pcase("/daily/" + pkid.id, { body: { date: D0, origin: "parent" } }, 200); // 아이 기기(가족 코드)가 만든 것: 본문의 origin 은 믿지 않는다
-  assert.equal(pushLog.length, n, "no arrival push when the child device made it");
+  assert.equal((await pushed()), n, "no arrival push when the child device made it");
   data = await pcase("/daily/" + pkid.id, { ...PARENT, body: { date: kstDate(8) } }, 200);
   got = await sentSince(n);
   const reviewN = data.words.filter((w) => w.kind === "review").length;
@@ -1313,31 +1427,31 @@ const { pathToFileURL } = require("url");
   assert.deepEqual(got[0].msg, { title: `📬 오늘의 단어 ${data.words.length}개가 도착했어요`, body: `복습 ${reviewN}개 + 새 단어 ${data.words.length - reviewN}개 · 앱을 열어 풀어 보세요`, url: "./", tag: "daily" }, "arrival message");
   assert.deepEqual([got[0].headers.ttl, got[0].headers.topic], ["86400", "daily"]);
   // 크론(16시)이 만들면 도착 알림, 같은 크론에서 리마인더 시각(20시)이 아니면 리마인더 없음
-  n = pushLog.length;
+  n = (await pushed());
   await runPushCron(D1, 16);
   got = await sentSince(n);
   assert.deepEqual(got.map((g) => g.msg.tag), ["daily", "daily"], "cron-made daily → arrival push to the two devices");
 
   // ✏️ 공부 리마인더: remindHour(20시)에 그날(한국 날짜) 끝낸 시험이 없으면 하루 1번, 시각이 다르거나 이미 했으면 없음
-  n = pushLog.length;
+  n = (await pushed());
   await runPushCron(D1, 19);
-  assert.equal(pushLog.length, n, "no reminder before the hour");
+  assert.equal((await pushed()), n, "no reminder before the hour");
   await runPushCron(D1, 20);
   got = await sentSince(n);
   assert.deepEqual(got.map((g) => g.msg.tag).sort(), ["reminder", "reminder"], "reminder to both child devices");
   assert.deepEqual(got[0].msg, { title: "✏️ 오늘 아직 단어 시험을 안 봤어요", body: "짧게라도 한 번 풀어 볼까요?", url: "./", tag: "reminder" });
   assert.equal(got[0].headers.ttl, "86400");
   assert(await pushStore.storage.get(`sent:${pkid.id}:${D1}:reminder`), "reminder marked as sent for the day");
-  n = pushLog.length;
+  n = (await pushed());
   await runPushCron(D1, 20);
-  assert.equal(pushLog.length, n, "only once a day");
+  assert.equal((await pushed()), n, "only once a day");
   await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("d2a", kstAt(D2, 10), { correct: 8 })] } }, 200); // D2 오전에 시험을 봤다
-  n = pushLog.length;
+  n = (await pushed());
   await runPushCron(D2, 20);
   got = await sentSince(n);
   assert(!got.some((g) => g.msg.tag === "reminder"), "no reminder after a finished test that day");
   await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("d3p", kstAt(D3, 10), { partial: true })] } }, 200); // D3 에는 중단 기록뿐
-  n = pushLog.length;
+  n = (await pushed());
   await runPushCron(D3, 20);
   got = await sentSince(n);
   assert.equal(got.filter((g) => g.msg.tag === "reminder").length, 2, "a partial record does not count as studying");
@@ -1347,25 +1461,25 @@ const { pathToFileURL } = require("url");
   const bQ = await newBrowser("/sub/parent-q");
   await pcase("/push/subscribe", { ...PARENT, body: parentSub(bQ, devQ, { summaryHour: 22, kinds: { finish: false, summary: true } }) }, 200);
   await pcase("/sync", { body: { child: { id: pkid.id, name: "용한" }, records: [rec("d2b", kstAt(D2, 20, 30), { correct: 9, daily: D2 })] } }, 200); // 크론이 만든 D2 오늘의 단어를 풀었다
-  n = pushLog.length;
+  n = (await pushed());
   await runPushCron(D2, 21);
   got = await sentSince(n);
   assert.equal(got.length, 1, "summary to the 21h parent device only");
   assert.deepEqual(got[0].msg, { title: "🌙 오늘 공부", body: "용한 ✅ 2회 · 평균 85점 · 오늘의 단어 ✅\n한나 ⬜ 아직", url: "./parent.html#/", tag: "summary" }, "summary lines per child");
   assert.deepEqual([got[0].endpoint, got[0].headers.ttl, got[0].headers.topic], [bP.subscription.endpoint, "86400", "summary"]);
-  n = pushLog.length;
+  n = (await pushed());
   await runPushCron(D2, 21);
-  assert.equal(pushLog.length, n, "summary once a day");
+  assert.equal((await pushed()), n, "summary once a day");
   await runPushCron(D2, 22);
   got = await sentSince(n);
   assert.deepEqual([got.length, got[0].endpoint, got[0].msg.body], [1, bQ.subscription.endpoint, "용한 ✅ 2회 · 평균 85점 · 오늘의 단어 ✅\n한나 ⬜ 아직"], "22h device gets it at 22");
   await pcase("/push/subscribe", { ...PARENT, body: parentSub(bP, devP, { kinds: { finish: true, summary: false } }) }, 200);
-  n = pushLog.length;
+  n = (await pushed());
   await runPushCron(D3, 21);
-  assert.equal(pushLog.length, n, "summary switched off");
+  assert.equal((await pushed()), n, "summary switched off");
   // remindHour 를 끄면 리마인더 없음
   await pcase("/family/" + pkid.id + "/plan", { ...PARENT, body: { remindHour: null } }, 200);
-  n = pushLog.length;
+  n = (await pushed());
   await runPushCron(D4, 20);
   got = await sentSince(n);
   assert(!got.some((g) => g.msg.tag === "reminder"), "no reminder when remindHour is null");

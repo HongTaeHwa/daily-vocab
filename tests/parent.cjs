@@ -352,7 +352,9 @@ const { fakePushScript } = require("./lib/fake-push.cjs");
     "parent subscribe body: " + JSON.stringify(pushSubs[0].body).slice(0, 220),
   );
   let saved = (await parentState()).prefs;
-  assert(saved.deviceId === pushDevice && JSON.stringify(saved.push) === JSON.stringify({ deviceId: pushDevice, endpoint: "https://push.test/sub/1", kinds: { finish: true, summary: true }, summaryHour: 21 }), "prefs.push stored: " + JSON.stringify(saved.push));
+  const { registeredAt, ...savedPush } = saved.push;
+  assert(saved.deviceId === pushDevice && JSON.stringify(savedPush) === JSON.stringify({ deviceId: pushDevice, endpoint: "https://push.test/sub/1", kinds: { finish: true, summary: true }, summaryHour: 21 }), "prefs.push stored: " + JSON.stringify(saved.push));
+  assert(Date.now() - Date.parse(registeredAt) < 60000, "registeredAt stored: " + registeredAt);
   assert((await text("#notifyState")) === "켜짐" && (await page.isVisible("#notifyOptions")) && (await text("#notifyEnable")) === "🔕 알림 끄기" && (await textHas("#toast", "알림을 켰어요")), "card shows on");
   assert((await page.inputValue("#notifySummaryHour")) === "21" && (await page.$$eval("#notifySummaryHour option", (o) => o.length)) === 6, "summary hour 18~23, default 21");
   await page.uncheck("#notifyFinish");
@@ -381,6 +383,23 @@ const { fakePushScript } = require("./lib/fake-push.cjs");
   await page.click("#notifyEnable");
   await waitFor(() => paths("/push/subscribe", "POST").length === 4 && fake.pushSubs.size === 1, "on again");
   assert(paths("/push/subscribe", "POST")[3].body.device.id === pushDevice, "the phone keeps its device id");
+  // 마지막 등록이 하루(24시간) 전이면 구독이 같아도 앱을 열 때 다시 보낸다(Worker 가 실패가 쌓인 구독을 지웠을 수 있다). 같은 날은 다시 보내지 않는다.
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem("daily_vocab_parent_v1"));
+    st.prefs.push.registeredAt = new Date(Date.now() - 25 * 3600000).toISOString();
+    localStorage.setItem("daily_vocab_parent_v1", JSON.stringify(st));
+  });
+  fake.pushSubs.clear(); // 서버가 지운 상태(폰의 구독은 그대로)
+  await page.reload();
+  await waitFor(() => paths("/push/subscribe", "POST").length === 5 && fake.pushSubs.size === 1, "same subscription re-sent after a day");
+  const resentPush = paths("/push/subscribe", "POST")[4];
+  assert(resentPush.passcode === PARENT_CODE && resentPush.body.role === "parent" && resentPush.body.device.id === pushDevice && resentPush.body.subscription.endpoint === (await pushState()).sub.endpoint, "re-sent body: " + JSON.stringify(resentPush.body).slice(0, 200));
+  await waitFor(async () => Date.now() - Date.parse((await parentState()).prefs.push.registeredAt) < 60000, "registeredAt refreshed");
+  await page.reload();
+  await waitFor(() => page.isVisible("#notifyOptions"), "card after the second reload");
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange"))); // 화면 복귀도 같은 날이면 보내지 않는다
+  await new Promise((r) => setTimeout(r, 300));
+  assert(paths("/push/subscribe", "POST").length === 5, "not again on the same day");
   page.once("dialog", (d) => d.accept());
   await page.click("#clearParent");
   await waitFor(() => page.isVisible("#parentSetup"), "setup after clearing");
@@ -582,6 +601,45 @@ const { fakePushScript } = require("./lib/fake-push.cjs");
   await waitFor(() => pgHas("#notifyStatus", "알림 서버가 아직 준비되지 않았어요"), "unconfigured Worker message");
   assert((await pgState()).prefs.push === null && (await pgText("#notifyState")) === "꺼짐" && pgFake.paths("/push/subscribe").length === 0, "stays off without server keys");
 
+  // ---- 🔥 연속 학습: Worker 가 전체 기록으로 센 streakDays 를 쓴다(목록 14일·상세 30일 창보다 긴 연속도 잘리지 않는다) ----
+  const sk = await browser.newContext({ viewport: { width: 420, height: 900 }, serviceWorkers: "block" });
+  const skPage = await sk.newPage();
+  skPage.on("pageerror", (e) => errors.push("streak: " + e.message));
+  const skFake = await createFakeWorker(skPage, { server: DEFAULT_SERVER, familyCode: FAMILY_CODE, parentCode: PARENT_CODE });
+  const skChild = skFake.seedChild(PG, "누리", "135791");
+  skChild.devices = { "dev-s": { label: "iPhone", joinedAt: noonDaysAgo(50), lastSeenAt: minutesAgo(5) } };
+  for (let i = 0; i < 40; i++) for (const hr of [0, 2]) skChild.records.set("s" + i + "-" + hr, rec("s" + i + "-" + hr, daysAgoAt(i, hr))); // 40일 동안 하루 2회
+  const skCard = '#familyOverview .child-card[data-child="' + PG + '"]';
+  await skPage.goto(url + "parent.html");
+  await skPage.fill("#parentCodeStart", PARENT_CODE);
+  await skPage.click("#saveParentStart");
+  await waitFor(() => skPage.isVisible(skCard), "streak: today card");
+  const skLocal = await skPage.evaluate((id) => ParentApp.computeStats(ParentApp.store.get().children.find((c) => c.id === id).records, { days: 7 }).streak, PG);
+  assert(skLocal >= 14 && skLocal <= 15, "the 14-day list alone would cut the streak: " + skLocal);
+  assert((await skPage.textContent(skCard)).includes("🔥 40일"), "today card shows the server streak: " + (await skPage.textContent(skCard)));
+  await skPage.evaluate((id) => (location.hash = "#/child/" + id), PG);
+  await waitFor(() => skPage.evaluate(() => (document.getElementById("recordsSummary").textContent || "").includes("🔥 40일")), "records tab: the streak past the 30-day window");
+  // streakFor: streakLastDay 가 오늘이면 그대로, 어제면 오늘 기록이 있을 때 +1, 그보다 전이면 받은 기록으로(끊김), 값이 없으면(옛 Worker) 받은 기록으로
+  const skRules = await skPage.evaluate(() => {
+    const day = (n) => {
+      const d = new Date();
+      d.setDate(d.getDate() - n);
+      return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
+    };
+    const stats = (streak, today) => ({ streak, today: { count: today } });
+    return [
+      ParentApp.streakFor({ streakDays: 30, streakLastDay: day(0) }, stats(3, 1)),
+      ParentApp.streakFor({ streakDays: 30, streakLastDay: day(1) }, stats(3, 1)),
+      ParentApp.streakFor({ streakDays: 30, streakLastDay: day(1) }, stats(2, 0)),
+      ParentApp.streakFor({ streakDays: 30, streakLastDay: day(2) }, stats(1, 1)),
+      ParentApp.streakFor({}, stats(5, 1)),
+      ParentApp.streakFor({ streakDays: 0, streakLastDay: null }, stats(0, 0)),
+      ParentApp.streakFor({ streakDays: 3, streakLastDay: day(-1) }, stats(0, 0)),
+      ParentApp.streakFor({ streakDays: 2, streakLastDay: day(0) }, stats(14, 1)),
+    ];
+  });
+  assert(JSON.stringify(skRules) === JSON.stringify([30, 31, 30, 1, 5, 0, 3, 14]), "streakFor rules: " + JSON.stringify(skRules));
+
   // ---- 옛 Worker(2026-10-19 이전): 상세가 인자를 무시하고 전체 기록(203개)을 주고 recordCount·more·‘더 보기’ 경로가 없다 ----
   const ow = await browser.newContext({ viewport: { width: 420, height: 900 }, serviceWorkers: "block" });
   const owPage = await ow.newPage();
@@ -590,10 +648,13 @@ const { fakePushScript } = require("./lib/fake-push.cjs");
   const owChild = owFake.seedChild(PG, "다온", "246810");
   owChild.devices = { "dev-c": { label: "iPhone", joinedAt: noonDaysAgo(30), lastSeenAt: minutesAgo(5) } };
   for (let i = 0; i < 203; i++) owChild.records.set("w" + i, rec("w" + i, new Date(Date.now() - (i * 3 + 1) * 3600000).toISOString()));
+  owChild.streak = null; // 옛 Worker 는 연속 학습(streakDays)을 주지 않는다 → 받은 기록으로 센다
   await owPage.goto(url + "parent.html");
   await owPage.fill("#parentCodeStart", PARENT_CODE);
   await owPage.click("#saveParentStart");
   await waitFor(() => owPage.isVisible("#today"), "old worker: today");
+  const owLocal = await owPage.evaluate((id) => ParentApp.computeStats(ParentApp.store.get().children.find((c) => c.id === id).records, { days: 7 }).streak, PG);
+  assert(owLocal >= 14 && (await owPage.textContent('#familyOverview .child-card[data-child="' + PG + '"]')).includes("🔥 " + owLocal + "일"), "old worker: streak from the received records (" + owLocal + ")");
   await owPage.evaluate((id) => (location.hash = "#/child/" + id), PG);
   await waitFor(() => owPage.evaluate(() => (document.getElementById("recordsNote").textContent || "").includes("전체 203회 중 최근 200개를 받았어요")), "old worker: newest 200 of 203");
   const owState = await owPage.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_parent_v1")));
@@ -604,7 +665,7 @@ const { fakePushScript } = require("./lib/fake-push.cjs");
   assert(owFake.paths("/family/" + PG + "/records").length === 0 && !(await owPage.getAttribute("#toast", "class")).includes("bad"), "old worker: no page request, no error toast");
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: parent app — setup (length/401/404, one GET /family to the cards), today cards (linked/unlinked), hash back, child tabs (records summary/missed/filters, sets/lock, daily plan/make-now/off, link/code/devices/time limit/rename/regen, questions), add/delete child (name confirm), offline cache, clear code, old-install redirect + migration, 30-day detail + ‘more’ pages (404 quiet, old Worker 200), review set from missed words ((2) names, skipped meanings), daily words as a set, level suggestion rules/apply/later, notifications (remind hour, parent push on/kinds/hour/test/off/clear, 503)");
+  console.log("PASS: parent app — setup (length/401/404, one GET /family to the cards), today cards (linked/unlinked), hash back, child tabs (records summary/missed/filters, sets/lock, daily plan/make-now/off, link/code/devices/time limit/rename/regen, questions), add/delete child (name confirm), offline cache, clear code, old-install redirect + migration, 30-day detail + ‘more’ pages (404 quiet, old Worker 200), review set from missed words ((2) names, skipped meanings), daily words as a set, level suggestion rules/apply/later, streak from the Worker (40 days past the windows, rules, old Worker fallback), notifications (remind hour, parent push on/kinds/hour/test/off/daily re-send/clear, 503)");
   await browser.close();
 })().catch((e) => {
   console.error(e);

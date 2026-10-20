@@ -63,6 +63,7 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 보호자가 아이별 계획(`POST /family/<childId>/plan`: 켜기, 수준, 하루 단어 수 5~20, 만드는 시각 0~23시 KST)을 저장하면, 매시 0분에 실행되는 크론(`wrangler.jsonc`의 `triggers.crons`)이 한국 시각 기준 계획 시각이 지난 아이의 그날 단어를 만들어 `FamilyStore`에 저장합니다. 아이 기기가 먼저 열리면 `POST /daily/<childId>`로 그 자리에서 만듭니다(같은 날 두 번 만들지 않음).
 
 - 구성: 복습 최대 3개(최근 14일 기록의 틀린 단어, 최신순) + 새 단어. 새 단어는 `DAILY_MODEL`(기본 `claude-sonnet-5-5`)에 수준 문구, 아이 기기가 `/sync`로 보낸 최근 세트 단어(교재 앵커, 최대 60개; 손대지 않은 기본 예제 세트는 제외하고, 기기가 `words`가 빈 `anchor`를 보내면 저장된 앵커를 지우며 `anchor`를 아예 보내지 않으면 그대로 둠), 최근에 이미 낸 단어(최대 200개), 복습 단어를 넘겨 필요한 수의 2배를 받은 뒤 앵커·이미 낸 단어·규칙 위반을 걸러 채웁니다. 모자라면 한 번 더 요청합니다. 아이별 ‘이미 낸 단어’는 5,000개까지 기억합니다.
+- 두 번째 요청이 실패(시간 초과·거부·잘림 등)해도 첫 요청에서 얻은 새 단어가 있으면 그 단어로(하루 단어 수보다 적게) 저장합니다. 아이 기기가 오류(504) 대신 오늘의 단어를 받고, 크론이 다음 시간에 AI를 또 부르지 않습니다(`npm run tail`에 `daily_partial` 줄). 첫 요청부터 실패하면 저장하지 않고 다음에(아이 기기가 다시 열 때, 크론은 다음 시간에) 다시 만듭니다.
 - 형식은 AI 사전과 같아(영어·뜻·발음·허용 답안) 앱의 시험 엔진이 그대로 채점합니다. 기록에 `daily: "YYYY-MM-DD"`가 붙어 오면 그날 것에 완료(점수)를 표시합니다(중단 기록 제외).
 - 비용: 아이당 하루 1회, 텍스트 20단어 안팎이라 1원 미만 수준입니다. 품질이 아쉬우면 `DAILY_MODEL`을 `claude-opus-5-5`로 바꾸고 `npm run deploy`.
 - 크론은 Workers 무료 플랜에서 동작합니다. 배포 로그의 `scheduled` 항목 또는 `npm run tail`의 `daily_cron` 줄로 확인할 수 있습니다.
@@ -92,16 +93,18 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 **⚠️ 키를 바꾸지 마세요**: 이미 쓰고 있는 키를 바꾸면(`npm run vapid`를 다시 실행해 등록) 모든 기기의 구독이 무효가 되어 알림이 끊깁니다. 바꿔야 한다면 바꾼 뒤 **모든 아이 기기와 보호자 폰에서 알림을 껐다가 다시 켜야** 합니다(다시 켤 때 앱이 새 키로 구독을 새로 만듭니다. 옛 키의 구독은 전송이 5번 실패하면 서버가 지웁니다).
 
 **보내는 것과 때**
-- `daily`(아이 기기): 크론이 그날 오늘의 단어를 만든 직후, 또는 보호자가 ‘오늘 것 지금 만들기’(`POST /daily/<id>`를 보호자 코드로)로 만든 직후. 아이 기기가 앱을 열어 스스로 만든 때는 보내지 않습니다.
+- `daily`(아이 기기): 크론이 그날 오늘의 단어를 만든 직후, 또는 보호자가 ‘오늘 것 지금 만들기’(`POST /daily/<id>`를 보호자 코드로)로 만든 직후. 아이 기기가 앱을 열어 스스로 만든 때는 보내지 않습니다. 응답을 먼저 돌려준 뒤 보냅니다.
 - `reminder`(아이 기기): 매시 크론에서 아이 계획의 `remindHour`(한국 시각)와 같은 시각에, 그날(한국 날짜) 끝낸 기록(중단 제외)이 없으면 하루 한 번(`sent:<childId>:<날짜>:reminder` 표시).
-- `finish`(보호자 폰): `/sync`로 처음 들어온 완료 기록 중 6시간 안에 끝낸 가장 최근 1건. 한 번에 4개 이상 오면 밀린 기록으로 보고 보내지 않습니다. 보호자 기기의 `kinds.finish`가 꺼져 있으면 보내지 않습니다. 같은 아이 것은 `Topic`으로 합쳐집니다.
+- `finish`(보호자 폰): `/sync`로 처음 들어온 완료 기록 중 6시간 안에 끝낸 가장 최근 1건. 한 번에 4개 이상 오면 밀린 기록으로 보고 보내지 않습니다. 보호자 기기의 `kinds.finish`가 꺼져 있으면 보내지 않습니다. 같은 아이 것은 `Topic`으로 합쳐집니다. `/sync`는 알림을 기다리지 않고 먼저 응답합니다(Durable Object 안에서 이어서 보냄) — 보호자 기기가 여러 대이고 푸시 서비스가 느려도 아이 기기의 기록 보내기(20초 제한)가 ‘못 보낸 기록’이 되지 않습니다.
 - `summary`(보호자 폰): 매시 크론에서 보호자 기기의 `summaryHour`(기본 21)와 같은 시각에 하루 한 번, 아이별 그날 한 줄(기기도 기록도 없는 아이는 뺌, 보낼 아이가 없으면 보내지 않음).
 - `test`: `POST /push/test`.
 - 문구는 Worker가 만들고(`PUSH_TEXT`), 아이 이름·세트 이름·점수·경고 횟수 외에는 넣지 않습니다. TTL은 daily·reminder·summary 1일, finish 1시간, test 5분.
+- 한 아이의 기기 여러 대·보호자 기기 여러 대에는 차례로가 아니라 한꺼번에 보냅니다(구독마다 10초 제한).
 
 **구독 저장·정리**
 - `push:child:<childId>:<deviceId>`(가족 코드로만 만듦, 아이당 10대), `push:parent:<deviceId>`(보호자 코드로만, 5대). 같은 기기는 덮어쓰고, 같은 브라우저(endpoint)가 다른 기기 id로 오면 옛 것을 지우며, 상한을 넘으면 가장 오래 소식이 없는 구독부터 지웁니다.
 - 푸시 서비스가 404·410(만료)을 주면 바로 지우고, 그 밖의 실패(5xx·429·네트워크·400/401/403)가 5번 연달아면 지웁니다. 로그에는 상태 코드와 종류만 남고 endpoint·키는 남기지 않습니다(400/401/403은 키 문제일 수 있다는 표시).
+- 앱(아이 기기·보호자 앱)은 마지막 등록 뒤 하루가 지나면 구독이 그대로여도 앱을 열 때 `/push/subscribe`를 다시 보냅니다(같은 기기는 덮어써 몇 번 보내도 같음). 일시적인 실패로 서버에서 지워진 구독이 하루 안에 되살아납니다.
 - 아이를 지우면 그 아이 기기들의 구독과 ‘보냄’ 표시도 지웁니다. 크론이 3일 지난 `sent:` 표시를 지웁니다.
 
 ## 지역 차단과 북미 중계 (Durable Object)
@@ -149,8 +152,8 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 | `POST /grade` · 헤더 `X-App-Passcode` · JSON `{ en, ko, aliases?, answer }` | AI 2차 채점. 앱이 책의 뜻·허용 답안과 글자 그대로 맞지 않는 답만 보내면 ‘같은 뜻인지’ 판정 → `{ accept, reason, model, usage }`. 모델은 `GRADE_MODEL`(기본 `claude-haiku-5-5`, 빠르고 저렴). 동의어·조사/어미 차이·합성어·한 글자 오타는 인정, 다른 뜻·막연한 답·여러 뜻 나열은 거절 |
 | `POST /define` · 헤더 `X-App-Passcode` · JSON `{ words: ["apple", …] }` | AI 사전. 영어 단어·짧은 구 최대 60개(영문자·공백·.'’- 40자 이하) → `{ words: [{ en, ko, ipa, aliases }], note, model, usage }`. 요청한 철자 그대로 한 번씩 돌려주고 모르는 단어는 빠집니다(전부 모르면 422). 앱의 ‘빈 뜻 AI로 채우기’가 40개씩 보냅니다 |
 | `POST /sync` · 헤더 `X-App-Passcode`(가족 또는 보호자 코드) · JSON `{ child: { id, name }, records: [{ id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, daily?, awayCount?, awayMs?, timeouts?, missed: [{ en, ko, unknown? }] }], sets: [{ name, count }], anchor?: { setName, words }, device?: { id, label } }` | 아이 기기의 시험 기록 저장(기록 최대 100개, 같은 id는 덮어씀). `anchor.words`가 비어 있으면 저장된 수준 기준을 지웁니다. 보호자가 지운 아이 id는 404 `unknown_child`. `{ ok, stored, trimmed, syncedAt }` |
-| `GET /family?days=<1~30>` · 헤더 `X-App-Passcode`(보호자 코드만) | 아이별 요약 `{ children: [{ id, name, sets, lastTestAt, updatedAt, recordCount, records }], serverTime }`. `records`는 최근 `days`일(기본 14, 20개 미만이면 최근 20개), 최신순. 범위 밖 `days`는 400 |
-| `GET /family/<childId>?days=<1~365>&limit=<1~500>` · 보호자 코드 | 한 아이의 상세 `{ child, records, recordCount, more, today, questions }`. `records`는 최근 `days`일(기본 30) 안에서 최신순 최대 `limit`개(기본 200), `recordCount`는 전체 기록 수, `more`는 보낸 것보다 오래된 기록이 있으면 true(`questions`는 문제 물어보기 요약 최신 100개). 숫자가 아니거나 범위 밖이면 400, 모르는 아이는 404 `unknown_child` |
+| `GET /family?days=<1~30>` · 헤더 `X-App-Passcode`(보호자 코드만) | 아이별 요약 `{ children: [{ id, name, sets, lastTestAt, updatedAt, recordCount, streakDays, streakLastDay, records }], serverTime }`. `records`는 최근 `days`일(기본 14, 20개 미만이면 최근 20개), 최신순. `streakDays`는 시험을 본 날(한국 날짜, 중단 기록 포함)이 `streakLastDay`(가장 최근에 본 날)까지 며칠 이어졌는지로, 전체 기록 기준이라 `days` 창에 잘리지 않습니다(최근 400일까지; 오늘·어제까지 이어졌는지는 앱이 판단). 범위 밖 `days`는 400 |
+| `GET /family/<childId>?days=<1~365>&limit=<1~500>` · 보호자 코드 | 한 아이의 상세 `{ child, records, recordCount, more, today, questions }`(`child`에 `streakDays`·`streakLastDay`). `records`는 최근 `days`일(기본 30) 안에서 최신순 최대 `limit`개(기본 200), `recordCount`는 전체 기록 수, `more`는 보낸 것보다 오래된 기록이 있으면 true(`questions`는 문제 물어보기 요약 최신 100개). 숫자가 아니거나 범위 밖이면 400, 모르는 아이는 404 `unknown_child` |
 | `GET /family/<childId>/records?before=<ISO>&limit=<1~500>` · 보호자 코드 | 보호자 앱 ‘더 보기’: `before`보다 먼저 끝난(미포함) 기록을 최신순으로 `limit`개(기본 100), `before`가 없으면 가장 최근부터. `{ records, more, serverTime }`. 잘못된 `before`·`limit`는 400, 모르는 아이는 404 `unknown_child`. 요청 제한은 `/family` 버킷 |
 | `DELETE /family/<childId>` · 보호자 코드 | 아이 항목과 기록·오늘의 단어 삭제. `{ ok, deleted }` |
 | `POST /family/<childId>/plan` · 보호자 코드 · JSON `{ enabled, level, dailyCount, hour, timeLimitSec, setsLocked, remindHour }` | 오늘의 단어 계획과 문제당 제한 시간(0 또는 5~120초, 모든 시험에 적용)·세트 수정 잠금·공부 알림 시각(`null` 또는 0~23시, 한국 시각) 저장(빠진 항목은 유지). `{ ok, child }` |
@@ -176,10 +179,12 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 
 보안 메모: Origin 검사와 CORS는 다른 웹사이트가 이 Worker를 쓰지 못하게 막고, 접속 코드는 주소를 아는 사람의 무단 사용을 막습니다. 접속 코드는 태블릿 브라우저에 저장되므로, 기기를 잃어버리면 코드를 바꾸세요. 피해 범위는 어차피 Anthropic 콘솔의 사용 한도로 제한됩니다.
 
-`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의)·오늘의 단어(계획·앵커·생성·완료·크론)·아이 코드(아이 만들기·연결·기기·코드 재발급·이름)·알림(키·구독 검증·코드 역할, 가짜 푸시 서비스로 받은 요청의 VAPID JWT를 공개 키로 검증하고 본문을 RFC 8291로 복호화, 트리거 4종·하루 1번·만료 정리)을 Node에서 확인합니다 (`node tests/worker.cjs`).
+`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의, 연속 학습 `streakDays`·옛 아이 채우기)·오늘의 단어(계획·앵커·생성·두 번째 요청 실패 때 첫 요청 단어로 저장·완료·크론)·아이 코드(아이 만들기·연결·기기·코드 재발급·이름)·알림(키·구독 검증·코드 역할, 가짜 푸시 서비스로 받은 요청의 VAPID JWT를 공개 키로 검증하고 본문을 RFC 8291로 복호화, 트리거 4종·하루 1번·만료 정리, 느린 푸시 서비스에서도 `/sync`가 먼저 응답하고 보호자 기기 여러 대에 한꺼번에 보냄)을 Node에서 확인합니다 (`node tests/worker.cjs`).
 
 2026-10-18 이전에 배포한 Worker에는 `/define`과 가족 기록함(`/sync`, `/family`), 세트 동기화(`/sets`)가 없어 앱의 ‘빈 뜻 AI로 채우기’와 가족 기록함이 “다시 배포” 안내를 띄웁니다. `npm run deploy`로 다시 배포하면 됩니다(앱 배포와 별개, 먼저 배포해도 옛 앱과 호환).
 
 2026-10-19(보호자 앱 C단계) 이전 Worker는 상세(`GET /family/<childId>`)에 `days`·`limit`를 무시하고 전체 기록을 주며 ‘더 보기’ 경로(`/family/<childId>/records`)가 없습니다. 보호자 앱은 그때도 오류 없이 최신 200개만 쓰고 ‘더 보기’ 버튼을 숨기니, 편할 때 `npm run deploy`로 다시 배포하면 됩니다(새 Worker는 옛 보호자 앱과도 호환).
+
+2026-10-20 이전 Worker는 `/sync`가 시험 마침 알림을 다 보낸 뒤에 응답하고(보호자 기기가 많고 푸시 서비스가 느리면 아이 기기에 ‘못 보낸 기록’이 뜰 수 있음), 오늘의 단어 두 번째 요청이 실패하면 그날 것을 저장하지 않으며, 목록·상세에 `streakDays`가 없습니다(보호자 앱은 받은 기록으로 연속 학습을 세어 14일·30일에서 잘림). `npm run deploy`로 다시 배포하면 됩니다(새 Worker는 옛 앱과도 호환, 처음 목록을 볼 때 아이마다 기록으로 시험 본 날을 한 번 채웁니다).
 
 2026-10-19(알림 N1) 이전 Worker에는 `/push/…`가 없어 앱의 ‘알림 받기’가 “다시 배포” 안내를 띄웁니다. 위 ‘알림’ 절대로 키를 등록하고 `npm run deploy` 하세요. 새 Worker의 `/settings`·`/join` 응답에 `dailyEnabled`·`dailyHour`·`remindHour`가 더해졌고 옛 앱은 이를 무시합니다.

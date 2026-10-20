@@ -10,8 +10,9 @@
 //   GET  /diag       (비밀값 사용 안 함) 이 Worker 위치에서 Anthropic이 요청을 받는지 확인
 //   POST /sync       헤더 X-App-Passcode(가족 또는 보호자 코드), JSON {child:{id,name}, records:[…], sets:[…]} → { ok, stored, trimmed, syncedAt }
 //                    아이 기기가 시험 기록(점수·틀린 단어·세트 이름)을 가족 기록함(FamilyStore)에 보낸다.
-//   GET  /family?days=<1~30>   헤더 X-App-Passcode(보호자 코드만) → { children:[{id,name,sets,lastTestAt,recordCount,…,records}], serverTime }
-//                              아이별 최근 days일(기본 14) 기록, 그보다 적으면 최근 20개
+//   GET  /family?days=<1~30>   헤더 X-App-Passcode(보호자 코드만) → { children:[{id,name,sets,lastTestAt,recordCount,streakDays,streakLastDay,…,records}], serverTime }
+//                              아이별 최근 days일(기본 14) 기록, 그보다 적으면 최근 20개. streakDays = 시험을 본 날(한국 날짜)이 streakLastDay(가장 최근에 본 날)까지
+//                              며칠 이어졌는지(전체 기록 기준, 중단 기록 포함 — 보호자 앱 computeStats 와 같다). ‘오늘·어제까지’인지는 앱이 판단한다
 //   GET  /family/<childId>?days=<1~365>&limit=<1~500>  보호자 코드 → { child, records, recordCount, more, questions, today }
 //                              기록은 최근 days일(기본 30) 안에서 최신순 최대 limit개(기본 200). recordCount = 그 아이의 전체 기록 수, more = 더 오래된 기록이 있음
 //   GET  /family/<childId>/records?before=<ISO>&limit=<1~500>  보호자 코드 → { records, more, serverTime }
@@ -118,6 +119,7 @@ const DAILY_ATTEMPTS = 2;
 const MAX_ANCHOR_WORDS = 60; // 교재 앵커: 아이 기기가 보내는 현재 세트 단어 수
 const MAX_PLAN_BODY = 16 * 1024;
 const KST_OFFSET_MS = 9 * 3600000;
+const STUDY_DAYS_MAX = 400; // 아이 항목에 두는 ‘시험을 본 날’(한국 날짜) 수. 연속 학습(streakDays)은 이 안에서 센다(보호자 앱도 400일까지)
 
 // ---- 세트 동기화(아이 단위) 규칙 ----
 // 세트는 아이 항목에 속한다(set:<childId>:<setId>). 아이 기기는 POST /sets/<childId>(가족 코드)로 자기 세트를 올리고
@@ -357,6 +359,25 @@ function kstNow(now = Date.now()) {
   return { date: d.toISOString().slice(0, 10), hour: d.getUTCHours() };
 }
 
+// 기록 시각(ISO) → 한국 날짜 YYYY-MM-DD
+function kstDay(iso) {
+  return new Date(Date.parse(iso) + KST_OFFSET_MS).toISOString().slice(0, 10);
+}
+// 시험을 본 날 목록에 기록들의 날짜를 더한다(중복 없이 오름차순, 최근 STUDY_DAYS_MAX 일).
+function addStudyDays(days, records) {
+  const set = new Set(days);
+  for (const r of records) set.add(kstDay(r.completedAt));
+  return [...set].sort().slice(-STUDY_DAYS_MAX);
+}
+// 연속 학습: 가장 최근에 시험을 본 날(streakLastDay)까지 하루도 빠짐없이 이어진 날 수. 시험을 본 적이 없으면 0, null.
+function streakOf(days) {
+  if (!days.length) return { streakDays: 0, streakLastDay: null };
+  const at = (d) => Date.parse(d + "T00:00:00Z");
+  let n = 1;
+  while (n < days.length && at(days[days.length - 1 - n]) === at(days[days.length - n]) - 86400000) n++;
+  return { streakDays: n, streakLastDay: days[days.length - 1] };
+}
+
 function allowedOrigins(env) {
   const configured = String(env.ALLOWED_ORIGINS || "")
     .split(",")
@@ -460,14 +481,17 @@ export class AnthropicRelay {
 
 // ---- 가족 기록함: 아이 기기가 보낸 시험 기록을 저장하고 보호자 폰에 보여 준다 ----
 // SQLite 기반 Durable Object 하나(idFromName("family"))의 내장 키-값 저장소를 쓴다. 키 배치:
-//   child:<childId>                              {id, name, sets:[{name,count}], createdAt, updatedAt, lastTestAt, recordCount, recordCountExact}
+//   child:<childId>                              {id, name, sets:[{name,count}], createdAt, updatedAt, lastTestAt, recordCount, recordCountExact, studyDays}
 //                                                (recordCountExact: recordCount 가 실제 기록 수다. 없으면 옛 대략값이라 상세를 처음 볼 때 한 번 센다)
+//                                                (studyDays: 시험을 본 한국 날짜 목록, 최근 400일. 없으면 이 규칙 전에 만든 아이라 목록·상세를 처음 볼 때 기록으로 한 번 채운다.
+//                                                 응답에는 넣지 않고 streakDays·streakLastDay 로 바꿔 보낸다 — childView)
 //   rec:<childId>:<completedAt ISO>:<recordId>   압축 기록 {id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed, receivedAt}
 //   push:child:<childId>:<deviceId> / push:parent:<deviceId>   알림 구독 {endpoint, keys, label, createdAt, updatedAt, lastOkAt, failures(, kinds, summaryHour)}
 //   sent:<childId 또는 보호자 deviceId>:<YYYY-MM-DD>:<kind>   하루 1번 알림(reminder·summary)을 보냈다는 표시(3일 뒤 크론이 지움)
 // 같은 기록을 다시 보내면 같은 키라 덮어쓴다. 키가 완료 시각 순이라 prefix 나열이 곧 시간순이다.
 export class FamilyStore {
   constructor(state, env = {}) {
+    this.state = state;
     this.storage = state.storage;
     this.env = env;
     this.generating = new Map(); // 같은 날짜의 생성 요청이 겹치면(크론·기기) Claude를 한 번만 부른다
@@ -518,6 +542,30 @@ export class FamilyStore {
   recordPrefix(childId) {
     return "rec:" + childId + ":";
   }
+  // 응답을 붙잡지 않을 일(알림 보내기): 응답을 먼저 돌려주고 이 Durable Object 안에서 이어서 한다(Durable Object 는 응답 뒤에도 남은 일을 마친다.
+  // waitUntil 은 있으면 알려 두는 것 — 테스트는 이것으로 끝나기를 기다린다). 실패는 로그만 남긴다.
+  later(label, task) {
+    const run = Promise.resolve()
+      .then(task)
+      .catch((e) => console.error(label, e?.name || "", e?.message || ""));
+    try {
+      this.state?.waitUntil?.(run);
+    } catch {}
+    return run;
+  }
+  // 응답에 넣는 아이 항목: 계획(기본값 채움)과 연속 학습(streakDays·streakLastDay). 날짜 목록(studyDays)은 보내지 않는다.
+  childView(c) {
+    const { studyDays, ...rest } = c;
+    return { ...rest, plan: this.planOf(c), ...(Array.isArray(studyDays) ? streakOf(studyDays) : {}) };
+  }
+  // 시험을 본 날 목록이 없는(이 규칙 전에 만든) 아이는 저장된 기록 전체로 한 번 채워 둔다. 그 뒤로는 /sync 가 새 기록의 날짜를 더한다.
+  async withStudyDays(c) {
+    if (Array.isArray(c.studyDays)) return c;
+    const records = [...(await this.storage.list({ prefix: this.recordPrefix(c.id) })).values()];
+    const next = { ...c, studyDays: addStudyDays([], records.filter((r) => Number.isFinite(Date.parse(r?.completedAt)))) };
+    await this.storage.put("child:" + c.id, next);
+    return next;
+  }
   dailyKey(childId, date) {
     return "daily:" + childId + ":" + date;
   }
@@ -540,7 +588,7 @@ export class FamilyStore {
       // 보호자가 지운 아이(gone:<id> 묘비)는 연결돼 있던 기기가 기록을 보내도 되살리지 않는다. 그 밖의 모르는 아이는 옛 앱 호환으로 만든다.
       if (await this.storage.get("gone:" + child.id))
         return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 보호자 폰에서 아이를 다시 만들어 주세요." });
-      current = { id: child.id, createdAt: now, createdBy: "device", sets: [], recordCount: 0, recordCountExact: true, devices: {} };
+      current = { id: child.id, createdAt: now, createdBy: "device", sets: [], recordCount: 0, recordCountExact: true, devices: {}, studyDays: [] };
     }
     const entries = {};
     let lastTestAt = current.lastTestAt || null;
@@ -564,6 +612,8 @@ export class FamilyStore {
       lastTestAt,
       // 새 기록만 더한다. 이 규칙 전에 만든 아이는 다시 보낸 기록까지 센 대략값이라(recordCountExact 없음) 상세를 처음 볼 때(child) 한 번 실제로 센다.
       recordCount: (current.recordCount || 0) + added,
+      // 시험을 본 날(연속 학습). 목록이 없는 옛 아이는 그대로 두면 목록·상세를 볼 때 전체 기록으로 채운다(withStudyDays).
+      ...(Array.isArray(current.studyDays) ? { studyDays: addStudyDays(current.studyDays, records) } : {}),
     };
     if (anchor && !anchor.words.length) delete next.anchor; // 빈 앵커 = 기기에 수준 기준으로 쓸 세트가 없다(예제뿐): 옛 수준 기준을 지운다
     await this.putMany({ ...entries, [key]: next });
@@ -576,11 +626,8 @@ export class FamilyStore {
       trimmed = extra.length;
       await this.storage.put(key, { ...next, recordCount: all.size - extra.length, recordCountExact: true });
     }
-    try {
-      await this.notifyFinish({ id: child.id, name: next.name }, fresh, records.length);
-    } catch (e) {
-      console.error("push_finish_failed", e?.name || "", e?.message || "");
-    }
+    // 🧒 시험 마침 알림은 응답 뒤에 보낸다: 보호자 기기가 여러 대이고 푸시 서비스가 느려도 아이 기기의 기록 보내기(20초 제한)가 실패로 보이지 않게
+    this.later("push_finish_failed", () => this.notifyFinish({ id: child.id, name: next.name }, fresh, records.length));
     return json(200, { ok: true, stored: records.length, trimmed, syncedAt: now });
   }
   async markDaily(childId, r) {
@@ -601,12 +648,13 @@ export class FamilyStore {
     const since = new Date(Date.now() - days * 86400000).toISOString();
     const { date: today } = kstNow();
     const children = [];
-    for (const c of (await this.storage.list({ prefix: "child:" })).values()) {
+    for (const listed of (await this.storage.list({ prefix: "child:" })).values()) {
+      const c = await this.withStudyDays(listed);
       const prefix = this.recordPrefix(c.id);
       let records = [...(await this.storage.list({ prefix, start: prefix + since })).values()].reverse();
       if (records.length < SUMMARY_MIN_RECORDS)
         records = [...(await this.storage.list({ prefix, reverse: true, limit: SUMMARY_MIN_RECORDS })).values()];
-      children.push({ ...c, plan: this.planOf(c), today: await this.todayOf(c.id, today), records });
+      children.push({ ...this.childView(c), today: await this.todayOf(c.id, today), records });
     }
     children.sort((a, b) => String(a.name).localeCompare(String(b.name), "ko"));
     return json(200, { children, serverTime: new Date().toISOString() });
@@ -620,6 +668,7 @@ export class FamilyStore {
     if (days === undefined || limit === undefined)
       return json(400, { error: "bad_request", message: `days는 1~${DETAIL_DAYS_MAX}, limit는 1~${RECORDS_PAGE_MAX} 사이의 정수여야 합니다.` });
     const prefix = this.recordPrefix(childId);
+    c = await this.withStudyDays(c);
     if (!c.recordCountExact) {
       // 옛 규칙의 recordCount(다시 보낸 기록까지 센 대략값)는 한 번만 실제로 세어 고친다. 그 뒤로는 /sync 가 새 기록만 더한다.
       c = { ...c, recordCount: (await this.storage.list({ prefix })).size, recordCountExact: true };
@@ -633,7 +682,7 @@ export class FamilyStore {
     const { date: today } = kstNow();
     const daily = await this.storage.get(this.dailyKey(childId, today));
     return json(200, {
-      child: { ...c, plan: this.planOf(c) },
+      child: this.childView(c),
       records,
       recordCount: c.recordCount,
       more,
@@ -669,9 +718,9 @@ export class FamilyStore {
     if (!name || name.length > MAX_CHILD_NAME) return json(400, { error: "bad_request", message: `아이 이름은 1~${MAX_CHILD_NAME}자로 적어 주세요.` });
     const now = new Date().toISOString();
     const joinCode = await this.newJoinCode();
-    const child = { id: crypto.randomUUID(), name, createdAt: now, updatedAt: now, createdBy: "parent", joinCode, devices: {}, sets: [], recordCount: 0, recordCountExact: true, lastTestAt: null };
+    const child = { id: crypto.randomUUID(), name, createdAt: now, updatedAt: now, createdBy: "parent", joinCode, devices: {}, sets: [], recordCount: 0, recordCountExact: true, lastTestAt: null, studyDays: [] };
     await this.storage.put({ ["child:" + child.id]: child, ["code:" + joinCode]: { childId: child.id, createdAt: now } });
-    return json(200, { ok: true, child: { ...child, plan: this.planOf(child) } });
+    return json(200, { ok: true, child: this.childView(child) });
   }
   async regenerateCode(childId) {
     const c = await this.storage.get("child:" + childId);
@@ -681,7 +730,7 @@ export class FamilyStore {
     const next = { ...c, joinCode, updatedAt: now };
     await this.storage.put({ ["child:" + childId]: next, ["code:" + joinCode]: { childId, createdAt: now } });
     if (c.joinCode) await this.storage.delete("code:" + c.joinCode);
-    return json(200, { ok: true, child: { ...next, plan: this.planOf(next) } });
+    return json(200, { ok: true, child: this.childView(next) });
   }
   async rename(childId, body) {
     const c = await this.storage.get("child:" + childId);
@@ -690,7 +739,7 @@ export class FamilyStore {
     if (!name || name.length > MAX_CHILD_NAME) return json(400, { error: "bad_request", message: `아이 이름은 1~${MAX_CHILD_NAME}자로 적어 주세요.` });
     const next = { ...c, name, updatedAt: new Date().toISOString() };
     await this.storage.put("child:" + childId, next);
-    return json(200, { ok: true, child: { ...next, plan: this.planOf(next) } });
+    return json(200, { ok: true, child: this.childView(next) });
   }
   async join(body) {
     const code = String(body?.code ?? "").replace(/\D/g, "");
@@ -863,7 +912,7 @@ export class FamilyStore {
     if (parsed.error) return json(400, { error: "bad_request", message: parsed.error });
     const next = { ...c, plan: parsed.plan, updatedAt: new Date().toISOString() };
     await this.storage.put("child:" + childId, next);
-    return json(200, { ok: true, child: { ...next, plan: this.planOf(next) } });
+    return json(200, { ok: true, child: this.childView(next) });
   }
   async getDaily(childId, dateParam) {
     const c = await this.storage.get("child:" + childId);
@@ -982,11 +1031,11 @@ export class FamilyStore {
     else await this.storage.put(key, { ...cur, failures: (cur.failures || 0) + 1 });
     return result;
   }
-  // 아이의 모든 기기(구독)에 순서대로 보낸다 → 보낸 구독 수.
+  // 아이의 모든 기기(구독)에 한꺼번에 보낸다(기기마다 10초 제한이 차례로 쌓이지 않게) → 보낸 구독 수.
   async pushToChild(childId, kind, message) {
     if (!this.pushReady()) return 0;
     const subs = await this.storage.list({ prefix: this.pushPrefix("child", childId) });
-    for (const [key, sub] of subs) await this.deliver(key, sub, message, { kind, topic: kind });
+    await Promise.allSettled([...subs].map(([key, sub]) => this.deliver(key, sub, message, { kind, topic: kind })));
     return subs.size;
   }
   // 시험 마침(보호자 폰): 이번 /sync 로 처음 들어온 기록 중 방금(6시간 안) 끝낸 완료 기록의 가장 최근 1건.
@@ -999,8 +1048,8 @@ export class FamilyStore {
       .sort((a, b) => b.completedAt.localeCompare(a.completedAt))[0];
     if (!latest) return;
     const message = PUSH_TEXT.finish(child.id, child.name || "아이", latest);
-    for (const [key, sub] of await this.storage.list({ prefix: this.pushPrefix("parent") }))
-      if (sub.kinds?.finish !== false) await this.deliver(key, sub, message, { kind: "finish", topic: pushTopic("finish", child.id) });
+    const parents = [...(await this.storage.list({ prefix: this.pushPrefix("parent") }))].filter(([, sub]) => sub.kinds?.finish !== false);
+    await Promise.allSettled(parents.map(([key, sub]) => this.deliver(key, sub, message, { kind: "finish", topic: pushTopic("finish", child.id) }))); // 보호자 기기 여러 대에 한꺼번에
   }
   // 크론의 알림: 공부 리마인더(아이 기기)·저녁 요약(보호자 폰)을 하루 1번씩, 그리고 3일 지난 ‘보냄’ 표시 정리. 시각·날짜는 한국 시각.
   async cronPush(children, date, hour) {
@@ -1050,7 +1099,9 @@ export class FamilyStore {
     return pushed;
   }
   // 복습(최근 14일 틀린 단어, 최대 3개) + 새 단어(Claude 제안에서 앵커·이미 낸 단어·규칙 위반을 걸러 채움).
-  // origin 이 크론·보호자면 만든 뒤 아이 기기에 📬 도착 알림을 보낸다(아이 기기가 스스로 만든 때는 이미 앱을 보고 있으니 보내지 않는다).
+  // 모자란 새 단어를 다시 요청(2회차)하다 실패(시간 초과·거부 등)하면, 앞 회차에서 얻은 새 단어가 있으면 그것으로 만든다(하루 단어 수보다 적을 뿐).
+  // 1회차부터 실패하면 저장하지 않는다(아이 기기는 다음에 다시 열 때, 크론은 다음 시간에 다시 만든다).
+  // origin 이 크론·보호자면 만든 뒤 아이 기기에 📬 도착 알림을 보낸다(아이 기기가 스스로 만든 때는 이미 앱을 보고 있으니 보내지 않는다. 알림은 응답 뒤에).
   async buildDaily(child, plan, date, origin = "child") {
     const childId = child.id;
     const prefix = this.recordPrefix(childId);
@@ -1088,12 +1139,18 @@ export class FamilyStore {
         output_config: { effort: "medium", format: { type: "json_schema", schema: DEFINE_SCHEMA } },
         messages: [{ role: "user", content: dailyUserMessage(plan.level, anchor, [...avoid, ...fresh.map((w) => w.en)], review, (need - fresh.length) * 2) }],
       });
-      if (outcome.failure) return { failure: outcome.failure };
-      const parsed = parseJsonMessage(outcome.message, {
-        refused: "AI가 오늘의 단어 만들기를 거부했어요. 수준 문구를 확인해 주세요.",
-        truncated: "AI 응답이 잘렸어요. 하루 단어 수를 줄여 보세요.",
-      });
-      if (!parsed.data) return { failure: { status: parsed.status, body: parsed.body } };
+      const parsed = outcome.failure
+        ? null
+        : parseJsonMessage(outcome.message, {
+            refused: "AI가 오늘의 단어 만들기를 거부했어요. 수준 문구를 확인해 주세요.",
+            truncated: "AI 응답이 잘렸어요. 하루 단어 수를 줄여 보세요.",
+          });
+      if (!parsed?.data) {
+        const failure = outcome.failure || { status: parsed.status, body: parsed.body };
+        if (!fresh.length) return { failure };
+        console.error("daily_partial", childId, attempt + 1, failure.status, fresh.length + "/" + need); // 앞 회차의 새 단어로 만든다
+        break;
+      }
       for (const w of sanitizeWords(parsed.data)) {
         const k = w.en.toLowerCase();
         if (seen.has(k)) {
@@ -1120,13 +1177,7 @@ export class FamilyStore {
     const entries = Object.entries(served.words);
     if (entries.length > DAILY_SERVED_MAX) served.words = Object.fromEntries(entries.sort((a, b) => b[1].localeCompare(a[1])).slice(0, DAILY_SERVED_MAX));
     await this.storage.put({ [this.dailyKey(childId, date)]: daily, ["served:" + childId]: served });
-    if (origin === "cron" || origin === "parent") {
-      try {
-        await this.pushToChild(childId, "daily", PUSH_TEXT.daily(words));
-      } catch (e) {
-        console.error("push_daily_failed", e?.name || "", e?.message || "");
-      }
-    }
+    if (origin === "cron" || origin === "parent") this.later("push_daily_failed", () => this.pushToChild(childId, "daily", PUSH_TEXT.daily(words)));
     return { daily };
   }
 }

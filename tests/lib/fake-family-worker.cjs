@@ -62,11 +62,29 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
     const recent = all.filter((r) => r.completedAt >= since);
     return recent.length >= 20 ? recent : all.slice(0, 20);
   };
+  // 연속 학습(Worker 의 streakDays·streakLastDay): 시험을 본 날이 가장 최근 날까지 며칠 이어졌는지(중단 기록 포함). 가짜는 이 컴퓨터의 날짜로 센다(Worker 는 한국 날짜).
+  // child.streak 가 null 이면 옛 Worker(값 없음), 객체면 그 값을 그대로 준다.
+  const dayOf = (d) => [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
+  const streakOf = (c) => {
+    if (c.streak === null) return {};
+    if (c.streak) return { ...c.streak };
+    const days = new Set([...c.records.values()].map((r) => dayOf(new Date(r.completedAt))));
+    const last = [...days].sort().pop();
+    if (!last) return { streakDays: 0, streakLastDay: null };
+    const d = new Date(last + "T12:00:00");
+    let n = 0;
+    while (days.has(dayOf(d))) {
+      n++;
+      d.setDate(d.getDate() - 1);
+    }
+    return { streakDays: n, streakLastDay: last };
+  };
   const summaryOf = (c) => ({
     id: c.id, name: c.name, joinCode: c.joinCode, devices: c.devices, sets: c.setStore ? setSummary(c) : c.sets, anchor: c.anchor, updatedAt: c.updatedAt, lastTestAt: c.lastTestAt,
     questionCount: (c.questions || []).length, lastQuestionAt: (c.questions || [])[0]?.askedAt || null,
     plan: planOf(c), today: todayOf(c, localDate()),
     recordCount: c.records.size,
+    ...streakOf(c),
     records: listRecords(c),
   });
   const makeDaily = (c, date) => {
