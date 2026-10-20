@@ -192,6 +192,7 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert(Number.isInteger(rec.activeMs) && rec.activeMs >= 0 && Number.isFinite(Date.parse(rec.completedAt)) && typeof rec.id === "string", "activeMs/completedAt/id");
   assert(rec.awayCount === 1 && rec.awayMs >= 1000, "away count sent: " + JSON.stringify([rec.awayCount, rec.awayMs]));
   assert(!JSON.stringify(sent).includes('"results"') && !JSON.stringify(sent).includes('"aliases"'), "full per-word results are not sent");
+  assert(await page.evaluate(() => JSON.stringify(compactRecord(summarizeRecord(historyRecords[0]))) === JSON.stringify(compactRecord(historyRecords[0]))), "a record compacted on the device (quiz.js summarizeRecord) is sent with the same score and missed words");
   assert(sent.anchor && sent.anchor.setName === "하늘 DAY04" && sent.anchor.words.length === 40 && sent.anchor.words.includes("authority"), "level anchor from the child's synced set: " + JSON.stringify(sent.anchor).slice(0, 80));
   await waitFor(() => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")).pending.length === 0), "pending cleared after the response");
   assert((await page.evaluate(() => historyRecords[0].activeMs)) >= 0, "record stores activeMs locally");
@@ -350,6 +351,58 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert((await page.textContent("#familyState")).includes("켜짐"), "state pill back on");
   assert(syncs().slice(-1)[0].body.child.id === HANEUL2 && syncs().slice(-1)[0].body.records.length >= 1 || syncs().some((r) => r.body.child.id === HANEUL2 && r.body.records.length >= 1), "history resent to the new child");
 
+  // 기록의 주인: 시험에는 본 아이 id(record.childId)가 붙는다. 지운 아이(하늘)로 본 시험은 새로 만든 하늘이 이어받고(표시도 바뀜),
+  // 연결 해제 뒤 본 시험은 다음에 연결한 아이(바다)의 것이 되며, 하늘의 기록은 바다에게 가지 않는다. 링크로 하늘에게 되돌아가면 하늘의 기록만 다시 보낸다.
+  const familyState = () => page.evaluate(() => JSON.parse(localStorage.getItem("daily_vocab_family_v1")));
+  const owners = () => page.evaluate(() => Object.fromEntries(historyRecords.filter((r) => !r.restored).map((r) => [r.id, r.childId || ""])));
+  await waitFor(async () => (await familyState()).pending.length === 0, "re-join upload settled");
+  let ownerMap = await owners();
+  const haneulIds = Object.keys(ownerMap);
+  const sentToHaneul2 = new Set(syncs().filter((r) => r.body.child.id === HANEUL2).flatMap((r) => r.body.records.map((x) => x.id)));
+  assert(haneulIds.length === 4 && haneulIds.every((id) => sentToHaneul2.has(id) && ownerMap[id] === HANEUL2), "the deleted child's tests went to the re-created child and now belong to it: " + JSON.stringify(ownerMap));
+  assert((await familyState()).goneChildIds.length === 0, "gone mark cleared once the re-created child took the tests over");
+  assert(await page.evaluate((id) => historyRecords.filter((r) => r.restored).every((r) => r.childId === id), HANEUL), "restored records name the child they came from");
+  // 시험을 보려고 하늘에게 세트를 하나 보내 받아 둔 뒤 연결 해제 → 연결하지 않은 채 시험 1번(주인 없음)
+  await waitFor(() => page.evaluate(() => !setsSyncInFlight), "set sync settled after re-joining the new child");
+  children.get(HANEUL2).setStore.set("haneul2-set", { id: "haneul2-set", name: "하늘 새 세트", words: exampleWords.slice(0, 10), updatedAt: new Date().toISOString() });
+  await page.evaluate(() => syncSets({ force: true }));
+  await waitFor(() => page.evaluate(() => sets.some((s) => s.id === "haneul2-set")), "set from the re-created child received");
+  await openFamilySettings();
+  page.once("dialog", (d) => d.accept());
+  await page.click("#unlinkChild");
+  await page.click("#tabHome");
+  await page.selectOption("#setSelect", "haneul2-set");
+  await page.click('[data-mode="en_ko"]');
+  await page.click("#start");
+  await page.click("#unknown");
+  await page.click("#next");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#backSettings");
+  const looseId = await page.evaluate(() => historyRecords[0].id);
+  assert(!haneulIds.includes(looseId) && (await owners())[looseId] === "", "a test taken while unlinked has no owner yet");
+  // 바다(보호자가 만든 다른 아이)로 연결: 주인 없는 시험만 보내고 하늘의 기록은 보내지 않는다
+  const BADA = "88888888-9999-4aaa-8bbb-cccccccccccc";
+  seedChild(BADA, "바다", "444555");
+  const syncsBeforeBada = syncs().length;
+  await page.click("#tabSettings");
+  await openFamilySettings();
+  await page.fill("#childCode", "444555");
+  await page.click("#joinChild");
+  await waitFor(async () => (await familyState()).childId === BADA && (await familyState()).pending.length === 0 && syncs().length > syncsBeforeBada, "joined the other child and synced");
+  const toBada = syncs().slice(syncsBeforeBada).flatMap((r) => r.body.records.map((x) => x.id));
+  assert(syncs().slice(syncsBeforeBada).every((r) => r.body.child.id === BADA) && toBada.length === 1 && toBada[0] === looseId, "only the unowned test goes to the other child: " + JSON.stringify(toBada));
+  assert(children.get(BADA).records.size === 1 && haneulIds.every((id) => !children.get(BADA).records.has(id)), "the other child's server copy has none of 하늘's tests");
+  ownerMap = await owners();
+  assert(ownerMap[looseId] === BADA && haneulIds.every((id) => ownerMap[id] === HANEUL2), "owners after joining the other child: " + JSON.stringify(ownerMap));
+  // 링크로 하늘에게 되돌아간다(‘링크의 아이로 바꿀까요?’ 확인): 하늘의 기록만 다시 보내고 바다의 시험은 보내지 않는다
+  const syncsBeforeBack = syncs().length;
+  page.once("dialog", (d) => d.accept());
+  await page.goto(url + "?child=222333");
+  await waitFor(async () => (await familyState()).childId === HANEUL2 && (await familyState()).pending.length === 0 && syncs().length > syncsBeforeBack, "switched back to 하늘 through the link");
+  const backIds = syncs().slice(syncsBeforeBack).flatMap((r) => r.body.records.map((x) => x.id));
+  assert(haneulIds.every((id) => backIds.includes(id)) && !backIds.includes(looseId) && !children.get(HANEUL2).records.has(looseId), "switching back sends only 하늘's tests: " + JSON.stringify(backIds));
+  assert((await owners())[looseId] === BADA, "the other child's test keeps its owner");
+
   // ---- 알림(2B): 가짜 구독(window.__dailyVocabPushImpl)으로 ‘이 기기에서 알림 받기’ → GET /push/key · POST /push/subscribe(가족 코드) → 상태 문구
   //      → 다시 열면 그대로 · 브라우저가 구독을 바꾸면 다시 등록 → 보호자 시각 변경 반영 → 권한 거부 → 끄기(/push/unsubscribe) → 연결 해제 때도 해지
   //      → 미설정 Worker(503)·설치 안 한 아이폰·지원 안 하는 브라우저 안내 → 갤럭시 앱 브리지(window.DailyVocabNotify)면 schedule·완료 뒤 skipToday·cancel ----
@@ -499,7 +552,7 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   await gctx.close();
 
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: child app without a parent mode + child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, no auto-restore after clearing) + set sync (pull on join, parent's set received, device delete, empty state) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin + notifications (push on/off, re-register, denied, unlink, 503/install/unsupported, Galaxy bridge schedule/skipToday/cancel)");
+  console.log("PASS: child app without a parent mode + child link/code join (pending passcode, auto-join, unlink/rejoin) + sync (finish/offline retry/off) + record restore (on join, history tab/retry, manual paging, no auto-restore after clearing) + set sync (pull on join, parent's set received, device delete, empty state) + deferred set sync after a quiz + level anchor (example excluded) + deleted child notice/stop/rejoin + record owners (deleted child's tests follow the re-created child, another child gets only unowned tests, switching back resends only the child's own) + notifications (push on/off, re-register, denied, unlink, 503/install/unsupported, Galaxy bridge schedule/skipToday/cancel)");
   await browser.close();
 })().catch((e) => {
   console.error(e);

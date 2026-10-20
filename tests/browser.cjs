@@ -227,6 +227,75 @@ const { chromium } = require("playwright");
   await page.waitForTimeout(200);
   assert((await page.evaluate(() => sets.length)) === 2, "JSON import");
   assert((await page.evaluate(() => [historyRecords.length, historyRecords.filter((r) => r.restored).length])).join() === "7,1", "import copies normal records and keeps a single copy of the restored record (4 on the device: restored, legacy, range test, abandoned pause)");
+  // 기록 용량: 최신 200개는 그대로 두고 그보다 오래된 기록은 요약 기록(compacted: 점수 total/correct + 틀린 단어만)으로 줄인다.
+  // 이 기능 전에 쌓인 기록은 앱을 열 때 줄이고(읽지 못한 기록이 섞여 있으면 원본을 보호하려고 쓰지 않음), 기록 탭·다시 풀기·CSV 는 그대로 된다.
+  const HISTORY = "daily_vocab_history_v2";
+  const seedHistory = (n, size, wrong, extra = []) =>
+    page.evaluate(([n, size, wrong, extra, key]) => {
+      const at = (i, m) => new Date(Date.UTC(2026, 8, 1) - i * 3600000 + m * 60000).toISOString();
+      const list = Array.from({ length: n }, (_, i) => ({
+        id: "bulk-" + i, setId: "day04", setName: "기본 예제 DAY04", mode: "en_ko", range: "전체 " + size + "단어", startedAt: at(i, 0), completedAt: at(i, 1), activeMs: 60000,
+        results: Array.from({ length: size }, (_, k) => { const w = defaultWords[k % defaultWords.length]; return { id: w.id, word: structuredClone(w), pass: k >= wrong, unknown: k === 0 }; }),
+      }));
+      const raw = JSON.stringify([...list, ...extra]);
+      localStorage.setItem(key, raw);
+      return raw;
+    }, [n, size, wrong, extra, HISTORY]);
+  // 읽지 못한 기록이 섞여 있으면 앱을 열어도 저장 자료를 다시 쓰지 않는다(원본 보호)
+  const guardedRaw = await seedHistory(230, 10, 3, [{ id: "broken", mode: "nope" }]);
+  await page.reload();
+  assert((await page.evaluate((k) => localStorage.getItem(k), HISTORY)) === guardedRaw && (await page.evaluate(() => historyRecords.length === 230 && historyRecords.every((r) => !r.compacted))), "history with an unreadable record is not rewritten on launch");
+  const bulkRaw = await seedHistory(230, 10, 3);
+  await page.reload();
+  const shape = await page.evaluate((k) => {
+    const stored = JSON.parse(localStorage.getItem(k));
+    return { n: historyRecords.length, full: historyRecords.filter((r) => !r.compacted).length, first: historyRecords.findIndex((r) => r.compacted), oldest: historyRecords[229], pct: recordScore(historyRecords[229]).pct, stored: [stored.length, stored[229].compacted, stored[199].compacted].join(), length: localStorage.getItem(k).length };
+  }, HISTORY);
+  assert(shape.n === 230 && shape.full === 200 && shape.first === 200 && shape.stored === "230,true,", "newest 200 kept in full, older ones compacted and stored on launch: " + JSON.stringify([shape.n, shape.full, shape.first, shape.stored]));
+  const oldest = shape.oldest;
+  assert(oldest.id === "bulk-229" && oldest.compacted === true && !oldest.restored && oldest.total === 10 && oldest.correct === 7 && shape.pct === 70 && oldest.results.length === 3 && oldest.results.every((x) => !x.pass && x.word.en) && oldest.results[0].unknown === true && oldest.results[0].word.id === 121, "compacted record keeps score and missed words: " + JSON.stringify(oldest).slice(0, 300));
+  const originalOldest = JSON.stringify(JSON.parse(bulkRaw)[229]).length;
+  assert(shape.length < bulkRaw.length && JSON.stringify(oldest).length < originalOldest / 2, "stored history got smaller: " + [shape.length, bulkRaw.length, JSON.stringify(oldest).length, originalOldest].join(" / "));
+  await page.click("#tabHistory");
+  await page.selectOption("#historyFilter", "all");
+  const oldestEntry = page.locator("#historyList .history-entry").nth(229);
+  const oldestText = await oldestEntry.textContent();
+  assert((await page.locator("#historyList .history-entry").count()) === 230 && oldestText.includes("7 / 10 · 70점") && oldestText.includes("모름 1개 포함") && oldestText.includes("틀린 단어 3개 보기") && !oldestText.includes("서버에서 복원"), "compacted entry in the history tab: " + oldestText);
+  await oldestEntry.locator("summary").click();
+  await oldestEntry.locator(".history-retry").click();
+  assert((await page.isVisible("#quiz")) && (await page.evaluate(() => queue.map((w) => w.en).sort().join())) === "authority,devote,indicate", "retry from a compacted record quizzes its missed words");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#backSettings");
+  await page.click("#tabHistory");
+  const csvDownload = page.waitForEvent("download");
+  await page.click("#exportHistory");
+  const csvRows = require("fs").readFileSync(await (await csvDownload).path(), "utf8").split("\r\n");
+  assert(csvRows.length === 231 && csvRows[230].endsWith('"7","10","70","1","121 122 123","121","",""'), "CSV row of a compacted record: " + csvRows[230]);
+  // 새 기록을 저장하면 200번째였던 기록이 요약 기록이 된다(가장 최근 200개는 언제나 그대로)
+  await page.click("#tabHome");
+  await page.click('[data-mode="en_ko"]');
+  await page.click("#start");
+  await page.click("#unknown");
+  await page.click("#next");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#backSettings");
+  assert((await page.evaluate(() => [historyRecords.length, historyRecords.filter((r) => !r.compacted).length, historyRecords[200].id, historyRecords[200].compacted].join())) === "231,200,bulk-199,true", "saving a new record compacts the 201st");
+  // 큰 시험: 그대로 두는 기록은 합쳐 60만 자까지, 기록 전체가 150만 자를 넘으면 가장 오래된 요약 기록부터 틀린 단어 목록을 비운다(점수는 남는다)
+  await seedHistory(60, 200, 200);
+  await page.reload();
+  const big = await page.evaluate((k) => {
+    const full = historyRecords.findIndex((r) => r.compacted);
+    const last = historyRecords[59];
+    return {
+      n: historyRecords.length, full, prefix: historyRecords.slice(full).every((r) => r.compacted), fullChars: JSON.stringify(historyRecords.slice(0, full)).length, stored: localStorage.getItem(k).length,
+      kept: historyRecords[full].results.length, emptied: historyRecords.filter((r) => r.compacted && !r.results.length).length, last: [last.total, last.correct, last.results.length, missedComplete(last)].join(),
+    };
+  }, HISTORY);
+  assert(big.n === 60 && big.full >= 1 && big.full < 20 && big.prefix && big.fullChars <= 600000, "full records capped by size: " + JSON.stringify(big));
+  assert(big.stored <= 1500000 && big.kept === 200 && big.emptied > 0 && big.emptied < 59 && big.last === "200,0,0,false", "oldest summaries lose their word lists to stay under the cap: " + JSON.stringify(big));
+  await page.click("#tabHistory");
+  const emptiedText = await page.locator("#historyList .history-entry").nth(59).textContent();
+  assert(emptiedText.includes("0 / 200 · 0점") && emptiedText.includes("오답 200") && !emptiedText.includes("모름") && !emptiedText.includes("틀린 단어"), "score-only summary entry: " + emptiedText);
   await page.evaluate(() => {
     Storage.prototype.setItem = function () {
       throw Error("quota");
@@ -245,7 +314,7 @@ const { chromium } = require("playwright");
   );
   assert(errors.length === 0, "browser errors " + errors.join(","));
   console.log(
-    "PASS: 3 modes, 40-word default, editing, strict grading, set isolation, deleted history retry, migration backup, restored record format, JSON round trip, quota failure",
+    "PASS: 3 modes, 40-word default, editing, strict grading, set isolation, deleted history retry, migration backup, restored record format, JSON round trip, history compaction (newest 200 in full, summaries on launch/save, history tab/retry/CSV, size caps, unreadable history not rewritten), quota failure",
   );
   await browser.close();
 })().catch((e) => {
