@@ -18,7 +18,7 @@ const { chromium } = require("playwright");
     }),
   );
   await p.goto(url);
-  if (!(await p.textContent("#appStatus")).includes("20261018-27"))
+  if (!(await p.textContent("#appStatus")).includes("20261018-28"))
     throw Error("version missing");
   await p.click("#createSet");
   await p.setInputFiles("#photos", {
@@ -45,9 +45,9 @@ const { chromium } = require("playwright");
   // 보호자 앱(parent.html)도 같은 릴리스: 버전 표시, 스크립트 3개(shared → editor → parent)·스타일의 ?v=, 앱 점검
   const parent = await context.newPage();
   await parent.goto(url + "parent.html");
-  if (!(await parent.textContent("#appStatus")).includes("20261018-27")) throw Error("parent version missing");
+  if (!(await parent.textContent("#appStatus")).includes("20261018-28")) throw Error("parent version missing");
   const parentAssets = await parent.evaluate(() => [...document.querySelectorAll("script[src], link[rel=stylesheet]")].map((e) => e.getAttribute("src") || e.getAttribute("href")));
-  if (JSON.stringify(parentAssets) !== JSON.stringify(["./parent.css?v=20261018-27", "./shared.js?v=20261018-27", "./editor.js?v=20261018-27", "./parent.js?v=20261018-27"]))
+  if (JSON.stringify(parentAssets) !== JSON.stringify(["./parent.css?v=20261018-28", "./shared.js?v=20261018-28", "./editor.js?v=20261018-28", "./parent.js?v=20261018-28"]))
     throw Error("parent assets: " + JSON.stringify(parentAssets));
   await parent.evaluate(() => document.getElementById("checkApp").click()); // 코드가 없으면 설정 화면이 숨어 있어 직접 누른다
   if (!(await parent.textContent("#appStatus")).includes("앱 준비 완료 · 편집기 연결됨")) throw Error("parent diagnostic: " + (await parent.textContent("#appStatus")));
