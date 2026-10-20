@@ -223,11 +223,20 @@ function selectSet(id) {
   renderHome();
 }
 $("setSelect").addEventListener("change", () => selectSet($("setSelect").value));
-// 점수. 서버에서 복원한 요약 기록(restored)은 단어별 결과가 없어 total/correct 필드를 쓴다(results 에는 틀린 단어만 있다).
+// 요약 기록: 서버에서 복원한 기록(restored, family.js)과 오래되어 줄인 기록(compacted, 아래 compactHistory). 단어별 결과가 없어 점수는 total/correct 필드를 쓴다(results 에는 틀린 단어만 있다).
+function isSummaryRecord(record) {
+  return record.restored === true || record.compacted === true;
+}
 function recordScore(record) {
-  const total = record.restored ? record.total : record.results.length;
-  const correct = record.restored ? record.correct : record.results.filter((x) => x.pass).length;
+  const summary = isSummaryRecord(record);
+  const total = summary ? record.total : record.results.length;
+  const correct = summary ? record.correct : record.results.filter((x) => x.pass).length;
   return { correct, total, pct: total ? Math.round((correct / total) * 100) : 0 };
+}
+// 요약 기록은 틀린 단어를 200개까지만 두고, 기록이 아주 많으면 가장 오래된 것부터 목록을 비운다. 그런 기록은 모름 개수·오답 번호를 다 알 수 없다.
+function missedComplete(record) {
+  const { correct, total } = recordScore(record);
+  return record.results.filter((x) => !x.pass).length >= total - correct;
 }
 function renderSetSummary() {
   const mine = historyRecords.filter((r) => r.setId === activeSetId);
@@ -957,31 +966,79 @@ function showResult(missed, partial) {
 }
 
 // ---- 기록 ----
-// 기록 형식. 보통 기록은 results 에 단어별 결과가 있고, 서버에서 복원한 요약 기록(restored: true, family.js)은 total/correct 로 점수를 두고 results 에는 틀린 단어만 둔다(비어 있을 수 있음).
+// 기록 형식. 보통 기록은 results 에 단어별 결과가 있고, 요약 기록(restored·compacted: true)은 total/correct 로 점수를 두고 results 에는 틀린 단어만 둔다(비어 있을 수 있음).
+// childId(있으면)는 이 시험을 본 아이(가족 기록함에 연결된 기기, family.js recordChildId) — 다른 아이로 다시 연결해도 그 아이에게 보내지 않는다.
 function validRecord(r) {
   if (!(r && typeof r.id === "string" && Number.isFinite(Date.parse(r.completedAt)) && modeLabels[r.mode] && typeof r.range === "string" && Array.isArray(r.results) && r.results.length <= 2000)) return false;
   if (!r.results.every((x) => x.word && typeof x.word.en === "string" && typeof x.word.ko === "string" && Array.isArray(x.word.aliases) && typeof x.pass === "boolean" && typeof x.unknown === "boolean")) return false;
-  if (r.restored === true) return Number.isInteger(r.total) && r.total >= 1 && r.total <= 2000 && Number.isInteger(r.correct) && r.correct >= 0 && r.correct <= r.total;
+  if (isSummaryRecord(r)) return Number.isInteger(r.total) && r.total >= 1 && r.total <= 2000 && Number.isInteger(r.correct) && r.correct >= 0 && r.correct <= r.total;
   return r.results.length > 0;
+}
+// 기록 용량: 보통 기록은 단어 객체를 통째로 담아 40단어 시험 하나가 약 7.4K자다. localStorage 한도(아이폰 약 2.6M자·Chrome 약 5M자)에 닿으면
+// 기록·세트·쉬는 시험·가족 기록함 저장이 모두 실패하므로, 기록을 저장할 때마다(persistHistory)와 앱을 열 때 오래된 기록을 줄인다.
+//  · 최신 HISTORY_FULL_COUNT 개(합쳐 HISTORY_FULL_CHARS 자까지)는 그대로 둔다.
+//  · 그보다 오래된 보통 기록은 요약 기록(compacted: true)으로 바꾼다: 점수는 total/correct, results 는 틀린 단어만(최대 200개, 복원 기록과 같은 모양).
+//    기록 탭·CSV·틀린 단어 다시 풀기·가족 기록함 전송은 그대로 되고, 맞힌 단어 목록만 없어진다. 서버에서 가져온 기록의 ‘☁️ 다른 기기’ 표시는 붙지 않는다.
+//  · 그래도 기록 전체가 HISTORY_MAX_CHARS 자를 넘으면 가장 오래된 요약 기록부터 틀린 단어 목록을 비운다(점수·날짜·방식은 남는다).
+const HISTORY_FULL_COUNT = 200, HISTORY_FULL_CHARS = 600000, HISTORY_MAX_CHARS = 1500000, SUMMARY_MISSED_LIMIT = 200;
+function summarizeRecord(r) {
+  const { correct, total } = recordScore(r);
+  return { ...r, compacted: true, total, correct, results: r.results.filter((x) => !x.pass).slice(0, SUMMARY_MISSED_LIMIT) };
+}
+// 바뀐 것이 없으면 받은 배열을 그대로 돌려준다.
+function compactHistory(list) {
+  let changed = false, full = true, chars = 0;
+  const sizes = [];
+  const out = list.map((r, i) => {
+    let next = r, size = JSON.stringify(r).length;
+    if (!isSummaryRecord(r)) {
+      if (i > 0 && (i >= HISTORY_FULL_COUNT || chars + size > HISTORY_FULL_CHARS)) full = false; // 가장 최근 기록은 언제나 그대로
+      if (!full) {
+        next = summarizeRecord(r);
+        size = JSON.stringify(next).length;
+        changed = true;
+      }
+    }
+    sizes.push(size);
+    chars += size;
+    return next;
+  });
+  for (let i = out.length - 1; i > 0 && chars > HISTORY_MAX_CHARS; i--) {
+    if (!isSummaryRecord(out[i]) || !out[i].results.length) continue;
+    out[i] = { ...out[i], results: [] };
+    chars += JSON.stringify(out[i]).length - sizes[i];
+    changed = true;
+  }
+  return changed ? out : list;
 }
 try {
   const saved = JSON.parse(localStorage.getItem(historyKey) || "[]");
-  if (Array.isArray(saved)) historyRecords = saved.filter(validRecord);
+  if (Array.isArray(saved)) {
+    historyRecords = saved.filter(validRecord);
+    // 이 기능 전에 쌓인 기록도 앱을 열 때 한 번 줄여 둔다. 읽지 못한 기록이 섞여 있거나 다른 저장 자료가 깨졌으면 원본을 보호하려고 쓰지 않는다.
+    const compacted = compactHistory(historyRecords);
+    if (compacted !== historyRecords && storageAvailable && historyRecords.length === saved.length) {
+      try { localStorage.setItem(historyKey, JSON.stringify(compacted)); historyRecords = compacted; } catch {}
+    }
+  }
 } catch (_) { setFeedback($("historyStatus"), "bad", "저장된 기록을 읽지 못했습니다. 새 시험 기록부터 저장합니다."); }
-function persistHistory(next) {
-  if (!storageAvailable) { setFeedback($("historyStatus"), "bad", "저장 자료 오류로 원본을 보호합니다. JSON으로 백업하세요."); return false; }
+// quiet: 뒤에서 하는 저장(family.js 의 기록 주인 표시)이라 기록 탭에 안내를 띄우지 않는다.
+function persistHistory(next, options = {}) {
+  if (!storageAvailable) { if (!options.quiet) setFeedback($("historyStatus"), "bad", "저장 자료 오류로 원본을 보호합니다. JSON으로 백업하세요."); return false; }
+  next = compactHistory(next);
   try {
     localStorage.setItem(historyKey, JSON.stringify(next));
     historyRecords = next;
-    setFeedback($("historyStatus"), "good", "기록을 이 브라우저에 저장했습니다.");
+    if (!options.quiet) setFeedback($("historyStatus"), "good", "기록을 이 브라우저에 저장했습니다.");
     renderHistory();
     return true;
-  } catch (_) { setFeedback($("historyStatus"), "bad", "기록 저장에 실패했습니다. 저장 공간이나 브라우저 설정을 확인하세요. 현재 기록은 CSV로 내려받을 수 있습니다."); return false; }
+  } catch (_) { if (!options.quiet) setFeedback($("historyStatus"), "bad", "기록 저장에 실패했습니다. 저장 공간이나 브라우저 설정을 확인하세요. 현재 기록은 CSV로 내려받을 수 있습니다."); return false; }
 }
 function saveSession(partial = false) {
   if (!sessionMeta || sessionMeta.saved) return;
   sessionMeta.saved = true;
-  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), ...(sessionMeta.daily ? { daily: sessionMeta.daily } : {}), ...(sessionMeta.awayCount ? { awayCount: sessionMeta.awayCount, awayMs: sessionMeta.awayMs || 0 } : {}), ...(sessionMeta.timeouts ? { timeouts: sessionMeta.timeouts } : {}), ...(sessionMeta.aiPass ? { aiPass: sessionMeta.aiPass } : {}), results: results.map((x) => ({ ...x })) };
+  const childId = typeof recordChildId === "function" ? recordChildId() : ""; // family.js: 가족 기록함에 연결된 아이
+  const record = { id: sessionMeta.id, setId: sessionMeta.setId, setName: sessionMeta.setName, mode: sessionMeta.mode, range: sessionMeta.range, startedAt: sessionMeta.startedAt, completedAt: new Date().toISOString(), activeMs: Math.max(0, Math.round(sessionMeta.activeMs || 0)), ...(childId ? { childId } : {}), ...(sessionMeta.daily ? { daily: sessionMeta.daily } : {}), ...(sessionMeta.awayCount ? { awayCount: sessionMeta.awayCount, awayMs: sessionMeta.awayMs || 0 } : {}), ...(sessionMeta.timeouts ? { timeouts: sessionMeta.timeouts } : {}), ...(sessionMeta.aiPass ? { aiPass: sessionMeta.aiPass } : {}), results: results.map((x) => ({ ...x })) };
   if (partial) record.partial = true;
   const next = [record, ...historyRecords];
   if (!persistHistory(next)) { historyRecords = next; renderHistory(); }
@@ -1089,7 +1146,7 @@ function renderHistory() {
     // 서버에서 가져온 요약 기록: 같은 아이의 다른 기기(또는 다시 설치하기 전 이 기기)에서 본 시험
     meta.textContent = new Date(record.completedAt).toLocaleString("ko-KR") + " · " + record.setName + " · " + modeLabels[record.mode] + " · " + record.range + (record.restored ? " · ☁️ 다른 기기" : "");
     const counts = document.createElement("p");
-    counts.textContent = "정답 " + correct + " · 오답 " + (total - correct) + " (모름 " + unknown + "개 포함)" + (record.awayCount ? " · ⚠️ 화면 이탈 " + record.awayCount + "회" : "") + (record.timeouts ? " · ⏱ 시간 초과 " + record.timeouts + "개" : "") + (record.aiPass ? " · 🤖 AI 인정 " + record.aiPass + "개" : "");
+    counts.textContent = "정답 " + correct + " · 오답 " + (total - correct) + (missedComplete(record) ? " (모름 " + unknown + "개 포함)" : "") + (record.awayCount ? " · ⚠️ 화면 이탈 " + record.awayCount + "회" : "") + (record.timeouts ? " · ⏱ 시간 초과 " + record.timeouts + "개" : "") + (record.aiPass ? " · 🤖 AI 인정 " + record.aiPass + "개" : "");
     entry.append(head, meta, counts);
     const missed = record.results.filter((x) => !x.pass);
     if (missed.length) {
@@ -1122,7 +1179,7 @@ function exportHistory() {
   if (!historyRecords.length) return;
   const rows = [["완료 날짜", "세트", "시험 방식", "범위", "정답", "전체", "점수", "모름 개수", "오답 번호", "모름 번호", "중단", "비고"], ...historyRecords.map((r) => {
     const s = recordScore(r);
-    return [new Date(r.completedAt).toLocaleString("ko-KR"), r.setName, modeLabels[r.mode], r.range, s.correct, s.total, s.pct, r.results.filter((x) => x.unknown).length, r.results.filter((x) => !x.pass).map((x) => x.id).join(" "), r.results.filter((x) => x.unknown).map((x) => x.id).join(" "), r.partial ? "중단" : "", r.restored ? "다른 기기(서버 사본)" : ""];
+    return [new Date(r.completedAt).toLocaleString("ko-KR"), r.setName, modeLabels[r.mode], r.range, s.correct, s.total, s.pct, r.results.filter((x) => x.unknown).length, r.results.filter((x) => !x.pass).map((x) => x.id).join(" "), r.results.filter((x) => x.unknown).map((x) => x.id).join(" "), r.partial ? "중단" : "", [r.restored ? "다른 기기(서버 사본)" : "", missedComplete(r) ? "" : "틀린 단어 일부 생략"].filter(Boolean).join(" · ")];
   })];
   const csv = "﻿" + rows.map((row) => row.map((value) => '"' + String(value).replace(/"/g, '""') + '"').join(",")).join("\r\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));

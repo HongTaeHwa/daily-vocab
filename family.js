@@ -10,6 +10,7 @@
 //        setsAcked:{세트 id: 수정 시각}, setsDeleted:[{id, deletedAt}], setsSyncedAt, setsError, restoreCheckedAt, restoreError,
 //        restoreFloor(‘기록 전체 삭제’ 시각: 그 전에 끝난 기록은 자동으로 가져오지 않음), restoreSkip:[이 기기에서 하나씩 지운 기록 id](자동으로 가져오지 않음),
 //        childGone(보호자가 서버에서 지운 아이: 연결 해제 → 새 코드로 다시 연결할 때까지 서버 요청 중단),
+//        goneChildIds:[보호자가 서버에서 지운 아이 id](그 아이로 본 시험은 다음에 연결하는 아이가 이어받는다 — 아래 ‘기록의 주인’),
 //        settings:{timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour, fetchedAt}(보호자 설정),
 //        push:{mode:"push"|"native", deviceId, childId, endpoint, enabledAt, registeredAt(마지막으로 서버에 구독을 보낸 시각)} | null(이 기기에서 켠 알림)}
 //        daily_vocab_daily_v1  = {childId, date, words, level, note, fetchedAt, result?, disabled?, lastCheckedAt, lastError?}
@@ -67,6 +68,7 @@ function readFamily() {
           : "",
     restoreSkip: Array.isArray(f.restoreSkip) ? f.restoreSkip.filter((x) => typeof x === "string").slice(-RESTORE_SKIP_LIMIT) : [],
     childGone: f.childGone === true, // 서버가 404 unknown_child 를 돌려준 아이(보호자가 지움): 다시 연결할 때까지 요청하지 않는다
+    goneChildIds: Array.isArray(f.goneChildIds) ? f.goneChildIds.map(idLike).filter(Boolean).slice(-20) : [],
     // 보호자가 정한 아이 설정(서버 plan에서 받아 둠). timeLimitSec 0 = 제한 없음, setsLocked = 아이 기기에서 세트 고치기 잠금,
     // dailyEnabled·dailyHour = 오늘의 단어(도착 알림 시각), remindHour = 공부 알림 시각(null 이면 없음)
     settings: {
@@ -165,9 +167,9 @@ async function familyRequest(path, { method = "POST", body, passcode, timeout = 
 }
 
 // ---- 아이 기기: 기록 보내기 ----
-// 단어별 전체 결과·세트 단어는 보내지 않고 점수와 틀린 단어(영어·뜻)만 보낸다.
+// 단어별 전체 결과·세트 단어는 보내지 않고 점수와 틀린 단어(영어·뜻)만 보낸다. 점수는 quiz.js recordScore(오래되어 줄인 요약 기록은 total/correct).
 function compactRecord(r) {
-  const correct = r.results.filter((x) => x.pass).length;
+  const { correct, total } = recordScore(r);
   return {
     id: r.id,
     setName: r.setName,
@@ -175,7 +177,7 @@ function compactRecord(r) {
     range: r.range,
     startedAt: r.startedAt || null,
     completedAt: r.completedAt,
-    total: r.results.length,
+    total,
     correct,
     partial: r.partial === true,
     activeMs: Number.isInteger(r.activeMs) && r.activeMs >= 0 ? r.activeMs : null,
@@ -200,12 +202,46 @@ function anchorPayload() {
   return { setName: set.name, words };
 }
 const isLinked = () => Boolean(family.childId && family.childName);
+// ---- 기록의 주인 ----
+// 연결된 기기에서 본 시험에는 그 아이 id 를 붙인다(record.childId, quiz.js saveSession 이 recordChildId 로). 연결하기 전에 본 시험은 주인이 없다가
+// 처음 연결하는 아이의 것이 된다(claimRecords). 아이 A로 쓰던 기기를 B 코드로 연결해도 A로 본 시험은 B에게 보내지 않는다(B의 통계·자주 틀린 단어·수준 제안이
+// 섞이지 않게; A로 다시 연결하면 A에게 다시 보낸다 — 서버는 같은 기록을 덮어쓴다). 보호자가 서버에서 지운 아이(goneChildIds)로 본 시험은 다음에 연결하는 아이가
+// 이어받는다(지운 아이를 새로 만들어 다시 연결하는 흐름). 서버에서 복원한 기록은 어느 아이에게도 다시 보내지 않는다.
+function recordChildId() {
+  return isLinked() ? family.childId : "";
+}
+const ownerOf = (r) => (typeof r.childId === "string" ? r.childId : "");
+function sendableHere(r) {
+  if (r.restored) return false;
+  const owner = ownerOf(r);
+  return !owner || owner === family.childId || family.goneChildIds.includes(owner);
+}
+// 지금 연결된 아이에게 보낼 기록을 고르고, 주인이 없거나 지운 아이의 기록에는 이 아이 id 를 붙여 저장한다. 고른 기록 id 를 돌려준다(최신순).
+// 연결·보내기 켜기 때와 앱을 열 때(이 기능 전에 쌓인 기록은 지금 연결된 아이의 것) 부른다.
+function claimRecords() {
+  if (!isLinked()) return [];
+  const mine = historyRecords.filter(sendableHere);
+  const retag = new Set(mine.filter((r) => ownerOf(r) !== family.childId).map((r) => r.id));
+  let saved = true;
+  if (retag.size) {
+    const next = historyRecords.map((r) => (retag.has(r.id) ? { ...r, childId: family.childId } : r));
+    saved = persistHistory(next, { quiet: true });
+    if (!saved) historyRecords = next; // 저장하지 못해도 이번 실행에서는 이 아이의 기록으로 다룬다(지운 아이 표시는 남겨 다음에 다시 붙인다)
+  }
+  // 지운 아이의 기록을 이 아이가 이어받았으니 표시를 지운다. 이 아이도 지워진 상태면 남긴다(다시 연결할 아이가 이어받게).
+  if (saved && !family.childGone && family.goneChildIds.length) {
+    family.goneChildIds = [];
+    writeFamily();
+  }
+  return mine.map((r) => r.id);
+}
 // 서버가 404 unknown_child 를 돌려주면 보호자가 이 아이를 지운 것이다: 표시해 두고 다시 연결할 때까지
 // 기록·세트·설정·오늘의 단어 요청을 모두 멈춘다(같은 요청을 반복하지 않는다). 연결 해제·재연결이 풀어 준다.
 function noteChildGone(e) {
   if (e?.code !== "unknown_child" || !isLinked()) return false;
   if (!family.childGone) {
     family.childGone = true;
+    family.goneChildIds = [...new Set([...family.goneChildIds, family.childId])].slice(-20); // 이 아이로 본 시험은 다음에 연결하는 아이가 이어받는다
     // 서버가 이 아이의 알림 구독을 이미 지웠다: 이 기기의 구독·예약만 정리한다(다시 연결하면 알림을 새로 켠다)
     const prev = family.push;
     family.push = null;
@@ -242,7 +278,7 @@ async function flushFamilySync(options = {}) {
     renderFamilySettings();
     return;
   }
-  family.pending = family.pending.filter((id) => historyRecords.some((r) => r.id === id && !r.restored)); // 기기에서 지운 기록과 서버에서 복원한 기록은 보내지 않는다
+  family.pending = family.pending.filter((id) => historyRecords.some((r) => r.id === id && sendableHere(r))); // 기기에서 지운 기록, 서버에서 복원한 기록, 다른 아이로 본 시험은 보내지 않는다
   let force = options.force === true; // 기록이 없어도 아이 이름·기기·세트 목록·앵커를 한 번 보낸다
   if (!family.pending.length && !force) {
     writeFamily();
@@ -453,7 +489,9 @@ async function joinChild(code) {
     family.sendEnabled = true;
     family.lastError = "";
     family.childGone = false; // 새(또는 같은) 아이로 다시 연결했으니 서버 요청을 다시 한다
-    family.pending = [...new Set([...localRecordIds(), ...family.pending])]; // 연결하면 지금까지의 기록도 함께 보낸다(서버에서 복원한 기록은 제외)
+    // 연결하면 이 아이의 기록을 함께 보낸다: 연결하기 전에 본 시험·이 아이로 본 시험·지운 아이로 본 시험(다른 아이로 본 시험과 서버에서 복원한 기록은 제외).
+    // 예전 아이의 못 보낸 기록도 대기 목록에서 빠진다(그 아이로 다시 연결하면 다시 보낸다).
+    family.pending = claimRecords();
     writeFamily();
     applySettings(data); // 연결 응답에 제한 시간 등 보호자 설정이 함께 온다
     if (switching || daily.childId !== family.childId) {
@@ -530,7 +568,7 @@ $("unlinkChild").onclick = () => {
 //   since = 마지막 확인 시각 − 14일(늦게 올라온 기록: 오프라인이던 기기가 나중에 보낸 것도 놓치지 않게 넉넉히 겹친다), 기기에 이미 있는 id는 건너뛴다.
 //   사용자가 지운 기록은 되살리지 않는다: 하나씩 지운 기록 id(restoreSkip)와 ‘기록 전체 삭제’ 시각(restoreFloor, 그 전에 끝난 기록) 은 건너뛴다.
 // 버튼(설정의 ‘서버 기록 다시 가져오기’, 빈 기록 탭의 ‘서버 기록 가져오기’): 처음부터 모두 가져오고(지운 기록 포함) 바닥·지운 id 를 비운다.
-// 가져온 기록은 다시 서버로 보내지 않으며(pending 제외, localRecordIds) 세트별 오답(daily_vocab_missed_*)은 건드리지 않는다. 시험 중에는 하지 않는다.
+// 가져온 기록은 다시 서버로 보내지 않으며(pending 제외, sendableHere) 세트별 오답(daily_vocab_missed_*)은 건드리지 않는다. 시험 중에는 하지 않는다.
 const RESTORE_PAGE = 500; // Worker 상한과 같음
 const RESTORE_MAX_PAGES = 10; // 아이당 보관 상한 5,000개
 const RESTORE_SINCE_START = "1970-01-01T00:00:00.000Z";
@@ -538,7 +576,6 @@ const RESTORE_OVERLAP_MS = 14 * 86400000; // 자동 확인은 마지막 확인�
 const RESTORE_CHECK_MS = DAILY_CHECK_MS; // 화면 복귀·온라인 복귀 때 다시 묻는 간격
 const RESTORE_TAB_MS = 60 * 1000; // 기록 탭을 열 때 다시 묻는 간격
 let restoreInFlight = false, restoreFailedAt = 0; // 실패한 시각(실패해도 간격을 지켜 같은 요청을 거듭하지 않는다)
-const localRecordIds = () => historyRecords.filter((r) => !r.restored).map((r) => r.id); // 이 기기에서 본 시험(서버에 보낼 것)
 function restoreReady() {
   return isLinked() && !family.childGone && Boolean(syncPasscode()) && storageAvailable;
 }
@@ -577,6 +614,7 @@ function expandRecord(r) {
     ...(Number.isInteger(r.aiPass) && r.aiPass > 0 ? { aiPass: r.aiPass } : {}),
     restored: true,
     restoredAt: new Date().toISOString(),
+    childId: family.childId, // 이 아이의 서버 사본(다시 보내지는 않는다)
     total: r.total,
     correct: r.correct,
     results,
@@ -1005,7 +1043,7 @@ $("saveFamily").onclick = () => {
   const turningOn = enable && !family.sendEnabled;
   family.sendEnabled = enable;
   family.lastError = "";
-  if (turningOn) family.pending = [...new Set([...localRecordIds(), ...family.pending])]; // 다시 켤 때는 그동안의 기록도 함께 보낸다(복원한 기록은 제외)
+  if (turningOn) family.pending = claimRecords(); // 다시 켤 때는 그동안 이 아이로 본 시험도 함께 보낸다(복원한 기록·다른 아이로 본 시험은 제외)
   if (!writeFamily()) {
     setFeedback($("familyStatus"), "bad", "저장 실패: 브라우저 저장 공간을 확인하세요.");
     return;
@@ -1028,6 +1066,7 @@ $("syncNow").onclick = () => {
 function initFamily() {
   // 옛 보호자 모드가 남긴 보호자 코드·‘아이 기기처럼 보기’는 아이 앱이 쓰지 않는다(보호자 앱 parent.html 의 것). 남아 있으면 지운다.
   if (Shared.readJson(FAMILY_KEY, (v) => v && typeof v === "object" && ("parentCode" in v || "parentModeOff" in v))) writeFamily();
+  claimRecords(); // 주인 표시가 없는 기록(이 기능 전에 쌓인 것)은 지금 연결된 아이의 것이다: 표시만 붙이고 대기 목록은 그대로 둔다
   $("familySend").checked = family.sendEnabled;
   renderFamilySettings();
   renderDailyCard();
