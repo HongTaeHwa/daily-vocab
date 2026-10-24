@@ -228,6 +228,11 @@ body.in-quiz main{padding-bottom:30px}
     <p id="dailyText"></p>
     <div class="actionbar"><button type="button" class="btn primary" id="startDaily">▶ 풀기</button></div>
   </div>
+  <div id="examCard" class="card daily hidden">
+    <strong id="examTitle">📝 보호자가 보낸 종합 시험</strong>
+    <p id="examText"></p>
+    <div class="actionbar"><button type="button" class="btn primary" id="startExam">▶ 풀기</button></div>
+  </div>
   <div class="card">
     <h2 class="section-title">📚 학습할 세트</h2>
     <div id="noSets" class="empty-sets hidden"><strong>아직 세트가 없어요</strong><p>보호자가 보내 준 세트가 여기에 나타나요. 교재 사진으로 직접 만들 수도 있어요.</p></div>
@@ -246,9 +251,9 @@ body.in-quiz main{padding-bottom:30px}
   <div class="card hidden" id="comboCard">
     <details id="comboPanel" class="combo-panel">
       <summary>📝 종합 시험 <span class="pill" id="comboSummary">여러 세트 묶어 보기</span></summary>
-      <p class="muted">여러 세트를 묶어 한 번에 시험을 봐요. 시험 방식과 순서 섞기는 아래 카드의 선택을 그대로 쓰고, 틀린 단어는 원래 세트의 오답 목록에 들어가요.</p>
+      <p class="muted">여러 세트를 묶어 한 번에 시험을 봐요. ‘자주 틀린 단어 먼저’는 지금까지 시험에서 많이 틀린 단어부터 골라요. 시험 방식은 아래 카드의 선택을 그대로 쓰고, 틀린 단어는 원래 세트의 오답 목록에 들어가요.</p>
       <div id="comboSets" class="combo-sets" role="group" aria-label="묶을 세트"></div>
-      <div class="controls"><label for="comboCount">문제 수</label><select id="comboCount"></select><label for="comboPick">뽑는 방법</label><select id="comboPick"><option value="random">무작위</option><option value="missed">틀린 단어 먼저</option><option value="even">세트별 골고루</option></select></div>
+      <div class="controls"><label for="comboCount">문제 수</label><select id="comboCount"></select><label for="comboPick">뽑는 방법</label><select id="comboPick"><option value="missed">자주 틀린 단어 먼저</option><option value="random">무작위</option><option value="even">세트별 골고루</option></select></div>
       <div class="actionbar"><button type="button" class="btn primary" id="comboStart">▶ 종합 시험 시작</button></div>
       <div id="comboStatus" role="status" class="feedback info"></div>
     </details>
@@ -451,7 +456,7 @@ body.in-quiz main{padding-bottom:30px}
   </div>
   <div class="card">
     <h2 class="section-title">ℹ️ 앱 정보</h2>
-    <div id="appStatus" role="status" class="muted">버전 20261018-28 · 화면을 준비하는 중…</div>
+    <div id="appStatus" role="status" class="muted">버전 20261018-29 · 화면을 준비하는 중…</div>
     <div class="actionbar"><button type="button" class="btn outline" id="refreshApp">새 버전 불러오기</button><button type="button" class="btn outline" id="checkApp">앱 점검</button></div>
     <p class="muted">정답 비교는 책의 대표 뜻과 허용 답안을 사용합니다. 한글 참고 발음은 참고용이며 실제 발음은 ‘발음 듣기’를 이용하세요.</p>
   </div>
@@ -466,7 +471,7 @@ body.in-quiz main{padding-bottom:30px}
 <div id="globalNotice" class="global-notice hidden" role="alert"></div>
 <script>
 (function () {
-  var release = '20261018-28';
+  var release = '20261018-29';
   var ready = false;
   var lastError = '';
   var banner = document.getElementById('appStatus');
@@ -503,10 +508,10 @@ body.in-quiz main{padding-bottom:30px}
   setTimeout(function () { if (!ready && !lastError) report('화면 초기화가 완료되지 않았습니다. 설정 → 새 버전 불러오기를 눌러 주세요.', true); }, 10000);
 })();
 </script>
-<script src="./shared.js?v=20261018-28" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./quiz.js?v=20261018-28" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./family.js?v=20261018-28" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./editor.js?v=20261018-28" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
-<script src="./sets.js?v=20261018-28" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./shared.js?v=20261018-29" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./quiz.js?v=20261018-29" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./family.js?v=20261018-29" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./editor.js?v=20261018-29" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
+<script src="./sets.js?v=20261018-29" onerror="document.getElementById('appStatus').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').textContent='화면 파일 다운로드 실패. 인터넷 연결 후 설정 → 새 버전 불러오기를 눌러 주세요.';document.getElementById('globalNotice').classList.remove('hidden')"></script>
 </body>
 </html>

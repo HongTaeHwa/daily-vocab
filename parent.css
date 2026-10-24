@@ -113,6 +113,11 @@ code{background:#eef4ff;padding:1px 6px;border-radius:6px;font-size:13px}
 .set-row .set-actions{display:flex;gap:6px;flex:none;margin-left:auto}
 .set-row .set-name{display:block;font-weight:800;overflow-wrap:anywhere}
 .set-row small{display:block;color:var(--muted);font-size:13px}
+.pick-sets{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.pick-sets label{display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer;min-width:0;overflow-wrap:anywhere}.pick-sets input{accent-color:#245fcb;width:20px;height:20px;flex:none;min-width:0}.pick-sets small{color:var(--muted);font-weight:500}
+.exam-current{margin-top:12px;border:1px solid var(--border);border-radius:14px;padding:12px 14px;background:#f7faff}
+.exam-current strong{display:block;color:var(--navy);overflow-wrap:anywhere}.exam-current p{margin:6px 0 0;font-size:14px}
+.exam-current details{margin-top:8px}.exam-current summary{cursor:pointer;color:var(--blue);font-weight:700;font-size:14px}.exam-current ol{margin:6px 0 0;padding-left:22px;font-size:14px}.exam-current li{margin:3px 0;overflow-wrap:anywhere}
 .box{margin-top:16px;padding-top:14px;border-top:1px dashed var(--border)}
 .box:first-child{margin-top:4px;padding-top:0;border-top:0}
 .daily-word{display:flex;gap:8px;padding:6px 0;border-top:1px solid #eef2f8;font-size:14px;align-items:center}

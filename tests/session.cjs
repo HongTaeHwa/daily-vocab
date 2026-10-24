@@ -174,7 +174,14 @@ const { chromium } = require("playwright");
   await page.evaluate(() => { document.getElementById("comboPanel").open = true; });
   assert((await page.$$eval("#comboSets input", (i) => i.length)) === 2 && (await page.$$eval("#comboSets input:checked", (i) => i.length)) === 2, "all sets checked by default");
   const totalWords = await page.evaluate(() => sets.reduce((n, s) => n + s.words.length, 0));
-  assert((await page.textContent("#comboSummary")) === `세트 2개 · ${totalWords}단어`, "combo summary: " + (await page.textContent("#comboSummary")));
+  // 기본 뽑는 방법은 ‘자주 틀린 단어 먼저’: 요약에 지금까지 틀린 적 있는 단어 수(영어 단어 기준)가 붙는다
+  const oftenNow = await page.evaluate(() => {
+    const missed = new Set();
+    for (const r of historyRecords) for (const x of r.results) if (!x.pass) missed.add(x.word.en.toLowerCase());
+    return sets.flatMap((s) => s.words).filter((w) => missed.has(w.en.toLowerCase())).length;
+  });
+  assert((await page.inputValue("#comboPick")) === "missed" && oftenNow > 0, "missed-first is the default pick");
+  assert((await page.textContent("#comboSummary")) === `세트 2개 · ${totalWords}단어 · 자주 틀린 단어 ${oftenNow}개`, "combo summary: " + (await page.textContent("#comboSummary")));
   await page.selectOption("#comboCount", "10");
   await page.selectOption("#comboPick", "even");
   await page.click('[data-mode="en_ko"]');
@@ -214,6 +221,23 @@ const { chromium } = require("playwright");
   page.once("dialog", (d) => d.accept());
   await page.click("#backSettings");
   await waitFor(() => page.isVisible("#home"), "stopped the restarted combo");
+  // 자주 틀린 단어 먼저: 기록 전체에서 틀린 횟수가 가장 많은 단어(cat, 6번)가 1문제 시험에 나온다. 같은 영어 단어(Cat)가 다른 세트에 있어도 한 번만.
+  await page.evaluate(() => {
+    const set = sets.find((x) => x.words.some((w) => w.en === "cat"));
+    const word = set.words.find((w) => w.en === "cat");
+    const seed = (i) => ({ id: "seed-miss-" + i, setId: set.id, setName: set.name, mode: "en_ko", range: "전체", startedAt: new Date().toISOString(), completedAt: new Date(Date.now() - i * 60000).toISOString(), results: [{ id: word.id, word: structuredClone(word), pass: false, unknown: false }] });
+    persistHistory([1, 2, 3, 4, 5, 6].map(seed).concat(historyRecords));
+    const other = sets.find((x) => x !== set);
+    other.words.push({ id: 999, en: "Cat", ko: "고양이", ipa: "", hangul: "", aliases: [] });
+  });
+  await page.evaluate(() => startCombo({ setIds: null, count: 1, pick: "missed" }));
+  await waitFor(() => page.isVisible("#quiz"), "missed-first combo started");
+  assert((await page.evaluate(() => queue.map((w) => w.en.toLowerCase()).join(","))) === "cat", "most-missed word first: " + (await page.evaluate(() => queue.map((w) => w.en).join(","))));
+  assert((await page.textContent("#sessionScope")).includes("1문제 · 자주 틀린 단어 먼저"), "missed-first scope label: " + (await page.textContent("#sessionScope")));
+  page.once("dialog", (d) => d.accept());
+  await page.click("#backSettings");
+  await waitFor(() => page.isVisible("#home"), "stopped the missed-first combo");
+  assert(await page.evaluate(() => buildComboPool(sets.map((x) => x.id), 0, "random").filter((w) => w.en.toLowerCase() === "cat").length === 1), "the same English word is asked once across sets");
 
   // 세트 삭제는 편집 화면에서만, 확인 후 홈으로
   await page.click("#editSet");
@@ -222,7 +246,7 @@ const { chromium } = require("playwright");
   assert(await page.isVisible("#home") && (await page.evaluate(() => sets.length)) === 1, "delete from editor");
 
   if (errors.length) throw Error(errors.join(","));
-  console.log("PASS: tabs, range labels, pause/resume across reload, finish details, stop with partial record, rename, table editor sync, prefs, editor return, combo test (even pick, record, per-set missed, restart)");
+  console.log("PASS: tabs, range labels, pause/resume across reload, finish details, stop with partial record, rename, table editor sync, prefs, editor return, combo test (even pick, record, per-set missed, restart, missed-first default/summary/most-missed word, duplicate words once)");
   await browser.close();
 })().catch((e) => {
   console.error(e);

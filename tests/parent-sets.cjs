@@ -1,6 +1,7 @@
 // 보호자 앱(parent.html)의 세트 보내기: 편집기 모듈(editor.js)을 그대로 쓰고 저장은 아이의 세트로 서버에 보낸다.
 // 세트 탭 → ‘세트 만들어 보내기’(#/child/<id>/sets/new, 제목 ‘…에게 보내기’, 관리 상자 없음) → 사진 인식은 보호자 코드로 → 텍스트 모드 입력 → 전송 본문·목록 갱신
 // → 보호자 기기에는 세트 사본이 없다 → 보기·수정(서버에서 받아 채움, 원래 단어 id·발음 유지) → 저장하지 않은 초안은 뒤로 가기 전에 묻는다 → 삭제.
+// → 📝 종합 시험 보내기(세트 고르기·문제 수·뽑는 방법 본문, 보낸 시험·틀린 횟수, 안 푼 시험 바꾸기 확인, 결과, 거두기, 옛 Worker 안내).
 // 가족 Worker 는 tests/lib/fake-family-worker.cjs 가 가짜로 응답한다(보호자 앱 기본 서버 주소를 가로챈다).
 const { chromium } = require("playwright");
 const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
@@ -138,8 +139,63 @@ const { createFakeWorker } = require("./lib/fake-family-worker.cjs");
   assert((await hash()) === "#/child/" + HANEUL + "/sets", "fallback route: " + (await hash()));
   assert(requests.every((r) => r.passcode === PARENT_CODE), "every request uses the parent code");
 
+  // ---- 📝 종합 시험 보내기: 세트 고르기(기본 전부)·문제 수·뽑는 방법 → POST /family/<id>/exam → 보낸 시험·결과 → 바꾸기 확인 → 거두기 ----
+  const examPath = "/family/" + HANEUL + "/exam";
+  const ago = (hours) => new Date(Date.now() - hours * 3600000).toISOString();
+  haneul.setStore.set("haneul-fruit", { id: "haneul-fruit", name: "과일", words: [{ id: 1, en: "apple", ko: "사과", aliases: [], ipa: "", hangul: "" }, { id: 2, en: "grape", ko: "포도", aliases: [], ipa: "", hangul: "" }], updatedAt: ago(1) });
+  const examRecord = (id, hours, missed) => ({ id, setName: "하늘 DAY04", mode: "en_ko", range: "전체", startedAt: ago(hours), completedAt: ago(hours), total: 3, correct: 3 - missed.length, partial: false, missed: missed.map((en) => ({ en, ko: en + " 뜻" })) });
+  haneul.records.set("x1", examRecord("x1", 5, ["devote", "indicate"]));
+  haneul.records.set("x2", examRecord("x2", 3, ["devote"]));
+  await page.click("#refreshFamily");
+  await waitFor(() => textHas("#examSets", "과일"), "exam box lists the child's sets");
+  assert((await page.isVisible("#examBox")) && (await page.$$eval("#examSets input:checked", (i) => i.length)) === 2 && (await page.isHidden("#examCurrent")), "every set checked by default, nothing sent yet");
+  assert((await page.inputValue("#examPick")) === "missed" && (await page.inputValue("#examCount")) === "20", "defaults: missed first, 20 questions");
+  await page.click('#examSets input[value="haneul-fruit"]');
+  await page.selectOption("#examCount", "10");
+  await page.click("#sendExam");
+  await waitFor(() => textHas("#examStatus", "보냈어요"), "exam sent");
+  let examReqs = paths(examPath, "POST");
+  assert(examReqs.length === 1 && examReqs[0].passcode === PARENT_CODE && JSON.stringify(examReqs[0].body) === JSON.stringify({ setIds: ["haneul-day04"], count: 10, pick: "missed" }), "exam request body: " + JSON.stringify(examReqs[0]?.body));
+  const examToast = await page.textContent("#toast");
+  assert(/‘종합 시험 \d+\/\d+’ 3문제를 하늘에게 보냈어요\. 자주 틀린 단어 2개가 들어 있어요\./.test(examToast), "toast: " + examToast);
+  const current = await page.textContent("#examCurrent");
+  assert(current.includes("3문제") && current.includes("자주 틀린 단어 2개 포함") && current.includes("⏳ 아직 풀지 않았어요"), "sent exam shown: " + current);
+  assert((await page.textContent("#examCurrent li")) === "devote — 바치다 (틀림 2회)", "most-missed word first in the list: " + (await page.textContent("#examCurrent li")));
+  // 아직 안 푼 시험이 있으면 바꾸기 전에 묻는다(취소하면 안 보냄) → 모든 세트(setIds null)·세트별 골고루로 다시 보냄
+  await page.click('#examSets input[value="haneul-fruit"]');
+  await page.selectOption("#examPick", "even");
+  let replaceAsked = "";
+  page.once("dialog", (d) => {
+    replaceAsked = d.message();
+    d.dismiss();
+  });
+  await page.click("#sendExam");
+  await waitFor(() => replaceAsked.includes("아직 풀지 않은"), "asked before replacing an unsolved exam");
+  await new Promise((r) => setTimeout(r, 200));
+  assert(paths(examPath, "POST").length === 1, "cancel keeps the unsolved exam");
+  page.once("dialog", (d) => d.accept());
+  await page.click("#sendExam");
+  await waitFor(() => paths(examPath, "POST").length === 2 && textHas("#examCurrent", "5문제"), "replaced with an all-sets exam");
+  examReqs = paths(examPath, "POST");
+  assert(JSON.stringify(examReqs[1].body) === JSON.stringify({ setIds: null, count: 10, pick: "even" }), "all sets → setIds null: " + JSON.stringify(examReqs[1].body));
+  // 아이가 풀면(서버의 completed) 새로고침 때 결과가 보인다
+  haneul.exam.completed = { recordId: "r-exam", correct: 4, total: 5, completedAt: new Date().toISOString() };
+  await page.click("#refreshFamily");
+  await waitFor(() => textHas("#examCurrent", "✅ 4 / 5 맞았어요 (80점)"), "exam result shown");
+  // 거두기(확인) → 서버에서 지워지고 칸이 사라진다
+  page.once("dialog", (d) => d.accept());
+  await page.click("#deleteExam");
+  await waitFor(() => textHas("#examStatus", "거뒀어요"), "exam withdrawn");
+  assert(paths(examPath, "DELETE").length === 1 && !haneul.exam && (await page.isHidden("#examCurrent")), "withdraw request and state");
+  // 옛 Worker(경로 없음) → ‘다시 배포’ 안내
+  fake.setMode("notfound");
+  await page.click("#sendExam");
+  await waitFor(() => textHas("#examStatus", "다시 배포"), "old Worker asks to redeploy");
+  fake.setMode("ok");
+  assert(requests.every((r) => r.passcode === PARENT_CODE), "exam requests use the parent code");
+
   assert(errors.length === 0, "page errors: " + errors.join(" | "));
-  console.log("PASS: parent set editor — new set (title, photo recognition with the parent code, text mode, upload body, list, no local copy, back skips the editor), edit (server set, ids/details kept), unsaved draft guard on back, delete, deep link");
+  console.log("PASS: parent set editor — new set (title, photo recognition with the parent code, text mode, upload body, list, no local copy, back skips the editor), edit (server set, ids/details kept), unsaved draft guard on back, delete, deep link, exam (sets/count/pick body, sent exam and missed counts, replace confirm, result, withdraw, old Worker)");
   await browser.close();
 })().catch((e) => {
   console.error(e);

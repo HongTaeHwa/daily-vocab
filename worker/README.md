@@ -70,7 +70,7 @@ Anthropic 콘솔에서 **월 사용 한도(spend limit)** 를 꼭 설정하세�
 
 ## 알림 (Web Push · VAPID 키)
 
-아이 기기에 📬 오늘의 단어 도착·✏️ 공부 리마인더를, 보호자 폰에 🧒 시험 마침·🌙 저녁 요약을 보냅니다. Worker가 **Web Push**(VAPID 서명 + RFC 8291 aes128gcm 본문 암호화, 외부 라이브러리 없이 WebCrypto)로 Apple·Google 푸시 서비스에 보내고, 앱의 서비스워커(`sw.js`)가 알림을 띄웁니다. 푸시 서비스는 지역 제한이 없어 북미 중계(RELAY)를 거치지 않습니다. 설계는 `docs/NOTIFICATIONS.md`.
+아이 기기에 📬 오늘의 단어 도착·📝 종합 시험 도착·✏️ 공부 리마인더를, 보호자 폰에 🧒 시험 마침·🌙 저녁 요약을 보냅니다. Worker가 **Web Push**(VAPID 서명 + RFC 8291 aes128gcm 본문 암호화, 외부 라이브러리 없이 WebCrypto)로 Apple·Google 푸시 서비스에 보내고, 앱의 서비스워커(`sw.js`)가 알림을 띄웁니다. 푸시 서비스는 지역 제한이 없어 북미 중계(RELAY)를 거치지 않습니다. 설계는 `docs/NOTIFICATIONS.md`.
 
 **처음 한 번: 키 만들기·등록 (약 2분)**
 1. 키 쌍 만들기(화면에만 출력되고 파일로 저장되지 않습니다):
@@ -151,18 +151,20 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 | `POST /lookup` · 헤더 `X-App-Passcode` · JSON `{ word }` | 단어 찾기(아이 기기의 🔍 찾기 탭). 영어 단어·짧은 구 하나 → `{ found, en, suggestion, pos, ko, ipa, aliases, examples: [{ en, ko }], similar, note, model, usage }`. 모르는 단어·철자 오류는 `found: false`와 철자 제안 `suggestion`. 모델은 `LOOKUP_MODEL`(기본 `claude-sonnet-5-5`) |
 | `POST /grade` · 헤더 `X-App-Passcode` · JSON `{ en, ko, aliases?, answer }` | AI 2차 채점. 앱이 책의 뜻·허용 답안과 글자 그대로 맞지 않는 답만 보내면 ‘같은 뜻인지’ 판정 → `{ accept, reason, model, usage }`. 모델은 `GRADE_MODEL`(기본 `claude-haiku-5-5`, 빠르고 저렴). 동의어·조사/어미 차이·합성어·한 글자 오타는 인정, 다른 뜻·막연한 답·여러 뜻 나열은 거절 |
 | `POST /define` · 헤더 `X-App-Passcode` · JSON `{ words: ["apple", …] }` | AI 사전. 영어 단어·짧은 구 최대 60개(영문자·공백·.'’- 40자 이하) → `{ words: [{ en, ko, ipa, aliases }], note, model, usage }`. 요청한 철자 그대로 한 번씩 돌려주고 모르는 단어는 빠집니다(전부 모르면 422). 앱의 ‘빈 뜻 AI로 채우기’가 40개씩 보냅니다 |
-| `POST /sync` · 헤더 `X-App-Passcode`(가족 또는 보호자 코드) · JSON `{ child: { id, name }, records: [{ id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, daily?, awayCount?, awayMs?, timeouts?, missed: [{ en, ko, unknown? }] }], sets: [{ name, count }], anchor?: { setName, words }, device?: { id, label } }` | 아이 기기의 시험 기록 저장(기록 최대 100개, 같은 id는 덮어씀). `anchor.words`가 비어 있으면 저장된 수준 기준을 지웁니다. 보호자가 지운 아이 id는 404 `unknown_child`. `{ ok, stored, trimmed, syncedAt }` |
+| `POST /sync` · 헤더 `X-App-Passcode`(가족 또는 보호자 코드) · JSON `{ child: { id, name }, records: [{ id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, daily?, exam?, awayCount?, awayMs?, timeouts?, missed: [{ en, ko, unknown? }] }], sets: [{ name, count }], anchor?: { setName, words }, device?: { id, label } }` | 아이 기기의 시험 기록 저장(기록 최대 100개, 같은 id는 덮어씀). `anchor.words`가 비어 있으면 저장된 수준 기준을 지웁니다. `exam`(보호자가 보낸 종합 시험 id)이 지금 시험과 같은 완료 기록이면 그 시험에 처음 끝낸 결과(`completed`)를 남깁니다. 보호자가 지운 아이 id는 404 `unknown_child`. `{ ok, stored, trimmed, syncedAt }` |
 | `GET /family?days=<1~30>` · 헤더 `X-App-Passcode`(보호자 코드만) | 아이별 요약 `{ children: [{ id, name, sets, lastTestAt, updatedAt, recordCount, streakDays, streakLastDay, records }], serverTime }`. `records`는 최근 `days`일(기본 14, 20개 미만이면 최근 20개), 최신순. `streakDays`는 시험을 본 날(한국 날짜, 중단 기록 포함)이 `streakLastDay`(가장 최근에 본 날)까지 며칠 이어졌는지로, 전체 기록 기준이라 `days` 창에 잘리지 않습니다(최근 400일까지; 오늘·어제까지 이어졌는지는 앱이 판단). 범위 밖 `days`는 400 |
-| `GET /family/<childId>?days=<1~365>&limit=<1~500>` · 보호자 코드 | 한 아이의 상세 `{ child, records, recordCount, more, today, questions }`(`child`에 `streakDays`·`streakLastDay`). `records`는 최근 `days`일(기본 30) 안에서 최신순 최대 `limit`개(기본 200), `recordCount`는 전체 기록 수, `more`는 보낸 것보다 오래된 기록이 있으면 true(`questions`는 문제 물어보기 요약 최신 100개). 숫자가 아니거나 범위 밖이면 400, 모르는 아이는 404 `unknown_child` |
+| `GET /family/<childId>?days=<1~365>&limit=<1~500>` · 보호자 코드 | 한 아이의 상세 `{ child, records, recordCount, more, today, questions, exam }`(`child`에 `streakDays`·`streakLastDay`, `exam`은 보낸 종합 시험 또는 `null`). `records`는 최근 `days`일(기본 30) 안에서 최신순 최대 `limit`개(기본 200), `recordCount`는 전체 기록 수, `more`는 보낸 것보다 오래된 기록이 있으면 true(`questions`는 문제 물어보기 요약 최신 100개). 숫자가 아니거나 범위 밖이면 400, 모르는 아이는 404 `unknown_child` |
 | `GET /family/<childId>/records?before=<ISO>&limit=<1~500>` · 보호자 코드 | 보호자 앱 ‘더 보기’: `before`보다 먼저 끝난(미포함) 기록을 최신순으로 `limit`개(기본 100), `before`가 없으면 가장 최근부터. `{ records, more, serverTime }`. 잘못된 `before`·`limit`는 400, 모르는 아이는 404 `unknown_child`. 요청 제한은 `/family` 버킷 |
-| `DELETE /family/<childId>` · 보호자 코드 | 아이 항목과 기록·오늘의 단어 삭제. `{ ok, deleted }` |
+| `DELETE /family/<childId>` · 보호자 코드 | 아이 항목과 기록·오늘의 단어·세트·종합 시험 삭제. `{ ok, deleted }` |
 | `POST /family/<childId>/plan` · 보호자 코드 · JSON `{ enabled, level, dailyCount, hour, timeLimitSec, setsLocked, remindHour }` | 오늘의 단어 계획과 문제당 제한 시간(0 또는 5~120초, 모든 시험에 적용)·세트 수정 잠금·공부 알림 시각(`null` 또는 0~23시, 한국 시각) 저장(빠진 항목은 유지). `{ ok, child }` |
-| `GET /settings/<childId>` · 가족 또는 보호자 코드 | 아이 기기가 받아 가는 보호자 설정 `{ childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour }` |
+| `GET /settings/<childId>` · 가족 또는 보호자 코드 | 아이 기기가 받아 가는 보호자 설정 `{ childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour, exam }`(`exam`은 보호자가 보낸 종합 시험(`completed` 포함) 또는 `null`) |
+| `POST /family/<childId>/exam` · 보호자 코드 · JSON `{ setIds?: [세트 id], count: 5~100, pick?: "missed"\|"random"\|"even" }` | 종합 시험 보내기. 고른 세트(`setIds`가 없거나 `null`이면 전부)의 단어에서 `count`문제를 고릅니다. `missed`(기본)는 그 아이의 기록 전체에서 틀린 횟수가 많은 단어부터(같으면 최근에 틀린 것부터, 모자라면 나머지에서 무작위), `even`은 세트를 번갈아, `random`은 무작위. 같은 영어 단어는 한 번만. `{ ok, exam: { id, name: "종합 시험 M/D", pick, setCount, missedWords, createdAt, words: [{ setId, id, en, ko, ipa, hangul, aliases, missed }] } }`을 `exam:<childId>`에 저장하고(아이당 하나, 새로 보내면 바뀜) 아이 기기에 📝 알림. 고른 세트에 단어가 없으면 400 `no_words` |
+| `DELETE /family/<childId>/exam` · 보호자 코드 | 보낸 종합 시험 거두기(없어도 `{ ok }`) |
 | `GET /records/<childId>?since=<ISO>&limit=<n>` · 가족 또는 보호자 코드 | 기록 복원: 아이 기기가 자기 기록의 서버 사본을 내려받습니다. `since`가 있으면 그 시각부터(포함) 오름차순, 없으면 최신순으로 `limit`개(최대 500). `{ records: [/sync 와 같은 압축 기록 + receivedAt], more, serverTime }`. 앱은 마지막 `completedAt`을 다음 `since`로 넘기며 겹치는 id는 걸러냅니다. 모르는 아이는 404 `unknown_child`, 잘못된 `since`는 400 |
 | `POST /family/children` · 보호자 코드 · JSON `{ name }` | 아이 만들기. 6자리 `joinCode`가 든 `{ ok, child }` |
 | `POST /family/<childId>/code` · 보호자 코드 | 아이 코드 새로 발급(옛 코드 무효). `{ ok, child }` |
 | `POST /family/<childId>/name` · 보호자 코드 · JSON `{ name }` | 이름 바꾸기. `{ ok, child }` |
-| `POST /join` · 가족 또는 보호자 코드 · JSON `{ code, device: { id, label } }` | 아이 기기 연결. `{ ok, childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour }`. 모르는 코드는 404 `unknown_code` |
+| `POST /join` · 가족 또는 보호자 코드 · JSON `{ code, device: { id, label } }` | 아이 기기 연결. `{ ok, childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour, exam }`. 모르는 코드는 404 `unknown_code` |
 | `GET /push/key` · 가족 또는 보호자 코드 | 알림 공개 키 `{ publicKey }`. 키가 없거나 형식이 틀리면 503 `push_unconfigured`(아래 `/push/…` 모두 같음). 요청 제한 버킷 `/push` |
 | `POST /push/subscribe` · 아이: 가족 코드 / 보호자: 보호자 코드 · JSON `{ role: "child", childId, device: { id, label }, subscription: { endpoint, keys: { p256dh, auth } } }` 또는 `{ role: "parent", device, subscription, kinds: { finish, summary }, summaryHour }` | 알림 구독 저장(같은 기기는 덮어씀). endpoint는 1,000자 이하 https, p256dh 87~88자·auth 22~24자 base64url, `summaryHour` 0~23(기본 21), `kinds` 기본 모두 켬. 보호자 구독에 가족 코드면 401, 모르는 아이는 404 `unknown_child`. `{ ok }` |
 | `POST /push/unsubscribe` · 같은 코드 · JSON `{ role, childId?, device: { id } }` | 구독 삭제(없어도 `{ ok }`) |
@@ -179,7 +181,7 @@ ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 
 보안 메모: Origin 검사와 CORS는 다른 웹사이트가 이 Worker를 쓰지 못하게 막고, 접속 코드는 주소를 아는 사람의 무단 사용을 막습니다. 접속 코드는 태블릿 브라우저에 저장되므로, 기기를 잃어버리면 코드를 바꾸세요. 피해 범위는 어차피 Anthropic 콘솔의 사용 한도로 제한됩니다.
 
-`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의, 연속 학습 `streakDays`·옛 아이 채우기)·오늘의 단어(계획·앵커·생성·두 번째 요청 실패 때 첫 요청 단어로 저장·완료·크론)·아이 코드(아이 만들기·연결·기기·코드 재발급·이름)·알림(키·구독 검증·코드 역할, 가짜 푸시 서비스로 받은 요청의 VAPID JWT를 공개 키로 검증하고 본문을 RFC 8291로 복호화, 트리거 4종·하루 1번·만료 정리, 느린 푸시 서비스에서도 `/sync`가 먼저 응답하고 보호자 기기 여러 대에 한꺼번에 보냄)을 Node에서 확인합니다 (`node tests/worker.cjs`).
+`tests/worker.cjs`가 CORS·접속 코드·요청 제한·입력 검증·결과 정리·AI 사전·오류 변환·가족 기록함(저장소 모의, 연속 학습 `streakDays`·옛 아이 채우기)·오늘의 단어(계획·앵커·생성·두 번째 요청 실패 때 첫 요청 단어로 저장·완료·크론)·아이 코드(아이 만들기·연결·기기·코드 재발급·이름)·종합 시험(검증·자주 틀린 단어 순서·고른 세트·골고루·완료 표시·거두기)·알림(키·구독 검증·코드 역할, 가짜 푸시 서비스로 받은 요청의 VAPID JWT를 공개 키로 검증하고 본문을 RFC 8291로 복호화, 트리거(오늘의 단어·종합 시험 도착·리마인더·시험 마침·저녁 요약)·하루 1번·만료 정리, 느린 푸시 서비스에서도 `/sync`가 먼저 응답하고 보호자 기기 여러 대에 한꺼번에 보냄)을 Node에서 확인합니다 (`node tests/worker.cjs`).
 
 2026-10-18 이전에 배포한 Worker에는 `/define`과 가족 기록함(`/sync`, `/family`), 세트 동기화(`/sets`)가 없어 앱의 ‘빈 뜻 AI로 채우기’와 가족 기록함이 “다시 배포” 안내를 띄웁니다. `npm run deploy`로 다시 배포하면 됩니다(앱 배포와 별개, 먼저 배포해도 옛 앱과 호환).
 
