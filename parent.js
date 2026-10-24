@@ -22,7 +22,7 @@
   const JOIN_CODE = /^\d{6}$/;
   const TABS = ["records", "sets", "daily", "settings", "questions"];
   const VIEW_IDS = ["setup", "today", "children", "child", "editor", "settings"];
-  const NOTE_IDS = ["setsStatus", "planStatus", "linkStatus", "nameStatus", "limitStatus", "remindStatus", "deleteStatus", "missedStatus", "recordsStatus", "dailySetStatus"];
+  const NOTE_IDS = ["setsStatus", "planStatus", "linkStatus", "nameStatus", "limitStatus", "remindStatus", "deleteStatus", "missedStatus", "recordsStatus", "dailySetStatus", "examStatus"];
 
   const enc = encodeURIComponent;
   const nowIso = () => new Date().toISOString();
@@ -51,6 +51,11 @@
   const childPath = (id, tab) => "#/child/" + enc(id) + (tab && tab !== "records" ? "/" + tab : "");
   const editorPath = (id, setId) => "#/child/" + enc(id) + "/sets/" + (setId ? enc(setId) : "new");
   const validChild = (c) => Boolean(c && typeof c === "object" && typeof c.id === "string" && c.id && typeof c.name === "string");
+  // 보호자가 보낸 종합 시험(상세의 exam). 형식이 틀리면 null.
+  const validExam = (e) =>
+    e && typeof e === "object" && typeof e.id === "string" && typeof e.name === "string" && Array.isArray(e.words) && e.words.every((w) => w && typeof w.en === "string" && typeof w.ko === "string")
+      ? e
+      : null;
   const validRecord = (r) => Boolean(r && typeof r.id === "string" && Number.isFinite(Date.parse(r.completedAt)) && Number.isInteger(r.total) && r.total > 0 && Number.isInteger(r.correct));
   const devicesOf = (c) => Object.values(c?.devices || {}).filter((d) => d && typeof d === "object");
   function devicesSummary(c) {
@@ -345,6 +350,9 @@
     regenCode: (id) => api.request(`/family/${enc(id)}/code`, { method: "POST", body: {} }),
     deleteChild: (id) => api.request("/family/" + enc(id), { method: "DELETE" }),
     makeDaily: (id) => api.request("/daily/" + enc(id), { method: "POST", body: {}, timeout: DAILY_TIMEOUT_MS }),
+    // 종합 시험 보내기·거두기. 옛 Worker 에는 없다(404 not_found → ‘다시 배포’ 문구)
+    sendExam: (id, body) => api.request(`/family/${enc(id)}/exam`, { method: "POST", body, timeout: SETS_TIMEOUT_MS }),
+    deleteExam: (id) => api.request(`/family/${enc(id)}/exam`, { method: "DELETE" }),
   };
   const WRONG_CODE = "보호자 코드가 맞지 않아요. 다시 입력해 주세요.";
   let setupNote = null; // 코드 입력 화면에 보일 안내 {kind, text}
@@ -450,6 +458,7 @@
             more: data?.more === true,
             questions: (Array.isArray(data?.questions) ? data.questions : []).filter((q) => q && typeof q === "object"),
             today: data?.today || null,
+            exam: validExam(data?.exam), // 옛 Worker 는 보내지 않는다(null)
             fetchedAt: at,
             viewedAt: at,
           },
@@ -1051,8 +1060,9 @@
   const validWord = (w) => w && ["string", "number"].includes(typeof w.id) && typeof w.en === "string" && w.en.trim() && typeof w.ko === "string" && Array.isArray(w.aliases);
   const validSet = (s) => Boolean(s && typeof s.id === "string" && typeof s.name === "string" && Array.isArray(s.words) && s.words.length > 0 && s.words.every(validWord));
   let lockBusy = false;
-  panels.sets = (c) => {
+  panels.sets = (c, d) => {
     if (!lockBusy) $("setsLock").checked = planDefaults(c.plan).setsLocked === true;
+    renderExamBox(c, d);
     const list = $("childSets");
     list.textContent = "";
     const summary = (Array.isArray(c.sets) ? c.sets : []).filter((s) => s && typeof s.name === "string");
@@ -1097,6 +1107,103 @@
   $("sendNewSet").onclick = () => {
     const id = router.current.id;
     if (id) router.go(editorPath(id, null));
+  };
+
+  // 📝 종합 시험 보내기: 세트(기본 전부)·문제 수·뽑는 방법을 골라 POST /family/<id>/exam → Worker 가 기록 전체의 틀린 횟수로 문제를 골라 저장하고
+  // 아이 기기에 알린다(아이 기기는 /settings 로 받아 홈 카드로 푼다). 아이당 하나라 새로 보내면 바뀐다. 보낸 시험·결과(completed)는 상세의 exam.
+  const examOff = new Map(); // 아이 id → 시험에서 뺀 세트 id
+  formResets.push(() => examOff.clear());
+  let examSending = false;
+  const examSetsOf = (c) => (Array.isArray(c.sets) ? c.sets : []).filter((s) => s && typeof s.id === "string" && s.id && typeof s.name === "string");
+  function renderExamBox(c, d) {
+    const list = examSetsOf(c);
+    $("examBox").classList.toggle("hidden", !list.length);
+    if (!list.length) return;
+    const off = examOff.get(c.id) || new Set();
+    const box = $("examSets");
+    const key = JSON.stringify([c.id, list.map((s) => [s.id, s.name, s.count]), [...off]]);
+    if (box.dataset.key !== key) {
+      box.dataset.key = key;
+      box.textContent = "";
+      for (const s of list)
+        box.append(
+          h("label", null, h("input", { type: "checkbox", value: s.id, checked: !off.has(s.id), onchange: () => toggleExamSet(c.id, s.id) }), h("span", null, s.name), h("small", null, `${s.count}단어`)),
+        );
+    }
+    $("sendExam").disabled = examSending || list.every((s) => off.has(s.id));
+    $("sendExam").textContent = examSending ? "보내는 중…" : "📝 종합 시험 보내기";
+    renderExamCurrent(c, d?.exam);
+  }
+  function toggleExamSet(id, setId) {
+    const off = examOff.get(id) || new Set();
+    if (off.has(setId)) off.delete(setId);
+    else off.add(setId);
+    examOff.set(id, off);
+    scheduleRender();
+  }
+  function renderExamCurrent(c, exam) {
+    const el = $("examCurrent");
+    el.classList.toggle("hidden", !exam);
+    const key = JSON.stringify([c.id, exam?.id || "", exam?.completed || null]);
+    if (el.dataset.key === key) return; // 같은 시험이면 다시 만들지 않는다(펼쳐 둔 ‘문제 보기’ 유지)
+    el.dataset.key = key;
+    el.textContent = "";
+    if (!exam) return;
+    const done = exam.completed;
+    el.append(
+      h("strong", null, `보낸 시험: ${exam.name} · ${exam.words.length}문제`),
+      h("p", { class: "muted" }, [exam.missedWords ? `자주 틀린 단어 ${exam.missedWords}개 포함` : "", exam.createdAt ? `${relativeTime(exam.createdAt)} 보냄` : ""].filter(Boolean).join(" · ")),
+      h("p", { id: "examResult" }, done ? `✅ ${done.correct} / ${done.total} 맞았어요 (${pctOf(done)}점) · ${relativeTime(done.completedAt)}` : "⏳ 아직 풀지 않았어요"),
+      h("details", null, h("summary", null, `문제 ${exam.words.length}개 보기`), h("ol", null, exam.words.map((w) => h("li", null, `${w.en} — ${w.ko}` + (w.missed ? ` (틀림 ${w.missed}회)` : ""))))),
+      h("div", { class: "actionbar" }, h("button", { type: "button", class: "btn small outline", id: "deleteExam", onclick: () => deleteExam(c.id) }, "보낸 시험 거두기")),
+    );
+  }
+  function patchExam(id, exam) {
+    store.patch((s) => (s.details[id] ? { details: { ...s.details, [id]: { ...s.details[id], exam } } } : {}));
+  }
+  async function sendExam(id) {
+    const c = childById(id);
+    if (!c || examSending) return;
+    const list = examSetsOf(c);
+    const off = examOff.get(id) || new Set();
+    const picked = list.filter((s) => !off.has(s.id)).map((s) => s.id);
+    if (!picked.length) return;
+    const prev = store.get().details[id]?.exam;
+    if (prev && !prev.completed && !confirm(`아직 풀지 않은 ‘${prev.name}’이(가) 있어요. 새 시험으로 바꿀까요?`)) return;
+    examSending = true;
+    note(id, "examStatus", "info", "문제를 고르는 중…");
+    scheduleRender();
+    try {
+      const data = await api.sendExam(id, { setIds: picked.length === list.length ? null : picked, count: Number($("examCount").value), pick: $("examPick").value });
+      const exam = validExam(data?.exam);
+      if (!exam) throw Error("서버 응답이 올바르지 않아요.");
+      patchExam(id, exam);
+      const text = `‘${exam.name}’ ${exam.words.length}문제를 ${c.name}에게 보냈어요.` + (exam.missedWords ? ` 자주 틀린 단어 ${exam.missedWords}개가 들어 있어요.` : "");
+      note(id, "examStatus", "good", text + " 아이 기기 홈에 카드로 나타나요.");
+      toast(text, "good");
+    } catch (e) {
+      note(id, "examStatus", "bad", "보내지 못했어요: " + failure(e));
+    } finally {
+      examSending = false;
+      scheduleRender();
+    }
+  }
+  async function deleteExam(id) {
+    const c = childById(id);
+    const exam = store.get().details[id]?.exam;
+    if (!c || !exam || !confirm(`‘${exam.name}’을(를) ${c.name}의 기기에서 거둘까요? 이미 푼 기록은 남아요.`)) return;
+    note(id, "examStatus", "info", "거두는 중…");
+    try {
+      await api.deleteExam(id);
+      patchExam(id, null);
+      note(id, "examStatus", "good", "보낸 시험을 거뒀어요. 아이 기기에서는 다음에 앱을 열 때 사라져요.");
+    } catch (e) {
+      note(id, "examStatus", "bad", "거두지 못했어요: " + failure(e));
+    }
+  }
+  $("sendExam").onclick = () => {
+    const id = router.current.id;
+    if (id) sendExam(id);
   };
   // 세트 고치기 잠금: 바꾸는 즉시 계획(plan)에 setsLocked 만 저장한다. 아이 기기는 다음에 앱을 열 때 /settings 로 받는다.
   $("setsLock").onchange = async () => {

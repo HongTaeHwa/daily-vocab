@@ -11,7 +11,8 @@
 //        restoreFloor(‘기록 전체 삭제’ 시각: 그 전에 끝난 기록은 자동으로 가져오지 않음), restoreSkip:[이 기기에서 하나씩 지운 기록 id](자동으로 가져오지 않음),
 //        childGone(보호자가 서버에서 지운 아이: 연결 해제 → 새 코드로 다시 연결할 때까지 서버 요청 중단),
 //        goneChildIds:[보호자가 서버에서 지운 아이 id](그 아이로 본 시험은 다음에 연결하는 아이가 이어받는다 — 아래 ‘기록의 주인’),
-//        settings:{timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour, fetchedAt}(보호자 설정),
+//        settings:{timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour, exam, fetchedAt}(보호자 설정, exam = 보호자가 보낸 종합 시험 | null),
+//        examResult:{examId, id, correct, total, completedAt} | null(이 기기에서 그 종합 시험을 처음 끝낸 결과),
 //        push:{mode:"push"|"native", deviceId, childId, endpoint, enabledAt, registeredAt(마지막으로 서버에 구독을 보낸 시각)} | null(이 기기에서 켠 알림)}
 //        daily_vocab_daily_v1  = {childId, date, words, level, note, fetchedAt, result?, disabled?, lastCheckedAt, lastError?}
 // 아이 코드·아이 이름·알림 구독은 이 기기에만 두고 백업 JSON/CSV에 넣지 않는다. 옛 보호자 모드가 이 키에 두던 parentCode·parentModeOff 는 보호자 앱으로 옮겨 갔고, 남아 있으면 지운다(initFamily).
@@ -77,8 +78,13 @@ function readFamily() {
       dailyEnabled: f.settings?.dailyEnabled === true,
       dailyHour: hourOrNull(f.settings?.dailyHour) ?? 16,
       remindHour: hourOrNull(f.settings?.remindHour),
+      exam: validExam(f.settings?.exam),
       fetchedAt: typeof f.settings?.fetchedAt === "string" ? f.settings.fetchedAt : "",
     },
+    examResult:
+      f.examResult && typeof f.examResult.examId === "string" && Number.isInteger(f.examResult.correct) && Number.isInteger(f.examResult.total) && typeof f.examResult.completedAt === "string"
+        ? { examId: f.examResult.examId, id: String(f.examResult.id || ""), correct: f.examResult.correct, total: f.examResult.total, completedAt: f.examResult.completedAt }
+        : null,
     // 이 기기에서 켠 알림(Web Push 구독 또는 갤럭시 앱 로컬 알림). 없으면 null
     push:
       f.push && typeof f.push === "object" && ["push", "native"].includes(f.push.mode) && typeof f.push.childId === "string"
@@ -90,6 +96,24 @@ function readFamily() {
             enabledAt: typeof f.push.enabledAt === "string" ? f.push.enabledAt : "",
             registeredAt: typeof f.push.registeredAt === "string" ? f.push.registeredAt : "",
           }
+        : null,
+  };
+}
+// 보호자가 보낸 종합 시험(GET /settings·/join 의 exam: {id, name, missedWords, createdAt, words:[{setId,id,en,ko,ipa,hangul,aliases,missed}], completed?}). 형식이 틀리면 null.
+function validExam(e) {
+  if (!e || typeof e !== "object" || typeof e.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(e.id) || !Array.isArray(e.words)) return null;
+  const words = e.words.filter((w) => w && typeof w.en === "string" && w.en && typeof w.ko === "string" && w.ko).slice(0, 100);
+  if (!words.length) return null;
+  const c = e.completed;
+  return {
+    id: e.id,
+    name: typeof e.name === "string" && e.name ? e.name.slice(0, 60) : "종합 시험",
+    missedWords: Number.isInteger(e.missedWords) && e.missedWords >= 0 ? e.missedWords : 0,
+    createdAt: typeof e.createdAt === "string" ? e.createdAt : "",
+    words,
+    completed:
+      c && typeof c === "object" && Number.isInteger(c.correct) && Number.isInteger(c.total) && typeof c.completedAt === "string"
+        ? { recordId: String(c.recordId || ""), correct: c.correct, total: c.total, completedAt: c.completedAt }
         : null,
   };
 }
@@ -118,11 +142,13 @@ function applySettings(data) {
     dailyEnabled: data?.dailyEnabled === true,
     dailyHour: hourOrNull(data?.dailyHour) ?? 16,
     remindHour: hourOrNull(data?.remindHour),
+    exam: validExam(data?.exam), // 옛 Worker 는 보내지 않는다(null)
     fetchedAt: new Date().toISOString(),
   };
   if (typeof data?.name === "string" && tidy(data.name)) family.childName = tidy(data.name).slice(0, 20); // 보호자가 이름을 바꿨으면 반영
   writeFamily();
   applySetsLock();
+  renderExamCard();
   // 알림: 갤럭시 앱은 바뀐 시각으로 다시 예약하고, Web Push 는 구독이 사라졌거나 바뀌었으면 다시 등록한다
   nativeSchedule();
   refreshNotify();
@@ -182,6 +208,7 @@ function compactRecord(r) {
     partial: r.partial === true,
     activeMs: Number.isInteger(r.activeMs) && r.activeMs >= 0 ? r.activeMs : null,
     ...(typeof r.daily === "string" ? { daily: r.daily } : {}),
+    ...(typeof r.exam === "string" ? { exam: r.exam } : {}),
     ...(Number.isInteger(r.awayCount) && r.awayCount > 0 ? { awayCount: r.awayCount, awayMs: Number.isInteger(r.awayMs) ? r.awayMs : 0 } : {}),
     ...(Number.isInteger(r.timeouts) && r.timeouts > 0 ? { timeouts: r.timeouts } : {}),
     ...(Number.isInteger(r.aiPass) && r.aiPass > 0 ? { aiPass: r.aiPass } : {}),
@@ -257,6 +284,7 @@ function syncReady() {
 // quiz.js 의 saveSession 이 기록을 확정할 때(완료·중단) 부른다.
 function queueFamilySync(record) {
   if (record.daily) noteDailyResult(record);
+  if (record.exam) noteExamResult(record);
   // 갤럭시 앱 로컬 알림: 오늘 시험을 끝냈으니 오늘의 공부 리마인더는 건너뛴다(Web Push 리마인더는 서버가 기록을 보고 정한다)
   if (!record.partial && family.push?.mode === "native")
     try {
@@ -548,8 +576,8 @@ $("unlinkChild").onclick = () => {
   const prevPush = family.push;
   family = {
     ...family, childId: "", childName: "", joinCode: "", pendingCode: "", sendEnabled: false, pending: [], lastError: "", childGone: false,
-    setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "", restoreCheckedAt: "", restoreError: "", push: null,
-    settings: { timeLimitSec: 0, setsLocked: false, dailyEnabled: false, dailyHour: 16, remindHour: null, fetchedAt: "" },
+    setsAcked: {}, setsDeleted: [], setsSyncedAt: "", setsError: "", restoreCheckedAt: "", restoreError: "", push: null, examResult: null,
+    settings: { timeLimitSec: 0, setsLocked: false, dailyEnabled: false, dailyHour: 16, remindHour: null, exam: null, fetchedAt: "" },
   };
   writeFamily();
   dropPush(prevPush); // 이 기기의 알림도 끈다(서버 구독 삭제)
@@ -824,6 +852,61 @@ $("startDaily").onclick = () => {
   newSession(false, words, { setId: "daily:" + daily.date, setName: "오늘의 단어 " + dailyLabel(daily.date) }, { rangeLabel: "오늘의 단어", daily: daily.date });
 };
 
+// ---- 아이 기기: 보호자가 보낸 종합 시험 ----
+// 보호자가 보호자 앱(세트 탭)에서 아이 세트의 자주 틀린 단어 등으로 만들어 보내면, 이 기기는 GET /settings·/join 응답의 exam 으로 받아(family.settings.exam)
+// 홈 카드에서 푼다. 문제마다 출처 세트(setId)가 있어 틀린 단어는 그 세트의 오답 목록에 들어간다(quiz.js 종합 시험과 같은 setId "combo" 기록, exam = 시험 id).
+// 처음 끝낸 결과(이 기기 examResult 또는 서버의 completed — 다른 기기에서 푼 것)를 보여 주고, 끝낸 다음 날부터는 홈에서 내린다(보호자가 새로 보내면 다시 나타난다).
+function currentExam() {
+  return isLinked() && !family.childGone ? family.settings.exam : null;
+}
+function examDone(exam) {
+  if (family.examResult?.examId === exam.id) return family.examResult;
+  return resultFrom(exam.completed);
+}
+function noteExamResult(record) {
+  const exam = family.settings.exam;
+  if (record.partial || !exam || record.exam !== exam.id || family.examResult?.examId === exam.id) return;
+  const { correct, total } = recordScore(record);
+  family.examResult = { examId: exam.id, id: record.id, correct, total, completedAt: record.completedAt };
+  writeFamily();
+  renderExamCard();
+}
+function renderExamCard() {
+  const card = $("examCard");
+  const exam = currentExam();
+  const done = exam ? examDone(exam) : null;
+  const show = Boolean(exam) && (!done || Shared.dayKey(done.completedAt) === Shared.dayKey(new Date()));
+  card.classList.toggle("hidden", !show);
+  if (!show) return;
+  if (done) {
+    const wrong = done.total - done.correct;
+    $("examTitle").textContent = "✅ 종합 시험 끝!";
+    $("examText").textContent = `${done.correct} / ${done.total} 맞았어요` + (wrong ? ` · 틀린 단어 ${wrong}개는 한 번 더 복습해 봐요` : " · 모두 정답 🎉");
+    $("startExam").textContent = "한 번 더 풀기";
+  } else {
+    $("examTitle").textContent = "📝 보호자가 보낸 종합 시험";
+    $("examText").textContent = `${exam.words.length}문제` + (exam.missedWords ? ` · 자주 틀린 단어 ${exam.missedWords}개` : "") + ` · ${exam.name}`;
+    $("startExam").textContent = "▶ 풀기";
+  }
+  $("startExam").disabled = sessionRunning;
+}
+// 홈 카드·결과 화면의 ‘같은 범위 다시’(quiz.js)가 부른다. 문제 순서는 풀 때마다 섞는다.
+function startExam() {
+  const exam = currentExam();
+  if (!exam || sessionRunning) return false;
+  const words = exam.words.map((w, i) => ({
+    id: Number.isInteger(w.id) || (typeof w.id === "string" && w.id) ? w.id : i + 1,
+    en: w.en,
+    ko: w.ko,
+    ipa: typeof w.ipa === "string" ? w.ipa : "",
+    hangul: typeof w.hangul === "string" ? w.hangul : "",
+    aliases: Array.isArray(w.aliases) ? w.aliases.filter((a) => typeof a === "string") : [],
+    ...(typeof w.setId === "string" && w.setId ? { _setId: w.setId } : {}),
+  }));
+  return newSession(false, words, { setId: COMBO_SET_ID, setName: exam.name }, { rangeLabel: `보호자 종합 시험 · ${words.length}문제`, exam: exam.id, shuffle: true });
+}
+$("startExam").onclick = () => startExam();
+
 // ---- 아이 기기: 알림(2B) ----
 // 아이는 ‘🔔 이 기기에서 알림 받기’ 하나만 켠다. 시각은 보호자가 보호자 앱에서 정한다(오늘의 단어 시각 → 📬 도착, 공부 알림 시각 remindHour → ✏️ 리마인더).
 // Web Push(아이폰 홈 화면 앱·Android Chrome): 권한(사용자 터치 안) → GET /push/key → 구독 → POST /push/subscribe(가족 코드) → family.push.
@@ -995,6 +1078,7 @@ function renderFamilySettings(progress) {
     renderNotify();
   }
   $("unlinkChild").classList.toggle("attention", linked && family.childGone); // 지워진 아이는 ‘연결 해제’가 다음 할 일이라 눈에 띄게
+  renderExamCard(); // 연결 해제·서버에서 지워진 아이면 카드를 내린다
   const pill = $("familyState");
   pill.textContent = !linked
     ? "연결 안 됨"
@@ -1078,11 +1162,13 @@ function initFamily() {
     checkDaily({ ignoreThrottle: true }); // 앱을 새로 열 때는 10분 제한 없이 확인한다(보호자가 방금 켰을 수 있다)
     syncSets({ force: true }).then(() => restoreRecords()); // 보호자·다른 기기가 바꾼 세트를 받고 이 기기의 변경을 올린 뒤, 다른 기기에서 본 시험(새 기기·재설치면 전부)을 가져온다
   }
-  // 알림을 눌러 이미 열린 앱으로 돌아오면 sw.js 가 {type:"navigate"} 를 보낸다: 시험 중이 아니면 홈(오늘의 단어 카드)으로, 오늘의 단어는 바로 확인한다.
+  // 알림을 눌러 이미 열린 앱으로 돌아오면 sw.js 가 {type:"navigate"} 를 보낸다: 시험 중이 아니면 홈(오늘의 단어·종합 시험 카드)으로, 오늘의 단어와
+  // 보호자 설정(📝 보호자가 보낸 종합 시험)은 간격 제한 없이 바로 확인한다.
   if ("serviceWorker" in navigator)
     navigator.serviceWorker.addEventListener("message", (e) => {
       if (e.data?.type !== "navigate") return;
       if (!sessionRunning) showView("home");
+      fetchSettings({ force: true });
       checkDaily({ ignoreThrottle: true });
     });
   document.addEventListener("visibilitychange", () => {

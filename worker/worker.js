@@ -13,21 +13,24 @@
 //   GET  /family?days=<1~30>   헤더 X-App-Passcode(보호자 코드만) → { children:[{id,name,sets,lastTestAt,recordCount,streakDays,streakLastDay,…,records}], serverTime }
 //                              아이별 최근 days일(기본 14) 기록, 그보다 적으면 최근 20개. streakDays = 시험을 본 날(한국 날짜)이 streakLastDay(가장 최근에 본 날)까지
 //                              며칠 이어졌는지(전체 기록 기준, 중단 기록 포함 — 보호자 앱 computeStats 와 같다). ‘오늘·어제까지’인지는 앱이 판단한다
-//   GET  /family/<childId>?days=<1~365>&limit=<1~500>  보호자 코드 → { child, records, recordCount, more, questions, today }
+//   GET  /family/<childId>?days=<1~365>&limit=<1~500>  보호자 코드 → { child, records, recordCount, more, questions, today, exam }
 //                              기록은 최근 days일(기본 30) 안에서 최신순 최대 limit개(기본 200). recordCount = 그 아이의 전체 기록 수, more = 더 오래된 기록이 있음
 //   GET  /family/<childId>/records?before=<ISO>&limit=<1~500>  보호자 코드 → { records, more, serverTime }
 //                              보호자 앱의 ‘더 보기’: before 이전(미포함) 기록을 최신순으로 limit개(기본 100). before 가 없으면 최신부터
 //   DELETE /family/<childId>   보호자 코드 → { ok, deleted }
 //   POST /family/<childId>/plan  보호자 코드, JSON {enabled, level, dailyCount, hour, timeLimitSec, setsLocked, remindHour} → { ok, child }   (오늘의 단어 계획·아이 기기 설정, 빠진 항목은 유지)
+//   POST /family/<childId>/exam  보호자 코드, JSON {setIds?, count 5~100, pick: missed|random|even} → { ok, exam:{id, name, pick, setCount, missedWords, createdAt, words:[{setId,id,en,ko,ipa,hangul,aliases,missed}]} }
+//                                (종합 시험 보내기: 아이 세트에서 자주 틀린 단어 먼저 등으로 골라 저장, 아이 기기에 📝 알림. 아이당 하나라 새로 보내면 바뀐다)
+//   DELETE /family/<childId>/exam  보호자 코드 → { ok }   (보낸 종합 시험 거두기)
 //   GET  /daily/<childId>?date=  가족·보호자 코드 → 그날의 단어 { date, words:[{id,en,ko,ipa,aliases,kind}], level, completed? }
 //                                없으면 404 no_daily, 계획이 꺼져 있으면 409 plan_disabled
 //   POST /daily/<childId>        가족·보호자 코드, JSON {date?} → 없으면 Claude로 생성해 저장하고 돌려준다
 //   POST /family/children        보호자 코드, JSON {name} → { ok, child }   (아이 만들기: 6자리 아이 코드 발급)
 //   POST /family/<childId>/code  보호자 코드 → 아이 코드 새로 발급 { ok, child }  (옛 코드는 무효)
 //   POST /family/<childId>/name  보호자 코드, JSON {name} → 이름 바꾸기 { ok, child }
-//   POST /join                   가족·보호자 코드, JSON {code, device:{id,label}} → { ok, childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour }   (아이 기기 연결)
-//   GET  /settings/<childId>     가족·보호자 코드 → { childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour }
-//                                (아이 기기가 보호자 설정을 받아 감: 제한 시간·세트 수정 잠금·오늘의 단어 시각·공부 알림 시각)
+//   POST /join                   가족·보호자 코드, JSON {code, device:{id,label}} → { ok, childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour, exam }   (아이 기기 연결)
+//   GET  /settings/<childId>     가족·보호자 코드 → { childId, name, timeLimitSec, setsLocked, dailyEnabled, dailyHour, remindHour, exam }
+//                                (아이 기기가 보호자 설정을 받아 감: 제한 시간·세트 수정 잠금·오늘의 단어 시각·공부 알림 시각·보호자가 보낸 종합 시험(completed 포함, 없으면 null))
 //   GET  /records/<childId>?since=<ISO>&limit=<n>  가족·보호자 코드 → { records:[압축 기록…], more, serverTime }
 //                                아이 기기의 기록 복원(새 기기·재설치). since가 있으면 그 시각부터(포함) 오름차순, 없으면 최신순. 최대 500개
 //   GET  /push/key               가족·보호자 코드 → { publicKey }   (알림: VAPID 공개 키. 키가 없으면 503 push_unconfigured — 아래 /push/… 모두 같다)
@@ -36,7 +39,7 @@
 //   POST /push/unsubscribe       같은 코드, JSON {role, childId?, device:{id}} → { ok }   (없어도 ok)
 //   POST /push/test              같은 코드, JSON {role, childId?, device:{id}} → { ok, status }   (구독이 없으면 404 no_subscription, 푸시 서비스가 거절하면 502 push_failed)
 //   (크론, 매시) scheduled() → FamilyStore /cron: 계획 시각이 지난 아이의 그날 단어를 만들고(📬 도착 알림), 공부 리마인더·보호자 저녁 요약 알림을 보낸다
-//   알림 4종(Web Push, sendPush): daily(크론·보호자가 만든 오늘의 단어 → 아이 기기), reminder(아이별 remindHour 까지 오늘 시험이 없으면 → 아이 기기),
+//   알림(Web Push, sendPush): daily(크론·보호자가 만든 오늘의 단어 → 아이 기기), exam(보호자가 보낸 종합 시험 → 아이 기기), reminder(아이별 remindHour 까지 오늘 시험이 없으면 → 아이 기기),
 //                                finish(/sync 로 방금 끝낸 시험이 오면 → 보호자 폰), summary(보호자 기기별 summaryHour → 아이별 오늘 한 줄), test(/push/test)
 //
 // 비밀값: ANTHROPIC_API_KEY, APP_PASSCODE, PARENT_PASSCODE(선택: 보호자 폰에서 아이들 기록 보기), VAPID_PRIVATE_KEY(선택: 알림)   (wrangler secret put ...)
@@ -135,6 +138,14 @@ const MAX_SET_NAME = 120;
 const MAX_WORD_ALIASES = 30;
 const MAX_SET_TOMBSTONES = 200;
 
+// ---- 보호자가 보내는 종합 시험 ----
+// 보호자가 아이 세트에서 문제를 골라(자주 틀린 단어 먼저·무작위·세트별 골고루) 아이에게 보낸다. 아이당 하나(exam:<childId>), 새로 보내면 바뀐다.
+// 아이 기기는 GET /settings·/join 응답의 exam 으로 받아 홈 카드에서 풀고, 그 기록(exam = 시험 id)이 /sync 로 오면 처음 끝낸 결과를 completed 에 둔다.
+const EXAM_PATH = /^\/family\/([A-Za-z0-9-]{8,64})\/exam$/;
+const EXAM_PICKS = ["missed", "random", "even"];
+const EXAM_COUNT_MIN = 5;
+const EXAM_COUNT_MAX = 100;
+
 // ---- 알림(2B, Web Push) 규칙 ----
 // 구독(FamilyStore): push:child:<childId>:<deviceId> / push:parent:<deviceId> → {endpoint, keys:{p256dh, auth}, label, createdAt, updatedAt, lastOkAt, failures(, kinds, summaryHour)}
 // 하루 1번 표시: sent:<scope(childId 또는 보호자 deviceId)>:<YYYY-MM-DD>:<kind>. 크론이 3일 지난 표시를 지운다.
@@ -144,7 +155,7 @@ const MAX_PARENT_PUSH = 5; // 보호자 기기 수(아이 기기는 아이당 MA
 const MAX_PUSH_ENDPOINT = 1000;
 const PUSH_TIMEOUT_MS = 10000;
 const PUSH_MAX_FAILURES = 5; // 연달아 이만큼 실패하면 구독을 지운다
-const PUSH_TTL = { daily: 86400, reminder: 86400, summary: 86400, finish: 3600, test: 300 }; // 기기가 꺼져 있을 때 푸시 서비스가 보관하는 시간(초)
+const PUSH_TTL = { daily: 86400, exam: 86400, reminder: 86400, summary: 86400, finish: 3600, test: 300 }; // 기기가 꺼져 있을 때 푸시 서비스가 보관하는 시간(초)
 const PUSH_SENT_KEEP_DAYS = 3;
 const FINISH_MAX_AGE_MS = 6 * 3600000; // 이보다 오래전에 끝난 기록은 ‘방금 끝낸 시험’이 아니다(밀린 기록·재연결)
 const FINISH_MAX_SKEW_MS = 10 * 60000; // 기기 시계가 조금 빠른 것은 봐준다
@@ -488,6 +499,7 @@ export class AnthropicRelay {
 //   rec:<childId>:<completedAt ISO>:<recordId>   압축 기록 {id, setName, mode, range, startedAt, completedAt, total, correct, partial, activeMs, missed, receivedAt}
 //   push:child:<childId>:<deviceId> / push:parent:<deviceId>   알림 구독 {endpoint, keys, label, createdAt, updatedAt, lastOkAt, failures(, kinds, summaryHour)}
 //   sent:<childId 또는 보호자 deviceId>:<YYYY-MM-DD>:<kind>   하루 1번 알림(reminder·summary)을 보냈다는 표시(3일 뒤 크론이 지움)
+//   exam:<childId>                               보호자가 보낸 종합 시험 {id, name, pick, setCount, missedWords, createdAt, words, completed?} (아이당 하나)
 // 같은 기록을 다시 보내면 같은 키라 덮어쓴다. 키가 완료 시각 순이라 prefix 나열이 곧 시간순이다.
 export class FamilyStore {
   constructor(state, env = {}) {
@@ -528,6 +540,9 @@ export class FamilyStore {
     if (childSets && !childSets[2] && method === "POST") return this.putSet(childSets[1], await readBody());
     if (childSets && childSets[2] && method === "GET") return this.getSet(childSets[1], childSets[2]);
     if (childSets && childSets[2] && method === "DELETE") return this.deleteSet(childSets[1], childSets[2]);
+    const exam = EXAM_PATH.exec(url.pathname);
+    if (exam && method === "POST") return this.makeExam(exam[1], await readBody());
+    if (exam && method === "DELETE") return this.removeExam(exam[1]);
     const daily = DAILY_PATH.exec(url.pathname);
     if (daily && method === "GET") return this.getDaily(daily[1], url.searchParams.get("date"));
     if (daily && method === "POST") {
@@ -568,6 +583,12 @@ export class FamilyStore {
   }
   dailyKey(childId, date) {
     return "daily:" + childId + ":" + date;
+  }
+  examKey(childId) {
+    return "exam:" + childId;
+  }
+  async examOf(childId) {
+    return (await this.storage.get(this.examKey(childId))) || null;
   }
   planOf(child) {
     return { ...DAILY_DEFAULTS, ...(child?.plan || {}) };
@@ -618,6 +639,7 @@ export class FamilyStore {
     if (anchor && !anchor.words.length) delete next.anchor; // 빈 앵커 = 기기에 수준 기준으로 쓸 세트가 없다(예제뿐): 옛 수준 기준을 지운다
     await this.putMany({ ...entries, [key]: next });
     for (const r of records) if (r.daily && !r.partial) await this.markDaily(child.id, r); // 오늘의 단어로 본 시험(중단 제외)이면 그날 것에 완료 표시
+    for (const r of records) if (r.exam && !r.partial) await this.markExam(child.id, r); // 보호자가 보낸 종합 시험(중단 제외)이면 그 시험에 완료 표시
     let trimmed = 0;
     if (next.recordCount > MAX_CHILD_RECORDS) {
       const all = await this.storage.list({ prefix: this.recordPrefix(child.id) });
@@ -636,6 +658,13 @@ export class FamilyStore {
     if (!d) return;
     if (d.completed && d.completed.completedAt >= r.completedAt) return;
     await this.storage.put(key, { ...d, completed: { recordId: r.id, correct: r.correct, total: r.total, completedAt: r.completedAt } });
+  }
+  // 종합 시험은 처음 끝낸 결과를 남긴다(‘한 번 더 풀기’는 기록에만). 다른 시험 id(그사이 보호자가 새로 보냄)면 무시.
+  async markExam(childId, r) {
+    const e = await this.examOf(childId);
+    if (!e || e.id !== r.exam) return;
+    if (e.completed && e.completed.completedAt <= r.completedAt) return;
+    await this.storage.put(this.examKey(childId), { ...e, completed: { recordId: r.id, correct: r.correct, total: r.total, completedAt: r.completedAt } });
   }
   async todayOf(childId, date) {
     const d = await this.storage.get(this.dailyKey(childId, date));
@@ -688,6 +717,7 @@ export class FamilyStore {
       more,
       questions,
       today: { date: today, exists: Boolean(daily), words: daily?.words || [], note: daily?.note || "", completed: daily?.completed || null },
+      exam: await this.examOf(childId), // 보호자가 보낸 종합 시험(없으면 null)
     });
   }
   async remove(childId) {
@@ -699,7 +729,7 @@ export class FamilyStore {
     const questionKeys = [...(await this.storage.list({ prefix: this.questionPrefix(childId) })).keys()];
     const pushKeys = [...(await this.storage.list({ prefix: this.pushPrefix("child", childId) })).keys()]; // 이 아이 기기들의 알림 구독
     const sentKeys = [...(await this.storage.list({ prefix: "sent:" + childId + ":" })).keys()];
-    await this.deleteMany([...keys, ...dailies, ...setKeys, ...questionKeys, ...pushKeys, ...sentKeys, "served:" + childId, "child:" + childId, ...(c.joinCode ? ["code:" + c.joinCode] : [])]);
+    await this.deleteMany([...keys, ...dailies, ...setKeys, ...questionKeys, ...pushKeys, ...sentKeys, "served:" + childId, this.examKey(childId), "child:" + childId, ...(c.joinCode ? ["code:" + c.joinCode] : [])]);
     await this.storage.put("gone:" + childId, { deletedAt: new Date().toISOString() }); // 연결돼 있던 기기의 /sync 가 아이를 되살리지 못하게 묘비를 남긴다
     return json(200, { ok: true, deleted: keys.length });
   }
@@ -750,7 +780,7 @@ export class FamilyStore {
       return json(404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요. 보호자 폰의 아이들 탭에서 코드를 다시 확인해 주세요." });
     const now = new Date().toISOString();
     await this.storage.put("child:" + c.id, { ...c, devices: registerDevice(c.devices, parseDevice(body?.device), now), updatedAt: now });
-    return json(200, { ok: true, childId: c.id, name: c.name, ...this.deviceSettingsOf(c) });
+    return json(200, { ok: true, childId: c.id, name: c.name, ...this.deviceSettingsOf(c), exam: await this.examOf(c.id) });
   }
   // 아이 기기가 받아 가는 보호자 설정: 문제당 제한 시간, 세트 수정 잠금, 오늘의 단어 켜짐·시각, 공부 알림 시각. 오늘의 단어 계획(plan)에 함께 저장돼 있다.
   // (오늘의 단어·공부 알림 시각은 아이 앱의 알림 상태 문구와 갤럭시 앱의 로컬 알림 시각에 쓴다)
@@ -764,11 +794,11 @@ export class FamilyStore {
       remindHour: Number.isInteger(plan.remindHour) ? plan.remindHour : null,
     };
   }
-  // 아이 기기용 보호자 설정(이름·문제당 제한 시간·세트 수정 잠금·알림 시각). 가족 코드로 읽는다.
+  // 아이 기기용 보호자 설정(이름·문제당 제한 시간·세트 수정 잠금·알림 시각)과 보호자가 보낸 종합 시험(exam, 없으면 null). 가족 코드로 읽는다.
   async settings(childId) {
     const c = await this.storage.get("child:" + childId);
     if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다." });
-    return json(200, { childId, name: c.name, ...this.deviceSettingsOf(c) });
+    return json(200, { childId, name: c.name, ...this.deviceSettingsOf(c), exam: await this.examOf(childId) });
   }
   // 기록 복원(아이 기기, 가족 코드): 서버에 있는 이 아이의 압축 기록을 돌려준다. 새 기기나 다시 설치한 앱이 기록 탭을 채우는 데 쓴다.
   // since(ISO)가 있으면 그 시각부터(포함) 오름차순으로 limit개(앱은 마지막 completedAt을 다음 since로 넘기며 id로 겹침을 걸러낸다), 없으면 최신순 limit개.
@@ -903,6 +933,66 @@ export class FamilyStore {
     const summary = this.setSummary(live);
     await this.putMany({ [this.setPrefix(childId) + setId]: tomb, ["child:" + childId]: { ...c, sets: summary, setsSyncedAt: now, updatedAt: now } });
     return json(200, { ok: true, summary });
+  }
+  // ---- 보호자가 보내는 종합 시험 ----
+  // 고른 세트(setIds 가 없으면 전부)의 단어에서 count 문제를 골라 저장하고 아이 기기에 📝 알림. 같은 영어 단어가 여러 세트에 있으면 한 번만 낸다.
+  // 문제마다 출처 세트 id(setId)와 기록 전체에서 틀린 횟수(missed)를 붙인다 — 아이 기기는 틀린 단어를 그 세트의 오답 목록에 넣고, 보호자 앱은 횟수를 보여 준다.
+  async makeExam(childId, body) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    const parsed = parseExamRequest(body);
+    if (parsed.error) return json(400, { error: "bad_request", message: parsed.error });
+    const { setIds, count, pick } = parsed;
+    const misses = await this.missCounts(childId);
+    const seen = new Set();
+    const groups = (await this.storedSets(childId))
+      .filter((s) => !s.deletedAt && (!setIds || setIds.includes(s.id)))
+      .map((s) => ({
+        words: s.words
+          .filter((w) => {
+            const k = w.en.toLowerCase();
+            if (seen.has(k)) return false;
+            seen.add(k);
+            return true;
+          })
+          .map((w) => ({ setId: s.id, ...w, missed: misses.get(w.en.toLowerCase())?.n || 0 })),
+      }))
+      .filter((g) => g.words.length);
+    if (!groups.length) return json(400, { error: "no_words", message: "고른 세트에 단어가 없어요. 세트를 먼저 보내거나 다른 세트를 골라 주세요." });
+    const words = pickExamWords(groups, count, pick, misses);
+    const { date } = kstNow();
+    const exam = {
+      id: crypto.randomUUID(),
+      name: `종합 시험 ${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`,
+      pick,
+      setCount: groups.length,
+      missedWords: words.filter((w) => w.missed > 0).length,
+      createdAt: new Date().toISOString(),
+      words,
+    };
+    await this.storage.put(this.examKey(childId), exam);
+    this.later("push_exam_failed", () => this.pushToChild(childId, "exam", PUSH_TEXT.exam(exam)));
+    return json(200, { ok: true, exam });
+  }
+  async removeExam(childId) {
+    const c = await this.storage.get("child:" + childId);
+    if (!c) return json(404, { error: "unknown_child", message: "그 아이의 기록이 없습니다. 목록을 새로고침해 주세요." });
+    await this.storage.delete(this.examKey(childId));
+    return json(200, { ok: true });
+  }
+  // 이 아이의 기록 전체(아이당 5,000개까지)에서 틀린 단어(영어, 소문자) → {n: 틀린 횟수(중단 기록 포함), last: 마지막으로 틀린 시각}
+  async missCounts(childId) {
+    const out = new Map();
+    for (const r of (await this.storage.list({ prefix: this.recordPrefix(childId) })).values())
+      for (const m of Array.isArray(r?.missed) ? r.missed : []) {
+        const k = String(m?.en || "").toLowerCase();
+        if (!k) continue;
+        const cur = out.get(k) || { n: 0, last: "" };
+        cur.n++;
+        if (String(r.completedAt) > cur.last) cur.last = String(r.completedAt);
+        out.set(k, cur);
+      }
+    return out;
   }
   // ---- 오늘의 단어 ----
   async savePlan(childId, body) {
@@ -1229,6 +1319,52 @@ function parsePlan(body, current) {
   return { plan };
 }
 
+// 보호자가 보내는 종합 시험(POST /family/<childId>/exam): {setIds?: 세트 id 배열(없거나 null = 모든 세트), count: 5~100, pick?: missed(기본)|random|even}
+function parseExamRequest(body) {
+  let setIds = null;
+  if (body?.setIds !== undefined && body.setIds !== null) {
+    const raw = body.setIds;
+    if (!Array.isArray(raw) || !raw.length || raw.length > MAX_CHILD_SETS || !raw.every((id) => typeof id === "string" && SET_ID_PATTERN.test(id)))
+      return { error: `setIds는 세트 id 배열(1~${MAX_CHILD_SETS}개)이어야 합니다.` };
+    setIds = [...new Set(raw)];
+  }
+  const count = body?.count;
+  if (!Number.isInteger(count) || count < EXAM_COUNT_MIN || count > EXAM_COUNT_MAX)
+    return { error: `문제 수(count)는 ${EXAM_COUNT_MIN}~${EXAM_COUNT_MAX}개여야 합니다.` };
+  const pick = body?.pick === undefined ? "missed" : body.pick;
+  if (!EXAM_PICKS.includes(pick)) return { error: "뽑는 방법(pick)은 missed·random·even 중 하나여야 합니다." };
+  return { setIds, count, pick };
+}
+// 종합 시험 문제 고르기(순수 함수). groups: 세트별 [{words:[{…, missed}]}](같은 영어 단어는 이미 한 번만), misses: missCounts 결과.
+//  missed: 틀린 횟수가 많은 단어부터(같으면 최근에 틀린 것부터) 고르고, 모자라면 나머지에서 무작위로 채운다.
+//  even: 세트를 번갈아 가며 하나씩. random: 무작위. 문제 순서는 아이 기기가 풀 때마다 섞는다.
+function pickExamWords(groups, count, pick, misses = new Map(), random = Math.random) {
+  const shuffled = (list) => {
+    const a = list.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  };
+  const all = groups.flatMap((g) => g.words);
+  if (pick === "even") {
+    const queues = groups.map((g) => shuffled(g.words));
+    const out = [];
+    for (let i = 0; out.length < count && queues.some((q) => q.length); i++) {
+      const q = queues[i % queues.length];
+      if (q.length) out.push(q.shift());
+    }
+    return out;
+  }
+  if (pick === "missed") {
+    const last = (w) => misses.get(w.en.toLowerCase())?.last || "";
+    const often = shuffled(all.filter((w) => w.missed > 0)).sort((a, b) => b.missed - a.missed || last(b).localeCompare(last(a)));
+    return [...often, ...shuffled(all.filter((w) => !(w.missed > 0)))].slice(0, count);
+  }
+  return shuffled(all).slice(0, count);
+}
+
 // 아이 기기 정보(선택). 형식이 틀리면 무시한다.
 function parseDevice(d) {
   if (!d || typeof d !== "object" || !CHILD_ID_PATTERN.test(String(d.id || ""))) return null;
@@ -1297,6 +1433,7 @@ function parseSync(body) {
       activeMs: Number.isInteger(r.activeMs) && r.activeMs >= 0 ? Math.min(r.activeMs, 7 * 86400000) : null,
       missed,
       ...(typeof r.daily === "string" && DATE_PATTERN.test(r.daily) ? { daily: r.daily } : {}), // 오늘의 단어로 본 시험
+      ...(typeof r.exam === "string" && RECORD_ID_PATTERN.test(r.exam) ? { exam: r.exam } : {}), // 보호자가 보낸 종합 시험(시험 id)으로 본 시험
       // 문제 중 화면 이탈(앱이 가려짐·다른 앱) 횟수·시간: 보호자 폰에 ⚠️로 표시
       ...(Number.isInteger(r.awayCount) && r.awayCount > 0
         ? { awayCount: Math.min(r.awayCount, 10000), awayMs: Number.isInteger(r.awayMs) && r.awayMs >= 0 ? Math.min(r.awayMs, 86400000) : 0 }
@@ -1512,6 +1649,12 @@ const PUSH_TEXT = {
       tag: "daily",
     };
   },
+  exam: (e) => ({
+    title: "📝 종합 시험이 도착했어요",
+    body: `보호자가 보낸 ${e.words.length}문제` + (e.missedWords ? ` · 자주 틀린 단어 ${e.missedWords}개` : "") + " · 앱을 열어 풀어 보세요",
+    url: "./",
+    tag: "exam",
+  }),
   reminder: () => ({ title: "✏️ 오늘 아직 단어 시험을 안 봤어요", body: "짧게라도 한 번 풀어 볼까요?", url: "./", tag: "reminder" }),
   finish(childId, name, r) {
     const pct = Math.round((r.correct / r.total) * 100);
@@ -1564,7 +1707,7 @@ function parsePushRequest(action, body) {
 }
 
 // /sync, /join, /sets, /daily…, /family…, /push… 처리. 오늘의 단어 생성 외에는 Anthropic을 부르지 않는다.
-// kind: sync·join·sets·daily·settings·records(가족 또는 보호자 코드) / view(보호자 코드만: 기록 보기·‘더 보기’ 페이지·삭제·아이 만들기·계획·코드·이름·세트)
+// kind: sync·join·sets·daily·settings·records(가족 또는 보호자 코드) / view(보호자 코드만: 기록 보기·‘더 보기’ 페이지·삭제·아이 만들기·계획·코드·이름·세트·종합 시험)
 //       push(알림: 키는 두 코드 모두, 아이 기기 구독은 가족 코드, 보호자 구독은 보호자 코드만. VAPID 키가 없으면 503 push_unconfigured)
 async function family(request, env, path, cors) {
   if (!env.APP_PASSCODE)
@@ -2072,6 +2215,7 @@ export default {
       (CHILD_RECORDS_PATH.test(path) && request.method === "GET") ||
       (CHILDREN_PATH.test(path) && request.method === "POST") ||
       (CHILD_ACTION_PATH.test(path) && request.method === "POST") ||
+      (EXAM_PATH.test(path) && ["POST", "DELETE"].includes(request.method)) ||
       (path === "/join" && request.method === "POST") ||
       (SETS_PATH.test(path) && request.method === "POST") ||
       (CHILD_SETS_PATH.test(path) && ["GET", "POST", "DELETE"].includes(request.method)) ||

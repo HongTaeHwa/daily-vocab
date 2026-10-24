@@ -1,8 +1,8 @@
 // 가짜 가족 Worker — tests/family.cjs · daily.cjs · parent.cjs · parent-sets.cjs 공용. Playwright 라우트로 worker/worker.js 의 FamilyStore 역할을 흉내 낸다.
 // 라우트: /join /settings/<id> /records/<id> /sync /sets/<id> /daily/<id> /grade /recognize /define /push/(key|subscribe|unsubscribe|test), 보호자 /family /family/<id> /family/<id>/records /family/children
-//        /family/<id>/(plan|code|name) /family/<id>/sets(/<setId>). 질문(/tutor 의 FamilyStore /question)은 seedChild 뒤 child.questions 에 직접 넣는다.
+//        /family/<id>/(plan|code|name) /family/<id>/sets(/<setId>) /family/<id>/exam. 질문(/tutor 의 FamilyStore /question)은 seedChild 뒤 child.questions 에 직접 넣는다.
 //
-// const fake = await createFakeWorker(page, { server, familyCode, parentCode, setSync, daily, recordsPageSize, pagedDetail, detailPageSize, newWords, push });
+// const fake = await createFakeWorker(page, { server, familyCode, parentCode, setSync, daily, recordsPageSize, pagedDetail, detailPageSize, newWords, push, exam });
 //   setSync (기본 true)       /sets/<id>·/family/<id>/sets 를 처리한다. false 면 옛 Worker처럼 404 not_found 이고 아이에게 세트 저장소가 없다(요약은 /sync 의 세트 목록).
 //   daily (기본 true)         /daily/<id> 조회·생성(복습 최대 3 + newWords). false 면 언제나 409 plan_disabled.
 //   recordsPageSize (기본 500) /records 한 페이지 최대 개수(페이지 넘김을 시험하려면 작게).
@@ -11,6 +11,8 @@
 //   detailPageSize (기본 500)  /family/<id>/records 한 페이지 최대 개수(‘더 보기’ 페이지 넘김을 시험하려면 작게).
 //   push (기본 true)          알림 경로: GET /push/key → {publicKey}, POST /push/subscribe·unsubscribe·test(아이 role 은 가족·보호자 코드, 보호자 role 은 보호자 코드만).
 //                             false 면 VAPID 키가 없는 Worker 처럼 /push/… 가 503 push_unconfigured.
+//   exam (기본 true)          보호자가 보내는 종합 시험: POST·DELETE /family/<id>/exam(보호자 코드), /settings·/join·상세의 exam, /sync 의 exam 으로 완료 표시.
+//                             아이 항목의 exam 에 직접 넣어도 된다(child.exam). false 면 옛 Worker 처럼 경로가 404 not_found 이고 응답에 exam 이 없다.
 //   목록(GET /family)의 기록은 Worker와 같이 최근 14일(20개 미만이면 최신 20개)이다.
 // → { requests, children, codes, gone, dailies, pushSubs, paths(path, method?), seedChild(id, name, code), liveSets(child), planOf(child), setMode("ok"|"abort"|"notfound") }
 //   pushSubs: Map("child:<childId>:<deviceId>" | "parent:<deviceId>" → 구독 요청 본문)
@@ -18,7 +20,7 @@
 "use strict";
 const DEFAULT_NEW_WORDS = ["glimpse", "verdict", "linger", "thrive", "plead", "subtle", "wither", "forge", "ample", "dwell", "exert", "notion"];
 
-async function createFakeWorker(page, { server, familyCode, parentCode, setSync = true, daily = true, recordsPageSize = 500, pagedDetail = true, detailPageSize = 500, newWords = DEFAULT_NEW_WORDS, push = true } = {}) {
+async function createFakeWorker(page, { server, familyCode, parentCode, setSync = true, daily = true, recordsPageSize = 500, pagedDetail = true, detailPageSize = 500, newWords = DEFAULT_NEW_WORDS, push = true, exam = true } = {}) {
   const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "GET, POST, DELETE, OPTIONS" };
   const reply = (route, status, body) => route.fulfill({ status, headers: cors, contentType: "application/json", body: JSON.stringify(body) });
   const notFound = (route) => reply(route, 404, { error: "not_found", message: "지원하지 않는 요청입니다." });
@@ -28,7 +30,7 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
   const gone = new Set(); // 보호자가 지운 아이 id(Worker의 gone:<id> 묘비): 그 id의 /sync 는 404 unknown_child
   const dailies = new Map(); // childId:date → 오늘의 단어
   const pushSubs = new Map(); // 알림 구독
-  let nextCode = 777777, nextSetId = 1, mode = "ok";
+  let nextCode = 777777, nextSetId = 1, nextExamId = 1, mode = "ok";
   const now = () => new Date().toISOString();
   const localDate = () => {
     const d = new Date();
@@ -39,6 +41,40 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
   const deviceSettings = (c) => {
     const p = planOf(c);
     return { timeLimitSec: p.timeLimitSec, setsLocked: p.setsLocked, dailyEnabled: p.enabled === true, dailyHour: p.hour, remindHour: Number.isInteger(p.remindHour) ? p.remindHour : null };
+  };
+  const examField = (c) => (exam ? { exam: c.exam || null } : {});
+  // 종합 시험 만들기(Worker makeExam 과 같은 규칙, 무작위 대신 세트 순서): 기록 전체의 틀린 횟수, 같은 영어 단어는 한 번만
+  const makeExam = (c, { setIds = null, count, pick = "missed" }) => {
+    const misses = new Map();
+    for (const r of c.records.values())
+      for (const m of r.missed || []) {
+        const k = m.en.toLowerCase();
+        const cur = misses.get(k) || { n: 0, last: "" };
+        cur.n++;
+        if (r.completedAt > cur.last) cur.last = r.completedAt;
+        misses.set(k, cur);
+      }
+    const seen = new Set();
+    const groups = liveSets(c)
+      .filter((st) => !setIds || setIds.includes(st.id))
+      .map((st) => st.words.filter((w) => !seen.has(w.en.toLowerCase()) && seen.add(w.en.toLowerCase())).map((w) => ({ setId: st.id, ...w, missed: misses.get(w.en.toLowerCase())?.n || 0 })))
+      .filter((g) => g.length);
+    if (!groups.length) return null;
+    const all = groups.flat();
+    let words;
+    if (pick === "even") {
+      const queues = groups.map((g) => g.slice());
+      words = [];
+      for (let i = 0; words.length < count && queues.some((q) => q.length); i++) {
+        const q = queues[i % queues.length];
+        if (q.length) words.push(q.shift());
+      }
+    } else if (pick === "missed") {
+      const last = (w) => misses.get(w.en.toLowerCase())?.last || "";
+      words = [...all.filter((w) => w.missed > 0).sort((a, b) => b.missed - a.missed || last(b).localeCompare(last(a))), ...all.filter((w) => !w.missed)].slice(0, count);
+    } else words = all.slice(0, count);
+    const d = new Date();
+    return { id: "exam-" + nextExamId++, name: `종합 시험 ${d.getMonth() + 1}/${d.getDate()}`, pick, setCount: groups.length, missedWords: words.filter((w) => w.missed > 0).length, createdAt: now(), words };
   };
   const seedChild = (id, name, code) => {
     children.set(id, { id, name, joinCode: code, devices: {}, sets: [], ...(setSync ? { setStore: new Map() } : {}), records: new Map(), questions: [], lastTestAt: null, createdBy: "parent" });
@@ -117,14 +153,14 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
       const c = children.get(codes.get(code));
       if (!c || c.joinCode !== code) return reply(route, 404, { error: "unknown_code", message: "그 아이 코드를 찾을 수 없어요." });
       touchDevice(c, body.device);
-      return reply(route, 200, { ok: true, childId: c.id, name: c.name, ...deviceSettings(c) });
+      return reply(route, 200, { ok: true, childId: c.id, name: c.name, ...deviceSettings(c), ...examField(c) });
     }
     const sm = /^\/settings\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (sm && req.method() === "GET") {
       if (!familyOk) return unauthorized();
       const c = children.get(sm[1]);
       if (!c) return unknownChild();
-      return reply(route, 200, { childId: c.id, name: c.name, ...deviceSettings(c) });
+      return reply(route, 200, { childId: c.id, name: c.name, ...deviceSettings(c), ...examField(c) });
     }
     const rm = /^\/records\/([A-Za-z0-9-]+)$/.exec(url.pathname);
     if (rm && req.method() === "GET") {
@@ -153,6 +189,9 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
         if (!c.lastTestAt || r.completedAt > c.lastTestAt) c.lastTestAt = r.completedAt;
         const d = r.daily && !r.partial ? dailies.get(c.id + ":" + r.daily) : null;
         if (d) d.completed = { recordId: r.id, correct: r.correct, total: r.total, completedAt: r.completedAt };
+        // 종합 시험: 그 시험 id 의 완료 기록 중 가장 먼저 끝낸 것
+        if (exam && c.exam && r.exam === c.exam.id && !r.partial && (!c.exam.completed || r.completedAt < c.exam.completed.completedAt))
+          c.exam = { ...c.exam, completed: { recordId: r.id, correct: r.correct, total: r.total, completedAt: r.completedAt } };
       }
       children.set(c.id, c);
       return reply(route, 200, { ok: true, stored: body.records.length, trimmed: 0, syncedAt: c.updatedAt });
@@ -236,7 +275,8 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
     const m = /^\/family(?:\/([A-Za-z0-9-]+))?$/.exec(url.pathname);
     const csm = setSync ? /^\/family\/([A-Za-z0-9-]+)\/sets(?:\/([A-Za-z0-9_-]+))?$/.exec(url.pathname) : null;
     const pm = pagedDetail && req.method() === "GET" ? /^\/family\/([A-Za-z0-9-]+)\/records$/.exec(url.pathname) : null;
-    if (!cm && !am && !m && !csm && !pm) return notFound(route);
+    const em = exam && ["POST", "DELETE"].includes(req.method()) ? /^\/family\/([A-Za-z0-9-]+)\/exam$/.exec(url.pathname) : null;
+    if (!cm && !am && !m && !csm && !pm && !em) return notFound(route);
     if (passcode !== parentCode) return reply(route, 401, { error: "unauthorized", message: "보호자 코드가 맞지 않습니다." });
     if (pm) {
       // ‘더 보기’: before 보다 먼저 끝난(미포함) 기록을 최신순으로
@@ -247,6 +287,19 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
       const limit = Math.min(Number(url.searchParams.get("limit")) || 100, detailPageSize);
       const all = newestFirst(c).filter((r) => !before || r.completedAt < new Date(before).toISOString());
       return reply(route, 200, { records: all.slice(0, limit), more: all.length > limit, serverTime: now() });
+    }
+    if (em) {
+      const c = children.get(em[1]);
+      if (!c) return unknownChild();
+      if (req.method() === "DELETE") {
+        delete c.exam;
+        return reply(route, 200, { ok: true });
+      }
+      if (!Number.isInteger(body?.count) || body.count < 5 || body.count > 100) return reply(route, 400, { error: "bad_request", message: "문제 수(count)는 5~100개여야 합니다." });
+      const made = makeExam(c, body);
+      if (!made) return reply(route, 400, { error: "no_words", message: "고른 세트에 단어가 없어요. 세트를 먼저 보내거나 다른 세트를 골라 주세요." });
+      c.exam = made;
+      return reply(route, 200, { ok: true, exam: made });
     }
     if (csm) {
       const c = children.get(csm[1]);
@@ -309,6 +362,7 @@ async function createFakeWorker(page, { server, familyCode, parentCode, setSync 
       ...window,
       today: { date: localDate(), exists: Boolean(d), words: d?.words || [], note: "", completed: d?.completed || null },
       questions: c.questions || [],
+      ...examField(c),
     });
   });
 

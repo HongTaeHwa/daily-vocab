@@ -759,7 +759,7 @@ const { pathToFileURL } = require("url");
   assert.equal(data.child.plan.timeLimitSec, 15);
   assert.equal(data.child.plan.dailyCount, 5, "other plan fields kept");
   data = await familyCase("/settings/" + kid.id, { method: "GET" }, 200);
-  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15, setsLocked: false, dailyEnabled: true, dailyHour: 16, remindHour: null }, "settings for the device");
+  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15, setsLocked: false, dailyEnabled: true, dailyHour: 16, remindHour: null, exam: null }, "settings for the device");
   await familyCase("/settings/99999999-aaaa-4bbb-8ccc-dddddddddddd", { method: "GET" }, 404, "unknown_child");
   await familyCase("/settings/" + kid.id, { method: "GET", passcode: "nope" }, 401);
   await familyCase("/settings/" + kid.id, { method: "POST", body: {} }, 404);
@@ -768,7 +768,7 @@ const { pathToFileURL } = require("url");
   data = await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { setsLocked: true } }, 200);
   assert.deepEqual([data.child.plan.setsLocked, data.child.plan.timeLimitSec, data.child.plan.dailyCount], [true, 15, 5], "lock stored without touching the other plan fields");
   data = await familyCase("/settings/" + kid.id, { method: "GET" }, 200);
-  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15, setsLocked: true, dailyEnabled: true, dailyHour: 16, remindHour: null }, "settings carry the lock to the device");
+  assert.deepEqual(data, { childId: kid.id, name: "한결", timeLimitSec: 15, setsLocked: true, dailyEnabled: true, dailyHour: 16, remindHour: null, exam: null }, "settings carry the lock to the device");
   data = await familyCase("/family/" + kid.id + "/plan", { ...PARENT, body: { setsLocked: false } }, 200);
   assert.equal(data.child.plan.setsLocked, false, "lock released");
   await familyCase("/sync", { body: { child: kid, records: [rec("kt", hoursAgo(0.2), { total: 4, correct: 2, timeouts: 2, missed: [] })] } }, 200);
@@ -1049,6 +1049,79 @@ const { pathToFileURL } = require("url");
   await familyCase("/sets/" + sid, { body: {} }, 404, "unknown_child");
   assert.equal([...(await familyObject.storage.list({ prefix: "set:" + sid + ":" })).keys()].length, 0, "set keys removed with the child");
   assert.equal([...(await familyObject.storage.list({ prefix: "q:" + sid + ":" })).keys()].length, 0, "question keys removed with the child");
+
+  // ---- 보호자가 보내는 종합 시험: POST·DELETE /family/<childId>/exam(보호자 코드) → /settings·/join·상세의 exam, /sync 의 exam 으로 완료 표시 ----
+  const ekid = (await familyCase("/family/children", { ...PARENT, body: { name: "시험아이" } }, 200)).child;
+  const echild = { id: ekid.id, name: "시험아이" };
+  const examPath = "/family/" + ekid.id + "/exam";
+  await familyCase(examPath, { body: { count: 10 } }, 401, "보호자 코드");
+  await familyCase(examPath, { method: "GET", ...PARENT }, 404, "not_found");
+  await familyCase("/family/99999999-aaaa-4bbb-8ccc-dddddddddddd/exam", { ...PARENT, body: { count: 10 } }, 404, "unknown_child");
+  for (const [body, field] of [
+    [{}, "count"], [{ count: 4 }, "count"], [{ count: 101 }, "count"], [{ count: 10.5 }, "count"], [{ count: "10" }, "count"],
+    [{ count: 10, pick: "often" }, "pick"], [{ count: 10, setIds: [] }, "setIds"], [{ count: 10, setIds: ["bad id"] }, "setIds"], [{ count: 10, setIds: "exam-set-1" }, "setIds"],
+  ])
+    await familyCase(examPath, { ...PARENT, body }, 400, field);
+  await familyCase(examPath, { ...PARENT, body: { count: 10 } }, 400, "no_words"); // 아직 세트가 없다
+  // 세트 두 개(Amend 가 두 세트에 겹침) + 기록: amend 3번, alter 2번(더 최근), assess 2번, apple 1번 틀림(중단 기록도 센다)
+  const eSet1 = { id: "exam-set-1", name: "DAY 05", words: [word(161, "amend", "수정하다"), word(162, "alter", "바꾸다"), word(163, "assess", "평가하다"), word(164, "adopt", "채택하다")] };
+  const eSet2 = { id: "exam-set-2", name: "과일", words: [word(1, "apple", "사과"), word(2, "Amend", "고치다"), word(3, "banana", "바나나"), word(4, "cherry", "체리")] };
+  for (const set of [eSet1, eSet2]) await familyCase("/family/" + ekid.id + "/sets", { ...PARENT, body: { set } }, 200);
+  const miss = (...ens) => ens.map((en) => ({ en, ko: "뜻" }));
+  await familyCase("/sync", {
+    body: {
+      child: echild,
+      records: [
+        rec("m1", hoursAgo(50), { missed: miss("amend", "assess", "apple") }),
+        rec("m2", hoursAgo(40), { missed: miss("AMEND", "assess") }),
+        rec("m3", hoursAgo(30), { partial: true, missed: miss("amend", "alter") }),
+        rec("m4", hoursAgo(20), { missed: miss("alter") }),
+      ],
+    },
+  }, 200);
+  let exam = (await familyCase(examPath, { ...PARENT, body: { count: 5 } }, 200)).exam; // pick 기본 = 자주 틀린 단어 먼저
+  assert.deepEqual(
+    exam.words.slice(0, 4).map((w) => [w.en, w.missed, w.setId]),
+    [["amend", 3, "exam-set-1"], ["alter", 2, "exam-set-1"], ["assess", 2, "exam-set-1"], ["apple", 1, "exam-set-2"]],
+    "most-missed first, ties → most recently missed: " + JSON.stringify(exam.words),
+  );
+  assert(["adopt", "banana", "cherry"].includes(exam.words[4].en) && exam.words[4].missed === 0, "the rest fills up (Amend from the 2nd set is a duplicate)");
+  assert.deepEqual(
+    [exam.pick, exam.setCount, exam.missedWords, exam.words.length, /^[0-9a-f-]{36}$/.test(exam.id), /^종합 시험 \d{1,2}\/\d{1,2}$/.test(exam.name), exam.completed],
+    ["missed", 2, 4, 5, true, true, undefined],
+    "exam summary: " + JSON.stringify({ ...exam, words: undefined }),
+  );
+  assert.deepEqual(Object.keys(exam.words[0]).sort(), ["aliases", "en", "hangul", "id", "ipa", "ko", "missed", "setId"], "exam word = set word + setId + missed");
+  assert.deepEqual((await familyCase("/settings/" + ekid.id, { method: "GET" }, 200)).exam, exam, "device settings carry the exam");
+  assert.deepEqual((await familyCase("/family/" + ekid.id, { method: "GET", ...PARENT }, 200)).exam, exam, "parent detail shows the exam");
+  assert.equal((await familyCase("/join", { body: { code: ekid.joinCode } }, 200)).exam.id, exam.id, "join carries the exam");
+  // 고른 세트만(모르는 id 는 무시)·무작위·전부 / 세트별 골고루 / 고른 세트가 없으면 거절
+  exam = (await familyCase(examPath, { ...PARENT, body: { count: 100, setIds: ["exam-set-2", "nope-set"], pick: "random" } }, 200)).exam;
+  assert.deepEqual([exam.words.map((w) => w.en).sort(), exam.setCount, exam.pick], [["Amend", "apple", "banana", "cherry"], 1, "random"], "only the chosen set, every word");
+  exam = (await familyCase(examPath, { ...PARENT, body: { count: 6, pick: "even" } }, 200)).exam;
+  assert.deepEqual(exam.words.map((w) => w.setId), ["exam-set-1", "exam-set-2", "exam-set-1", "exam-set-2", "exam-set-1", "exam-set-2"], "even alternates the sets");
+  await familyCase(examPath, { ...PARENT, body: { count: 5, setIds: ["nope-set"] } }, 400, "no_words");
+  // 완료 표시: 그 시험 id 의 완료 기록 중 가장 먼저 끝낸 것(중단·다른 시험 id 는 무시), 기록에는 exam 이 남는다
+  const t3 = rec("t3", hoursAgo(1), { exam: exam.id, total: 6, correct: 5 });
+  await familyCase("/sync", { body: { child: echild, records: [rec("t1", hoursAgo(3), { exam: "other-exam" }), rec("t2", hoursAgo(2), { exam: exam.id, partial: true, total: 6, correct: 2 }), t3, rec("bad", hoursAgo(1), { exam: "bad id!" })] } }, 200);
+  let examNow = (await familyCase("/settings/" + ekid.id, { method: "GET" }, 200)).exam;
+  assert.deepEqual(examNow.completed, { recordId: "t3", correct: 5, total: 6, completedAt: t3.completedAt }, "first full completion marked");
+  await familyCase("/sync", { body: { child: echild, records: [rec("t4", hoursAgo(0.5), { exam: exam.id, total: 6, correct: 6 })] } }, 200);
+  assert.equal((await familyCase("/settings/" + ekid.id, { method: "GET" }, 200)).exam.completed.recordId, "t3", "a later retry keeps the first result");
+  const t0 = rec("t0", hoursAgo(4), { exam: exam.id, total: 6, correct: 4 });
+  await familyCase("/sync", { body: { child: echild, records: [t0] } }, 200); // 오프라인이던 기기가 더 먼저 끝낸 기록을 늦게 올림
+  assert.equal((await familyCase("/settings/" + ekid.id, { method: "GET" }, 200)).exam.completed.recordId, "t0", "an earlier completion replaces it");
+  const examRecords = (await familyCase("/records/" + ekid.id, { method: "GET" }, 200)).records;
+  assert.deepEqual([examRecords.find((r) => r.id === "t3").exam, examRecords.find((r) => r.id === "bad").exam], [exam.id, undefined], "exam id kept on records (bad ids dropped)");
+  // 거두기(보호자 코드만, 없어도 ok) → 아이 기기에서 사라짐. 아이를 지우면 시험도 지워진다.
+  await familyCase(examPath, { method: "DELETE" }, 401, "보호자 코드");
+  await familyCase(examPath, { method: "DELETE", ...PARENT }, 200);
+  assert.equal((await familyCase("/settings/" + ekid.id, { method: "GET" }, 200)).exam, null, "exam removed");
+  await familyCase(examPath, { method: "DELETE", ...PARENT }, 200);
+  await familyCase(examPath, { ...PARENT, body: { count: 5 } }, 200);
+  await familyCase("/family/" + ekid.id, { method: "DELETE", ...PARENT }, 200);
+  assert.equal(await familyObject.storage.get("exam:" + ekid.id), undefined, "exam key removed with the child");
+  await familyCase(examPath, { method: "DELETE", ...PARENT }, 404, "unknown_child");
 
   // ---- 기록 복원: 아이 기기가 GET /records/<childId>(가족 코드)로 서버 사본을 내려받는다(since 이후 오름차순 또는 최신순, 최대 500개) ----
   const rid = (await familyCase("/family/children", { ...PARENT, body: { name: "복원아이" } }, 200)).child.id;
@@ -1411,7 +1484,7 @@ const { pathToFileURL } = require("url");
   data = await pcase("/family/" + pkid.id + "/plan", { ...PARENT, body: { timeLimitSec: 10 } }, 200);
   assert.equal(data.child.plan.remindHour, 20, "remindHour kept when other fields change");
   data = await pcase("/settings/" + pkid.id, { method: "GET" }, 200);
-  assert.deepEqual(data, { childId: pkid.id, name: "용한", timeLimitSec: 10, setsLocked: false, dailyEnabled: true, dailyHour: 16, remindHour: 20 }, "device settings carry the alarm times");
+  assert.deepEqual(data, { childId: pkid.id, name: "용한", timeLimitSec: 10, setsLocked: false, dailyEnabled: true, dailyHour: 16, remindHour: 20, exam: null }, "device settings carry the alarm times");
   data = await pcase("/join", { body: { code: pkid2.joinCode, device: { id: "child2-phone-1", label: "iPhone" } } }, 200);
   assert.deepEqual([data.dailyEnabled, data.dailyHour, data.remindHour], [false, 16, null], "join carries the alarm times");
 
@@ -1431,6 +1504,17 @@ const { pathToFileURL } = require("url");
   await runPushCron(D1, 16);
   got = await sentSince(n);
   assert.deepEqual(got.map((g) => g.msg.tag), ["daily", "daily"], "cron-made daily → arrival push to the two devices");
+  // 📝 종합 시험 도착: 보호자가 보내면 아이의 모든 기기에(응답 뒤에)
+  await pcase("/family/" + pkid.id + "/sets", { ...PARENT, body: { set: { name: "DAY 06", words: [word(1, "authority", "권위"), word(2, "devote", "바치다"), word(3, "grab", "붙잡다")] } } }, 200);
+  n = (await pushed());
+  data = await pcase("/family/" + pkid.id + "/exam", { ...PARENT, body: { count: 5 } }, 200);
+  got = await sentSince(n);
+  const examMissed = data.exam.missedWords;
+  assert(examMissed > 0 && data.exam.words.length === 3, "exam from the child's set with missed words: " + JSON.stringify(data.exam));
+  assert.deepEqual(got.map((g) => g.endpoint).sort(), [bA.subscription.endpoint, bA2.subscription.endpoint].sort(), "exam push to both child devices only");
+  assert.deepEqual(got[0].msg, { title: "📝 종합 시험이 도착했어요", body: `보호자가 보낸 3문제 · 자주 틀린 단어 ${examMissed}개 · 앱을 열어 풀어 보세요`, url: "./", tag: "exam" }, "exam arrival message");
+  assert.deepEqual([got[0].headers.ttl, got[0].headers.topic], ["86400", "exam"]);
+  await pcase("/family/" + pkid.id + "/exam", { method: "DELETE", ...PARENT }, 200);
 
   // ✏️ 공부 리마인더: remindHour(20시)에 그날(한국 날짜) 끝낸 시험이 없으면 하루 1번, 시각이 다르거나 이미 했으면 없음
   n = (await pushed());
@@ -1522,7 +1606,7 @@ const { pathToFileURL } = require("url");
   globalThis.fetch = dailyMock;
 
   console.log(
-    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/tutor help/fallback retry/upstream error mapping/family store/detail window+record pages/daily words/child codes/set sync/record restore/web push (key, subscriptions, VAPID JWT verified, aes128gcm decrypted, daily/reminder/finish/summary, expiry cleanup)",
+    "PASS: worker CORS/origin/passcode/rate-limit/validation/sanitization/generated flag/define dictionary/grade judge/word lookup/tutor help/fallback retry/upstream error mapping/family store/detail window+record pages/daily words/child codes/set sync/parent exams/record restore/web push (key, subscriptions, VAPID JWT verified, aes128gcm decrypted, daily/exam/reminder/finish/summary, expiry cleanup)",
   );
 })().catch((e) => {
   console.error(e);
